@@ -218,3 +218,14 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Node / Studio artifacts & local secrets
+.DS_Store
+node_modules/
+dist/
+.env
+.env.*
+!.env.example
+*.local
+studio/eval/results/
+studio/e2e/screens/
