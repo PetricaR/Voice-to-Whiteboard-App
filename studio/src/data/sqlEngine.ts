@@ -10,21 +10,29 @@
 import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
 import { parquetReadObjects } from 'hyparquet';
 import { SAMPLE_TABLES, type SampleColumnSpec } from './sampleDatasets';
-import { bindSqlParams, validateReadOnlySql, type SqlParamValue } from './sqlGuard';
+import { bindSqlParams, dialectOfSource, validateReadOnlySql, type SqlParamValue } from './sqlGuard';
 
 export interface DataColumnMeta {
   name: string;
   type: string;
+  mode?: string;
   description?: string;
 }
 
 export interface DataTableMeta {
   name: string;
+  fullName?: string;
+  projectId?: string;
+  datasetId?: string;
+  tableId?: string;
   source: string;
   dataset: string;
   datasetLabel: string;
   description: string;
   rowCount: number;
+  sizeBytes?: number | null;
+  location?: string | null;
+  tableType?: string;
   columns: DataColumnMeta[];
   uploaded?: boolean;
 }
@@ -39,6 +47,7 @@ export interface DataSourceInfo {
   kind: 'local' | 'bigquery' | 'clickhouse' | 'postgres' | 'rest';
   status: 'connected' | 'available';
   description: string;
+  projectId?: string;
   tableCount?: number;
 }
 
@@ -71,6 +80,11 @@ export function subscribeDataEngine(listener: () => void): () => void {
 
 function notifyDataChanged() {
   for (const l of dataListeners) l();
+}
+
+export function invalidateDataSourcesCache() {
+  remoteSourcesCache = null;
+  notifyDataChanged();
 }
 
 async function loadSqlJsRuntime(): Promise<SqlJsStatic> {
@@ -319,6 +333,99 @@ export async function importDataFile(rawInput: ImportedFileInput | File): Promis
   return meta;
 }
 
+export interface ImportedRowsInput {
+  tableName: string;
+  columns: string[];
+  rows: (string | number | boolean | null)[][];
+  dataset?: string;
+  datasetLabel?: string;
+  description?: string;
+  columnTypes?: Record<string, string>;
+  columnDescriptions?: Record<string, string>;
+}
+
+/**
+ * Materializes tabular rows (e.g. loaded from a BigQuery dataset/table preview)
+ * into Studio's in-browser SQLite-Wasm (`sql.js`) engine so they can be queried
+ * offline, joined with uploaded CSV/Parquet files, or explored via voice.
+ */
+export async function importRowsIntoLocalTable(input: ImportedRowsInput): Promise<DataTableMeta> {
+  const db = await getLocalDatabase();
+  const tableName = sanitizeSqlIdentifier(input.tableName, 'bq_table');
+  if (input.columns.length === 0) {
+    throw new Error(`Cannot import "${input.tableName}" because it has 0 columns.`);
+  }
+
+  const usedCols = new Set<string>();
+  const colNames = input.columns.map((h, idx) => {
+    const base = sanitizeSqlIdentifier(h, `col_${idx + 1}`);
+    let candidate = base;
+    let suffix = 2;
+    while (usedCols.has(candidate)) candidate = `${base}_${suffix++}`;
+    usedCols.add(candidate);
+    return candidate;
+  });
+
+  const normalizedRows: (string | number | null)[][] = input.rows.map((row) =>
+    input.columns.map((_, idx) => {
+      const v = row[idx];
+      if (v === null || v === undefined) return null;
+      if (typeof v === 'boolean') return v ? 1 : 0;
+      if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+      return String(v);
+    }),
+  );
+
+  const columns: DataColumnMeta[] = colNames.map((name, idx) => {
+    const orig = input.columns[idx];
+    const bqType = (input.columnTypes?.[orig] ?? '').toUpperCase();
+    let sqliteType: SampleColumnSpec['type'];
+    if (bqType === 'INT64' || bqType === 'INTEGER' || bqType === 'BOOL' || bqType === 'BOOLEAN') {
+      sqliteType = 'INTEGER';
+    } else if (bqType === 'FLOAT64' || bqType === 'FLOAT' || bqType === 'NUMERIC' || bqType === 'BIGNUMERIC') {
+      sqliteType = 'REAL';
+    } else {
+      sqliteType = inferColumnType(normalizedRows.slice(0, 200).map((r) => r[idx]));
+    }
+    return {
+      name,
+      type: sqliteType,
+      description: input.columnDescriptions?.[orig] || (orig !== name ? `Imported from "${orig}"` : undefined),
+    };
+  });
+
+  db.run(`DROP TABLE IF EXISTS "${tableName}";`);
+  const colsSql = columns.map((c) => `"${c.name}" ${c.type}`).join(', ');
+  db.run(`CREATE TABLE "${tableName}" (${colsSql});`);
+
+  const placeholders = columns.map(() => '?').join(', ');
+  const stmt = db.prepare(`INSERT INTO "${tableName}" VALUES (${placeholders});`);
+  db.run('BEGIN TRANSACTION;');
+  try {
+    for (const r of normalizedRows) stmt.run(r);
+    db.run('COMMIT;');
+  } catch (e) {
+    db.run('ROLLBACK;');
+    throw e;
+  } finally {
+    stmt.free();
+  }
+
+  const meta: DataTableMeta = {
+    name: tableName,
+    source: 'local',
+    dataset: input.dataset || 'bigquery_imports',
+    datasetLabel: input.datasetLabel || 'BigQuery Imported Tables',
+    description: input.description || `Imported BigQuery table (${normalizedRows.length} rows).`,
+    rowCount: normalizedRows.length,
+    columns,
+    uploaded: true,
+  };
+  customTables.set(tableName, meta);
+  notifyDataChanged();
+  return meta;
+}
+
 /** Lists all local tables (built-in sample datasets + uploaded files). */
 export async function listLocalTables(): Promise<DataTableMeta[]> {
   await getLocalDatabase();
@@ -396,6 +503,39 @@ export async function inspectDataSchema(opts: { source?: string; table?: string 
   return { source: 'local', tables };
 }
 
+/**
+ * Runs one statement on the local database with writes switched off, so a
+ * query that slipped past the guard still cannot change or drop a table.
+ * `prepare` compiles only the first statement; anything after it never runs.
+ */
+function runReadOnlyStatement(
+  db: Database,
+  sql: string,
+  maxRows: number,
+): { columns: string[]; rows: (string | number | boolean | null)[][]; truncated: boolean } {
+  db.run('PRAGMA query_only = ON;');
+  try {
+    const stmt = db.prepare(sql);
+    try {
+      const columns = stmt.getColumnNames();
+      const rows: (string | number | boolean | null)[][] = [];
+      let truncated = false;
+      while (stmt.step()) {
+        if (rows.length >= maxRows) {
+          truncated = true;
+          break;
+        }
+        rows.push(stmt.get().map((v) => (v instanceof Uint8Array ? `<${v.length} bytes>` : v)) as (string | number | boolean | null)[]);
+      }
+      return { columns, rows, truncated };
+    } finally {
+      stmt.free();
+    }
+  } finally {
+    db.run('PRAGMA query_only = OFF;');
+  }
+}
+
 /** Executes a read-only SQL query against either the local SQLite-Wasm engine or a server connector. */
 export async function executeSqlQuery(
   rawSql: string,
@@ -410,8 +550,9 @@ export async function executeSqlQuery(
   const executedAt = new Date().toISOString();
   const started = performance.now();
 
-  const boundRaw = bindSqlParams(rawSql, options.params);
-  const check = validateReadOnlySql(boundRaw, { maxRows });
+  const dialect = dialectOfSource(source);
+  const boundRaw = bindSqlParams(rawSql, options.params, dialect);
+  const check = validateReadOnlySql(boundRaw, { maxRows, dialect });
   if (!check.ok) {
     return {
       ok: false,
@@ -486,36 +627,17 @@ export async function executeSqlQuery(
 
   try {
     const db = await getLocalDatabase();
-    const res = db.exec(check.sql);
-    const durationMs = Math.round((performance.now() - started) * 10) / 10;
-    if (!res || res.length === 0) {
-      return {
-        ok: true,
-        source: 'local',
-        sql: check.displaySql,
-        boundSql: check.displaySql,
-        columns: [],
-        rows: [],
-        rowCount: 0,
-        truncated: false,
-        durationMs,
-        executedAt,
-      };
-    }
-    const first = res[0];
-    const allRows = first.values as (string | number | boolean | null)[][];
-    const truncated = allRows.length > maxRows;
-    const rows = truncated ? allRows.slice(0, maxRows) : allRows;
+    const { columns, rows, truncated } = runReadOnlyStatement(db, check.sql, maxRows);
     return {
       ok: true,
       source: 'local',
       sql: check.displaySql,
       boundSql: check.displaySql,
-      columns: first.columns,
+      columns,
       rows,
       rowCount: rows.length,
       truncated,
-      durationMs,
+      durationMs: Math.round((performance.now() - started) * 10) / 10,
       executedAt,
     };
   } catch (e) {

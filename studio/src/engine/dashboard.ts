@@ -11,17 +11,61 @@ import { resolveRef, type Resolution } from './resolve';
 import { COLORS, type ColorName } from './types';
 
 export const WIDGET_KINDS = [
-  'kpi',
+  // 1. Categorical (10)
   'bar',
+  'column',
+  'grouped_bar',
   'stacked_bar',
   'horizontal_bar',
+  'pie',
+  'donut',
+  'nightingale_rose',
+  'radar',
+  'marimekko',
+  // 2. Temporal (5)
   'line',
   'area',
-  'donut',
-  'pie',
+  'gantt',
+  'candlestick',
+  'streamgraph',
+  // 3. Distribution (4)
+  'histogram',
+  'box_plot',
+  'density',
+  'violin',
+  // 4. Relational (6)
   'scatter',
-  'funnel',
+  'bubble',
   'heatmap',
+  'parallel_coordinates',
+  'chord',
+  'network_chart',
+  // 5. Hierarchical (5)
+  'treemap',
+  'sunburst',
+  'org_chart',
+  'circle_packing',
+  'parallel_sets',
+  // 6. Geospatial (6)
+  'choropleth_map',
+  'dot_map',
+  'geo_heatmap',
+  'bubble_map',
+  'flow_map',
+  'connection_map',
+  // 7. Proportional & Goal Tracking (6)
+  'kpi',
+  'proportional_area',
+  'square_area',
+  'gauge',
+  'bullet',
+  'funnel',
+  // 8. Advanced & Specialized (6)
+  'sankey',
+  'spiral_plot',
+  'arc_diagram',
+  'trellis',
+  'waterfall',
   'table',
 ] as const;
 export type WidgetKind = (typeof WIDGET_KINDS)[number];
@@ -30,9 +74,11 @@ export const VALUE_FORMATS = [
   'number',
   'currency_usd',
   'currency_eur',
+  'currency_gbp',
   'percent',
   'compact',
   'ms',
+  'bytes',
   'raw',
 ] as const;
 export type ValueFormat = (typeof VALUE_FORMATS)[number];
@@ -42,6 +88,221 @@ export type ColSpan = (typeof COL_SPANS)[number];
 
 export const FILTER_KINDS = ['select', 'text'] as const;
 export type FilterKind = (typeof FILTER_KINDS)[number];
+
+export const CHART_PALETTES = [
+  'studio',
+  'viridis',
+  'ocean',
+  'sunset',
+  'forest',
+  'pastel',
+  'monochrome',
+  'diverging',
+  'neon',
+] as const;
+export type ChartPalette = (typeof CHART_PALETTES)[number];
+
+export const CHART_ORIENTATIONS = ['auto', 'vertical', 'horizontal'] as const;
+export type ChartOrientation = (typeof CHART_ORIENTATIONS)[number];
+
+export const STACK_MODES = ['none', 'stacked', 'percent_100'] as const;
+export type StackMode = (typeof STACK_MODES)[number];
+
+export const SORT_MODES = ['none', 'value_desc', 'value_asc', 'label_asc', 'label_desc'] as const;
+export type SortMode = (typeof SORT_MODES)[number];
+
+export const CURVE_TYPES = ['linear', 'monotone', 'step'] as const;
+export type CurveType = (typeof CURVE_TYPES)[number];
+
+export const LINE_STYLES = ['solid', 'dashed', 'dotted'] as const;
+export type LineStyle = (typeof LINE_STYLES)[number];
+
+export const MARKER_SHAPES = ['circle', 'square', 'diamond', 'triangle'] as const;
+export type MarkerShape = (typeof MARKER_SHAPES)[number];
+
+export const AXIS_SCALES = ['linear', 'log', 'sqrt'] as const;
+export type AxisScale = (typeof AXIS_SCALES)[number];
+
+export const LEGEND_POSITIONS = ['top', 'bottom', 'left', 'right', 'none'] as const;
+export type LegendPosition = (typeof LEGEND_POSITIONS)[number];
+
+export const DATA_LABEL_POSITIONS = ['auto', 'outside', 'inside', 'center', 'top'] as const;
+export type DataLabelPosition = (typeof DATA_LABEL_POSITIONS)[number];
+
+export const DATA_LABEL_CONTENTS = ['value', 'percent', 'label_value', 'label_percent', 'label'] as const;
+export type DataLabelContent = (typeof DATA_LABEL_CONTENTS)[number];
+
+export const MAP_SCOPES = ['world', 'americas', 'emea', 'apac'] as const;
+export type MapScope = (typeof MAP_SCOPES)[number];
+
+export const CARD_BACKGROUNDS = ['default', 'subtle', 'elevated', 'tinted', 'glass'] as const;
+export type CardBackground = (typeof CARD_BACKGROUNDS)[number];
+
+export const CARD_BORDERS = ['default', 'none', 'strong', 'accent'] as const;
+export type CardBorder = (typeof CARD_BORDERS)[number];
+
+export const CARD_PADDINGS = ['compact', 'normal', 'spacious'] as const;
+export type CardPadding = (typeof CARD_PADDINGS)[number];
+
+export const FONT_FAMILIES = ['sans', 'mono', 'serif'] as const;
+export type ChartFontFamily = (typeof FONT_FAMILIES)[number];
+
+export const TITLE_SIZES = ['sm', 'md', 'lg'] as const;
+export type ChartTitleSize = (typeof TITLE_SIZES)[number];
+
+export interface ChartReferenceLine {
+  id?: string;
+  axis: 'x' | 'y';
+  value: number | string;
+  label?: string;
+  color?: string;
+  style?: LineStyle;
+}
+
+export interface ChartReferenceBand {
+  id?: string;
+  axis: 'x' | 'y';
+  from: number;
+  to: number;
+  label?: string;
+  color?: string;
+  opacity?: number;
+}
+
+export interface ChartAnnotation {
+  id?: string;
+  /** Optional category/label to anchor the annotation to; falls back to xRatio/yRatio (0..1). */
+  targetLabel?: string;
+  xRatio?: number;
+  yRatio?: number;
+  text: string;
+  color?: string;
+}
+
+export interface ChartRangeBand {
+  to: number;
+  label?: string;
+  color?: string;
+}
+
+/**
+ * Granular configuration controlling every anatomical element of a chart:
+ * card frame, typography, data shaping, palettes, axes, gridlines, margins,
+ * series geometry, data labels, legends, reference lines/bands, trendlines,
+ * annotations, and interactivity.
+ */
+export interface ChartElementConfig {
+  // 1. Typography & Card Frame
+  footnote?: string;
+  badgeText?: string;
+  titleSize?: ChartTitleSize;
+  titleAlign?: 'left' | 'center' | 'right';
+  fontFamily?: ChartFontFamily;
+  cardBackground?: CardBackground;
+  cardBorder?: CardBorder;
+  cardPadding?: CardPadding;
+  chartHeight?: number;
+
+  // 2. Data Shaping & Orientation
+  orientation?: ChartOrientation;
+  stackMode?: StackMode;
+  sortBy?: SortMode;
+  limitItems?: number;
+  groupTailAsOther?: boolean;
+
+  // 3. Colors & Palettes
+  palette?: ChartPalette;
+  colorBy?: 'series' | 'category' | 'value';
+  customColors?: string[];
+  fillOpacity?: number;
+  gradientFill?: boolean;
+
+  // 4. X-Axis
+  showXAxis?: boolean;
+  showXTicks?: boolean;
+  xAxisTitle?: string;
+  xTickRotation?: 0 | -30 | -45 | -90;
+  xTickMaxCount?: number;
+  xTickTruncate?: number;
+  xAxisScale?: AxisScale;
+
+  // 5. Y-Axis
+  showYAxis?: boolean;
+  showYTicks?: boolean;
+  yAxisTitle?: string;
+  yAxisPosition?: 'left' | 'right';
+  yAxisScale?: AxisScale;
+  yMin?: number;
+  yMax?: number;
+  startFromZero?: boolean;
+  yTickCount?: number;
+  yAxisFormat?: ValueFormat;
+
+  // 6. Grid & Plot Margins
+  showHorizontalGrid?: boolean;
+  showVerticalGrid?: boolean;
+  gridStyle?: LineStyle;
+  gridOpacity?: number;
+  showPlotBorder?: boolean;
+  plotPaddingTop?: number;
+  plotPaddingRight?: number;
+  plotPaddingBottom?: number;
+  plotPaddingLeft?: number;
+
+  // 7. Series Geometry (Line, Bar, Radial, Distribution, Hierarchy, Flow, Map)
+  curveType?: CurveType;
+  strokeWidth?: number;
+  lineStyle?: LineStyle;
+  showMarkers?: boolean;
+  markerSize?: number;
+  markerShape?: MarkerShape;
+  directLineLabels?: boolean;
+  barRadius?: number;
+  barGap?: number;
+  barMaxWidth?: number;
+  innerRadiusRatio?: number;
+  padAngle?: number;
+  startAngle?: number;
+  donutCenterLabel?: string;
+  donutCenterSubtext?: string;
+  binCount?: number;
+  showOutliers?: boolean;
+  showMean?: boolean;
+  targetValue?: number;
+  ranges?: ChartRangeBand[];
+  trellisColumns?: number;
+  trellisSubKind?: 'line' | 'area' | 'bar' | 'column';
+  mapScope?: MapScope;
+  showMapGraticule?: boolean;
+  showMapLabels?: boolean;
+  nodeSize?: number;
+  linkCurvature?: number;
+
+  // 8. Data Labels & Formatting
+  showDataLabels?: boolean;
+  dataLabelPosition?: DataLabelPosition;
+  dataLabelContent?: DataLabelContent;
+  dataLabelFontSize?: number;
+  decimals?: number;
+  prefix?: string;
+  suffix?: string;
+
+  // 9. Legend
+  showLegend?: boolean;
+  legendPosition?: LegendPosition;
+  legendShowValues?: boolean;
+
+  // 10. Annotations, Reference Lines, Bands, Trendlines & Interactivity
+  showTrendline?: boolean;
+  showAverageLine?: boolean;
+  highlightMaxMin?: boolean;
+  referenceLines?: ChartReferenceLine[];
+  referenceBands?: ChartReferenceBand[];
+  annotations?: ChartAnnotation[];
+  showTooltip?: boolean;
+  crossFilterOnClick?: boolean;
+  animate?: boolean;
+}
 
 export interface DashboardFilter {
   id: string;
@@ -66,8 +327,26 @@ export interface DashboardWidget {
   xField?: string;
   /** Metric column(s) (Y-axis / KPI value). Auto-detected from numeric columns if omitted. */
   yFields?: string[];
-  /** Optional grouping/pivoting column for multi-series line/bar/stacked_bar/heatmap charts. */
+  /** Optional grouping/pivoting column for multi-series line/bar/stacked_bar/heatmap/trellis charts. */
   seriesField?: string;
+  /** Optional bubble/node size column (bubble, bubble_map, marimekko, circle_packing). */
+  sizeField?: string;
+  /** Optional parent node column for hierarchical trees (org_chart, sunburst, treemap, circle_packing). */
+  parentField?: string;
+  /** Optional OHLC financial columns for candlestick charts. */
+  openField?: string;
+  highField?: string;
+  lowField?: string;
+  closeField?: string;
+  /** Optional Gantt schedule columns. */
+  startField?: string;
+  endField?: string;
+  progressField?: string;
+  /** Optional geospatial coordinate columns for dot/bubble/flow/connection maps. */
+  latField?: string;
+  lonField?: string;
+  destLatField?: string;
+  destLonField?: string;
   /** Value display formatting. */
   format?: ValueFormat;
   /** Optional comparison/delta column for KPI cards (e.g. MoM % or target delta). */
@@ -79,6 +358,8 @@ export interface DashboardWidget {
   /** Plain-language explanation of how this metric is computed (shown in Query Inspector). */
   explanation?: string;
   color?: ColorName;
+  /** Granular per-element chart configuration (axes, grid, geometry, labels, legends, overlays, frame). */
+  chartConfig?: ChartElementConfig;
 }
 
 export interface DashboardSpec {
@@ -90,6 +371,8 @@ export interface DashboardSpec {
   filters: DashboardFilter[];
   widgets: DashboardWidget[];
 }
+
+export type ChartElementConfigInput = Partial<ChartElementConfig> & Record<string, unknown>;
 
 export interface DashboardWidgetInput {
   id?: string;
@@ -104,6 +387,32 @@ export interface DashboardWidgetInput {
   yFields?: string[];
   series_field?: string;
   seriesField?: string;
+  size_field?: string;
+  sizeField?: string;
+  parent_field?: string;
+  parentField?: string;
+  open_field?: string;
+  openField?: string;
+  high_field?: string;
+  highField?: string;
+  low_field?: string;
+  lowField?: string;
+  close_field?: string;
+  closeField?: string;
+  start_field?: string;
+  startField?: string;
+  end_field?: string;
+  endField?: string;
+  progress_field?: string;
+  progressField?: string;
+  lat_field?: string;
+  latField?: string;
+  lon_field?: string;
+  lonField?: string;
+  dest_lat_field?: string;
+  destLatField?: string;
+  dest_lon_field?: string;
+  destLonField?: string;
   format?: ValueFormat;
   comparison_field?: string;
   comparisonField?: string;
@@ -112,6 +421,10 @@ export interface DashboardWidgetInput {
   colSpan?: number;
   explanation?: string;
   color?: ColorName | 'none';
+  chart_config?: ChartElementConfigInput;
+  chartConfig?: ChartElementConfigInput;
+  reset_chart_config?: boolean;
+  resetChartConfig?: boolean;
 }
 
 export interface DashboardFilterInput {
@@ -179,9 +492,281 @@ function normalizeColSpan(raw: number | undefined, kind: WidgetKind): ColSpan {
     return 12;
   }
   if (kind === 'kpi') return 3;
-  if (kind === 'table') return 12;
+  if (kind === 'table' || kind === 'trellis') return 12;
   return 6;
 }
+
+function snakeToCamelKey(k: string): string {
+  return k.replace(/_([a-z])/g, (_, ch: string) => ch.toUpperCase());
+}
+
+const clampNum = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
+
+/** Normalizes camelCase or snake_case chart element properties into a clean `ChartElementConfig`. */
+export function normalizeChartConfig(
+  raw: unknown,
+  base?: ChartElementConfig,
+): ChartElementConfig | undefined {
+  if (!raw || typeof raw !== 'object') return base ? cloneChartConfig(base) : undefined;
+  const src: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    src[snakeToCamelKey(k)] = v;
+  }
+  const out: ChartElementConfig = base ? (cloneChartConfig(base) ?? {}) : {};
+
+  const setStr = (key: keyof ChartElementConfig, allowEmpty = false) => {
+    if (!(key in src)) return;
+    const v = src[key];
+    if (v === null || v === undefined || (!allowEmpty && v === '')) {
+      delete out[key];
+    } else if (typeof v === 'string') {
+      (out as Record<string, unknown>)[key] = allowEmpty ? v : v.trim();
+    }
+  };
+  const setBool = (key: keyof ChartElementConfig) => {
+    if (!(key in src)) return;
+    const v = src[key];
+    if (v === null || v === undefined) delete out[key];
+    else if (typeof v === 'boolean') (out as Record<string, unknown>)[key] = v;
+  };
+  const setNum = (key: keyof ChartElementConfig, min: number, max: number) => {
+    if (!(key in src)) return;
+    const v = src[key];
+    if (v === null || v === undefined || v === '') {
+      delete out[key];
+    } else {
+      const n = typeof v === 'number' ? v : Number(v);
+      if (Number.isFinite(n)) (out as Record<string, unknown>)[key] = clampNum(n, min, max);
+    }
+  };
+  const setFreeNum = (key: keyof ChartElementConfig) => {
+    if (!(key in src)) return;
+    const v = src[key];
+    if (v === null || v === undefined || v === '') {
+      delete out[key];
+    } else {
+      const n = typeof v === 'number' ? v : Number(v);
+      if (Number.isFinite(n)) (out as Record<string, unknown>)[key] = n;
+    }
+  };
+  const setEnum = <T extends string>(key: keyof ChartElementConfig, allowed: readonly T[]) => {
+    if (!(key in src)) return;
+    const v = src[key];
+    if (v === null || v === undefined || v === '') delete out[key];
+    else if (typeof v === 'string' && (allowed as readonly string[]).includes(v)) {
+      (out as Record<string, unknown>)[key] = v;
+    }
+  };
+
+  // 1. Typography & Card Frame
+  setStr('footnote');
+  setStr('badgeText');
+  setEnum('titleSize', TITLE_SIZES);
+  setEnum('titleAlign', ['left', 'center', 'right'] as const);
+  setEnum('fontFamily', FONT_FAMILIES);
+  setEnum('cardBackground', CARD_BACKGROUNDS);
+  setEnum('cardBorder', CARD_BORDERS);
+  setEnum('cardPadding', CARD_PADDINGS);
+  setNum('chartHeight', 120, 680);
+
+  // 2. Data Shaping & Orientation
+  setEnum('orientation', CHART_ORIENTATIONS);
+  setEnum('stackMode', STACK_MODES);
+  setEnum('sortBy', SORT_MODES);
+  setNum('limitItems', 1, 500);
+  setBool('groupTailAsOther');
+
+  // 3. Colors & Palettes
+  setEnum('palette', CHART_PALETTES);
+  setEnum('colorBy', ['series', 'category', 'value'] as const);
+  if ('customColors' in src) {
+    const cc = src.customColors;
+    if (cc === null || cc === undefined) delete out.customColors;
+    else if (Array.isArray(cc)) {
+      const cleaned = cc.map((c) => String(c).trim()).filter(Boolean);
+      if (cleaned.length > 0) out.customColors = cleaned;
+      else delete out.customColors;
+    }
+  }
+  setNum('fillOpacity', 0.05, 1);
+  setBool('gradientFill');
+
+  // 4. X-Axis
+  setBool('showXAxis');
+  setBool('showXTicks');
+  setStr('xAxisTitle');
+  if ('xTickRotation' in src) {
+    const r = Number(src.xTickRotation);
+    if (r === 0 || r === -30 || r === -45 || r === -90) out.xTickRotation = r;
+    else if (src.xTickRotation === null) delete out.xTickRotation;
+  }
+  setNum('xTickMaxCount', 2, 48);
+  setNum('xTickTruncate', 3, 60);
+  setEnum('xAxisScale', AXIS_SCALES);
+
+  // 5. Y-Axis
+  setBool('showYAxis');
+  setBool('showYTicks');
+  setStr('yAxisTitle');
+  setEnum('yAxisPosition', ['left', 'right'] as const);
+  setEnum('yAxisScale', AXIS_SCALES);
+  setFreeNum('yMin');
+  setFreeNum('yMax');
+  setBool('startFromZero');
+  setNum('yTickCount', 2, 12);
+  setEnum('yAxisFormat', VALUE_FORMATS);
+
+  // 6. Grid & Plot Margins
+  setBool('showHorizontalGrid');
+  setBool('showVerticalGrid');
+  setEnum('gridStyle', LINE_STYLES);
+  setNum('gridOpacity', 0, 1);
+  setBool('showPlotBorder');
+  setNum('plotPaddingTop', 4, 120);
+  setNum('plotPaddingRight', 4, 140);
+  setNum('plotPaddingBottom', 8, 140);
+  setNum('plotPaddingLeft', 8, 160);
+
+  // 7. Series Geometry
+  setEnum('curveType', CURVE_TYPES);
+  setNum('strokeWidth', 0.5, 10);
+  setEnum('lineStyle', LINE_STYLES);
+  setBool('showMarkers');
+  setNum('markerSize', 1, 18);
+  setEnum('markerShape', MARKER_SHAPES);
+  setBool('directLineLabels');
+  setNum('barRadius', 0, 24);
+  setNum('barGap', 0, 0.9);
+  setNum('barMaxWidth', 8, 180);
+  setNum('innerRadiusRatio', 0, 0.9);
+  setNum('padAngle', 0, 16);
+  setNum('startAngle', -360, 360);
+  setStr('donutCenterLabel');
+  setStr('donutCenterSubtext');
+  setNum('binCount', 3, 50);
+  setBool('showOutliers');
+  setBool('showMean');
+  setFreeNum('targetValue');
+  if ('ranges' in src) {
+    if (src.ranges === null || src.ranges === undefined) delete out.ranges;
+    else if (Array.isArray(src.ranges)) {
+      out.ranges = src.ranges
+        .filter((r: any) => r && Number.isFinite(Number(r.to)))
+        .map((r: any) => ({
+          to: Number(r.to),
+          ...(r.label ? { label: String(r.label) } : {}),
+          ...(r.color ? { color: String(r.color) } : {}),
+        }));
+    }
+  }
+  setNum('trellisColumns', 1, 6);
+  setEnum('trellisSubKind', ['line', 'area', 'bar', 'column'] as const);
+  setEnum('mapScope', MAP_SCOPES);
+  setBool('showMapGraticule');
+  setBool('showMapLabels');
+  setNum('nodeSize', 2, 36);
+  setNum('linkCurvature', 0, 1);
+
+  // 8. Data Labels & Formatting
+  setBool('showDataLabels');
+  setEnum('dataLabelPosition', DATA_LABEL_POSITIONS);
+  setEnum('dataLabelContent', DATA_LABEL_CONTENTS);
+  setNum('dataLabelFontSize', 8, 22);
+  setNum('decimals', 0, 6);
+  setStr('prefix', true);
+  setStr('suffix', true);
+
+  // 9. Legend
+  setBool('showLegend');
+  setEnum('legendPosition', LEGEND_POSITIONS);
+  setBool('legendShowValues');
+
+  // 10. Overlays & Interactivity
+  setBool('showTrendline');
+  setBool('showAverageLine');
+  setBool('highlightMaxMin');
+  if ('referenceLines' in src) {
+    if (src.referenceLines === null || src.referenceLines === undefined) delete out.referenceLines;
+    else if (Array.isArray(src.referenceLines)) {
+      out.referenceLines = src.referenceLines
+        .filter((rl: any) => rl && (rl.axis === 'x' || rl.axis === 'y') && rl.value !== undefined)
+        .map((rl: any, i: number) => ({
+          id: rl.id ? String(rl.id) : `ref_${i + 1}`,
+          axis: rl.axis === 'x' ? 'x' : 'y',
+          value: typeof rl.value === 'number' || (typeof rl.value === 'string' && rl.value.trim() !== '' && !Number.isNaN(Number(rl.value)))
+            ? Number(rl.value)
+            : String(rl.value),
+          ...(rl.label ? { label: String(rl.label) } : {}),
+          ...(rl.color ? { color: String(rl.color) } : {}),
+          ...(rl.style && LINE_STYLES.includes(rl.style) ? { style: rl.style } : {}),
+        }));
+    }
+  }
+  if ('referenceBands' in src) {
+    if (src.referenceBands === null || src.referenceBands === undefined) delete out.referenceBands;
+    else if (Array.isArray(src.referenceBands)) {
+      out.referenceBands = src.referenceBands
+        .filter((rb: any) => rb && (rb.axis === 'x' || rb.axis === 'y') && Number.isFinite(Number(rb.from)) && Number.isFinite(Number(rb.to)))
+        .map((rb: any, i: number) => ({
+          id: rb.id ? String(rb.id) : `band_${i + 1}`,
+          axis: rb.axis === 'x' ? 'x' : 'y',
+          from: Number(rb.from),
+          to: Number(rb.to),
+          ...(rb.label ? { label: String(rb.label) } : {}),
+          ...(rb.color ? { color: String(rb.color) } : {}),
+          ...(typeof rb.opacity === 'number' ? { opacity: clampNum(rb.opacity, 0.02, 0.8) } : {}),
+        }));
+    }
+  }
+  if ('annotations' in src) {
+    if (src.annotations === null || src.annotations === undefined) delete out.annotations;
+    else if (Array.isArray(src.annotations)) {
+      out.annotations = src.annotations
+        .filter((an: any) => an && typeof an.text === 'string' && an.text.trim())
+        .map((an: any, i: number) => ({
+          id: an.id ? String(an.id) : `ann_${i + 1}`,
+          text: String(an.text).trim(),
+          ...(an.targetLabel ?? an.target_label ? { targetLabel: String(an.targetLabel ?? an.target_label) } : {}),
+          ...(typeof (an.xRatio ?? an.x_ratio) === 'number' ? { xRatio: clampNum(Number(an.xRatio ?? an.x_ratio), 0, 1) } : {}),
+          ...(typeof (an.yRatio ?? an.y_ratio) === 'number' ? { yRatio: clampNum(Number(an.yRatio ?? an.y_ratio), 0, 1) } : {}),
+          ...(an.color ? { color: String(an.color) } : {}),
+        }));
+    }
+  }
+  setBool('showTooltip');
+  setBool('crossFilterOnClick');
+  setBool('animate');
+
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+export function cloneChartConfig(cfg: ChartElementConfig | undefined): ChartElementConfig | undefined {
+  if (!cfg) return undefined;
+  return {
+    ...cfg,
+    ...(cfg.customColors ? { customColors: [...cfg.customColors] } : {}),
+    ...(cfg.ranges ? { ranges: cfg.ranges.map((r) => ({ ...r })) } : {}),
+    ...(cfg.referenceLines ? { referenceLines: cfg.referenceLines.map((rl) => ({ ...rl })) } : {}),
+    ...(cfg.referenceBands ? { referenceBands: cfg.referenceBands.map((rb) => ({ ...rb })) } : {}),
+    ...(cfg.annotations ? { annotations: cfg.annotations.map((an) => ({ ...an })) } : {}),
+  };
+}
+
+const EXTRA_FIELD_PAIRS: [keyof DashboardWidget, keyof DashboardWidgetInput, keyof DashboardWidgetInput][] = [
+  ['sizeField', 'sizeField', 'size_field'],
+  ['parentField', 'parentField', 'parent_field'],
+  ['openField', 'openField', 'open_field'],
+  ['highField', 'highField', 'high_field'],
+  ['lowField', 'lowField', 'low_field'],
+  ['closeField', 'closeField', 'close_field'],
+  ['startField', 'startField', 'start_field'],
+  ['endField', 'endField', 'end_field'],
+  ['progressField', 'progressField', 'progress_field'],
+  ['latField', 'latField', 'lat_field'],
+  ['lonField', 'lonField', 'lon_field'],
+  ['destLatField', 'destLatField', 'dest_lat_field'],
+  ['destLonField', 'destLonField', 'dest_lon_field'],
+];
 
 function normalizeWidget(input: DashboardWidgetInput, defaultSource: string, usedIds: Set<string>, index: number): DashboardWidget {
   const kind: WidgetKind = WIDGET_KINDS.includes(input.kind) ? input.kind : 'bar';
@@ -196,8 +781,9 @@ function normalizeWidget(input: DashboardWidgetInput, defaultSource: string, use
   const yFields = input.yFields ?? input.y_fields;
   const seriesField = input.seriesField ?? input.series_field;
   const comparisonField = input.comparisonField ?? input.comparison_field;
+  const chartConfig = normalizeChartConfig(input.chartConfig ?? input.chart_config);
 
-  return {
+  const widget: DashboardWidget = {
     id,
     title: input.title.trim() || 'Untitled Metric',
     ...(input.subtitle?.trim() ? { subtitle: input.subtitle.trim() } : {}),
@@ -213,7 +799,17 @@ function normalizeWidget(input: DashboardWidgetInput, defaultSource: string, use
     colSpan: normalizeColSpan(input.colSpan ?? input.col_span, kind),
     ...(input.explanation?.trim() ? { explanation: input.explanation.trim() } : {}),
     ...(color ? { color } : {}),
+    ...(chartConfig ? { chartConfig } : {}),
   };
+
+  for (const [targetKey, camelKey, snakeKey] of EXTRA_FIELD_PAIRS) {
+    const raw = (input[camelKey] ?? input[snakeKey]) as string | undefined;
+    if (typeof raw === 'string' && raw.trim()) {
+      (widget as unknown as Record<string, unknown>)[targetKey] = raw.trim();
+    }
+  }
+
+  return widget;
 }
 
 function normalizeFilter(input: DashboardFilterInput, usedIds: Set<string>, index: number): DashboardFilter {
@@ -241,7 +837,11 @@ export function cloneDashboard(d: DashboardSpec): DashboardSpec {
   return {
     ...d,
     filters: d.filters.map((f) => ({ ...f, options: f.options ? [...f.options] : undefined })),
-    widgets: d.widgets.map((w) => ({ ...w, yFields: w.yFields ? [...w.yFields] : undefined })),
+    widgets: d.widgets.map((w) => ({
+      ...w,
+      yFields: w.yFields ? [...w.yFields] : undefined,
+      ...(w.chartConfig ? { chartConfig: cloneChartConfig(w.chartConfig) } : {}),
+    })),
   };
 }
 
@@ -403,6 +1003,13 @@ export function applyDashboardEdit(
       if (sF === '') delete target.seriesField;
       else target.seriesField = sF;
     }
+    for (const [targetKey, camelKey, snakeKey] of EXTRA_FIELD_PAIRS) {
+      const val = (patch[camelKey] ?? patch[snakeKey]) as string | undefined;
+      if (val !== undefined) {
+        if (val === '') delete (target as unknown as Record<string, unknown>)[targetKey];
+        else (target as unknown as Record<string, unknown>)[targetKey] = val.trim();
+      }
+    }
     if (patch.format !== undefined && VALUE_FORMATS.includes(patch.format)) target.format = patch.format;
     const cF = patch.comparisonField ?? patch.comparison_field;
     if (cF !== undefined) {
@@ -422,6 +1029,15 @@ export function applyDashboardEdit(
     if (patch.color !== undefined) {
       if (patch.color === 'none') delete target.color;
       else if (COLORS.includes(patch.color)) target.color = patch.color;
+    }
+    if (patch.resetChartConfig || patch.reset_chart_config) {
+      delete target.chartConfig;
+    }
+    const cfgPatch = patch.chartConfig ?? patch.chart_config;
+    if (cfgPatch !== undefined) {
+      const merged = normalizeChartConfig(cfgPatch, target.chartConfig);
+      if (merged) target.chartConfig = merged;
+      else delete target.chartConfig;
     }
     if (!updatedWidgets.includes(target.id)) updatedWidgets.push(target.id);
   }
@@ -505,6 +1121,22 @@ export function applyDashboardEdit(
   };
 }
 
+function summarizeChartConfig(cfg: ChartElementConfig | undefined): string {
+  if (!cfg) return '';
+  const tags: string[] = [];
+  if (cfg.palette) tags.push(`palette=${cfg.palette}`);
+  if (cfg.orientation && cfg.orientation !== 'auto') tags.push(`orient=${cfg.orientation}`);
+  if (cfg.stackMode && cfg.stackMode !== 'none') tags.push(`stack=${cfg.stackMode}`);
+  if (cfg.sortBy && cfg.sortBy !== 'none') tags.push(`sort=${cfg.sortBy}`);
+  if (cfg.showDataLabels) tags.push('labels=on');
+  if (cfg.legendPosition) tags.push(`legend=${cfg.legendPosition}`);
+  if (cfg.showTrendline) tags.push('trendline');
+  if (cfg.showAverageLine) tags.push('avgLine');
+  if (cfg.referenceLines?.length) tags.push(`refLines=${cfg.referenceLines.length}`);
+  if (cfg.annotations?.length) tags.push(`notes=${cfg.annotations.length}`);
+  return tags.length > 0 ? ` {${tags.join(', ')}}` : '';
+}
+
 /** Compact summary of the active dashboard returned to Gemini Live on every tool call. */
 export function describeDashboard(d: DashboardSpec): string {
   const lines: string[] = [];
@@ -520,51 +1152,85 @@ export function describeDashboard(d: DashboardSpec): string {
   for (const w of d.widgets) {
     const sqlOneLine = w.sql.replace(/\s+/g, ' ').trim();
     lines.push(
-      `  - ${w.id} [${w.kind}, span ${w.colSpan}/12, src=${w.source}] ${JSON.stringify(w.title)}: ` +
+      `  - ${w.id} [${w.kind}, span ${w.colSpan}/12, src=${w.source}]${summarizeChartConfig(w.chartConfig)} ${JSON.stringify(w.title)}: ` +
       `${sqlOneLine.length > 140 ? sqlOneLine.slice(0, 140) + '…' : sqlOneLine}`,
     );
   }
   return lines.join('\n');
 }
 
-export function formatMetricValue(val: unknown, format: ValueFormat = 'number', unit?: string): string {
+export function formatMetricValue(
+  val: unknown,
+  format: ValueFormat = 'number',
+  unit?: string,
+  opts?: { decimals?: number; prefix?: string; suffix?: string },
+): string {
   if (val === null || val === undefined || val === '') return '—';
   const num = typeof val === 'number' ? val : Number(val);
   if (!Number.isFinite(num)) return String(val);
 
+  const decOverride = opts?.decimals;
   let out: string;
   switch (format) {
     case 'currency_usd':
-      out = Math.abs(num) >= 1_000_000
-        ? `$${(num / 1_000_000).toFixed(2)}M`
-        : Math.abs(num) >= 10_000
-          ? `$${(num / 1_000).toFixed(1)}K`
-          : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(num);
+      out = decOverride !== undefined
+        ? `$${new Intl.NumberFormat('en-US', { minimumFractionDigits: decOverride, maximumFractionDigits: decOverride }).format(num)}`
+        : Math.abs(num) >= 1_000_000
+          ? `$${(num / 1_000_000).toFixed(2)}M`
+          : Math.abs(num) >= 10_000
+            ? `$${(num / 1_000).toFixed(1)}K`
+            : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(num);
       break;
     case 'currency_eur':
-      out = Math.abs(num) >= 1_000_000
-        ? `€${(num / 1_000_000).toFixed(2)}M`
-        : Math.abs(num) >= 10_000
-          ? `€${(num / 1_000).toFixed(1)}K`
-          : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(num);
+      out = decOverride !== undefined
+        ? `€${new Intl.NumberFormat('en-US', { minimumFractionDigits: decOverride, maximumFractionDigits: decOverride }).format(num)}`
+        : Math.abs(num) >= 1_000_000
+          ? `€${(num / 1_000_000).toFixed(2)}M`
+          : Math.abs(num) >= 10_000
+            ? `€${(num / 1_000).toFixed(1)}K`
+            : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(num);
+      break;
+    case 'currency_gbp':
+      out = decOverride !== undefined
+        ? `£${new Intl.NumberFormat('en-US', { minimumFractionDigits: decOverride, maximumFractionDigits: decOverride }).format(num)}`
+        : Math.abs(num) >= 1_000_000
+          ? `£${(num / 1_000_000).toFixed(2)}M`
+          : Math.abs(num) >= 10_000
+            ? `£${(num / 1_000).toFixed(1)}K`
+            : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'GBP', maximumFractionDigits: 0 }).format(num);
       break;
     case 'percent':
-      out = `${num.toFixed(1)}%`;
+      out = `${num.toFixed(decOverride ?? 1)}%`;
       break;
     case 'ms':
-      out = `${Math.round(num)} ms`;
+      out = `${decOverride !== undefined ? num.toFixed(decOverride) : Math.round(num)} ms`;
       break;
+    case 'bytes': {
+      const abs = Math.abs(num);
+      if (abs >= 1_073_741_824) out = `${(num / 1_073_741_824).toFixed(decOverride ?? 1)} GB`;
+      else if (abs >= 1_048_576) out = `${(num / 1_048_576).toFixed(decOverride ?? 1)} MB`;
+      else if (abs >= 1024) out = `${(num / 1024).toFixed(decOverride ?? 1)} KB`;
+      else out = `${Math.round(num)} B`;
+      break;
+    }
     case 'compact':
-      out = new Intl.NumberFormat('en-US', { notation: 'compact', maximumFractionDigits: 1 }).format(num);
+      out = new Intl.NumberFormat('en-US', {
+        notation: 'compact',
+        maximumFractionDigits: decOverride ?? 1,
+      }).format(num);
       break;
     case 'raw':
-      out = String(num);
+      out = decOverride !== undefined ? num.toFixed(decOverride) : String(num);
       break;
     default:
-      out = new Intl.NumberFormat('en-US', { maximumFractionDigits: Number.isInteger(num) ? 0 : 2 }).format(num);
+      out = new Intl.NumberFormat('en-US', {
+        ...(decOverride !== undefined ? { minimumFractionDigits: decOverride } : {}),
+        maximumFractionDigits: decOverride ?? (Number.isInteger(num) ? 0 : 2),
+      }).format(num);
       break;
   }
-  return unit ? `${out} ${unit}` : out;
+  const withAffixes = `${opts?.prefix ?? ''}${out}${opts?.suffix ?? ''}`;
+  return unit ? `${withAffixes} ${unit}` : withAffixes;
 }
 
 /** Annotated `.sql` file export containing all transparent widget queries & active parameters. */
@@ -589,6 +1255,45 @@ export function dashboardToSqlBundle(d: DashboardSpec): string {
   return `${header}\n${body}`;
 }
 
+function vegaMarkForKind(kind: WidgetKind): string {
+  switch (kind) {
+    case 'line':
+    case 'parallel_coordinates':
+    case 'spiral_plot':
+      return 'line';
+    case 'area':
+    case 'density':
+    case 'streamgraph':
+      return 'area';
+    case 'scatter':
+    case 'bubble':
+    case 'dot_map':
+    case 'bubble_map':
+    case 'proportional_area':
+    case 'circle_packing':
+      return 'circle';
+    case 'pie':
+    case 'donut':
+    case 'nightingale_rose':
+    case 'sunburst':
+    case 'gauge':
+      return 'arc';
+    case 'box_plot':
+    case 'violin':
+      return 'boxplot';
+    case 'heatmap':
+    case 'geo_heatmap':
+    case 'treemap':
+    case 'marimekko':
+    case 'square_area':
+      return 'rect';
+    case 'candlestick':
+      return 'rule';
+    default:
+      return 'bar';
+  }
+}
+
 /** Exports BI handoff specification compatible with Vega-Lite / Hex / Observable workflows. */
 export function dashboardToVegaLiteHandoff(
   d: DashboardSpec,
@@ -600,18 +1305,48 @@ export function dashboardToVegaLiteHandoff(
     const values = (res?.rows ?? []).map((r) => Object.fromEntries(cols.map((c, idx) => [c, r[idx]])));
     const xCol = w.xField ?? cols[0] ?? 'x';
     const yCol = w.yFields?.[0] ?? cols[1] ?? 'y';
-    const mark = w.kind === 'line' ? 'line' : w.kind === 'area' ? 'area' : w.kind === 'scatter' ? 'point' : w.kind === 'pie' || w.kind === 'donut' ? 'arc' : 'bar';
+    const cfg = w.chartConfig;
+    const mark = vegaMarkForKind(w.kind);
+    const isArc = mark === 'arc';
     return {
-      title: { text: w.title, subtitle: w.subtitle ?? `SQL: ${w.sql.replace(/\s+/g, ' ')}` },
+      title: {
+        text: w.title,
+        subtitle: w.subtitle ?? `SQL: ${w.sql.replace(/\s+/g, ' ')}`,
+      },
       data: { values },
-      mark: { type: mark, tooltip: true, ...(w.kind === 'donut' ? { innerRadius: 50 } : {}) },
-      encoding: w.kind === 'pie' || w.kind === 'donut'
-        ? { theta: { field: yCol, type: 'quantitative' }, color: { field: xCol, type: 'nominal' } }
+      mark: {
+        type: mark,
+        tooltip: cfg?.showTooltip !== false,
+        ...(w.kind === 'donut' || (cfg?.innerRadiusRatio && cfg.innerRadiusRatio > 0)
+          ? { innerRadius: Math.round((cfg?.innerRadiusRatio ?? 0.58) * 80) }
+          : {}),
+        ...(cfg?.curveType === 'monotone' ? { interpolate: 'monotone' } : cfg?.curveType === 'step' ? { interpolate: 'step-after' } : {}),
+        ...(typeof cfg?.barRadius === 'number' ? { cornerRadiusEnd: cfg.barRadius } : {}),
+        ...(typeof cfg?.fillOpacity === 'number' ? { fillOpacity: cfg.fillOpacity } : {}),
+      },
+      encoding: isArc
+        ? {
+            theta: { field: yCol, type: 'quantitative' },
+            color: { field: xCol, type: 'nominal', ...(cfg?.legendPosition === 'none' || cfg?.showLegend === false ? { legend: null } : {}) },
+          }
         : {
-            x: { field: xCol, type: 'nominal' },
-            y: { field: yCol, type: 'quantitative' },
+            x: {
+              field: xCol,
+              type: w.kind === 'scatter' || w.kind === 'bubble' || w.kind === 'histogram' ? 'quantitative' : 'nominal',
+              ...(cfg?.xAxisTitle ? { title: cfg.xAxisTitle } : {}),
+              ...(cfg?.showXAxis === false ? { axis: null } : {}),
+            },
+            y: {
+              field: yCol,
+              type: 'quantitative',
+              ...(cfg?.yAxisTitle ? { title: cfg.yAxisTitle } : {}),
+              ...(cfg?.showYAxis === false ? { axis: null } : {}),
+              ...(cfg?.yAxisScale && cfg.yAxisScale !== 'linear' ? { scale: { type: cfg.yAxisScale } } : {}),
+            },
             ...(w.seriesField ? { color: { field: w.seriesField, type: 'nominal' } } : {}),
+            ...(w.sizeField ? { size: { field: w.sizeField, type: 'quantitative' } } : {}),
           },
+      ...(w.chartConfig ? { usermeta: { studioChartKind: w.kind, chartConfig: w.chartConfig } } : {}),
     };
   });
   return JSON.stringify(
@@ -624,6 +1359,44 @@ export function dashboardToVegaLiteHandoff(
     null,
     2,
   );
+}
+
+function grafanaTypeForKind(kind: WidgetKind): string {
+  switch (kind) {
+    case 'kpi':
+      return 'stat';
+    case 'table':
+      return 'table';
+    case 'pie':
+    case 'donut':
+    case 'nightingale_rose':
+    case 'sunburst':
+      return 'piechart';
+    case 'line':
+    case 'area':
+    case 'streamgraph':
+    case 'density':
+    case 'spiral_plot':
+      return 'timeseries';
+    case 'gauge':
+    case 'bullet':
+      return 'gauge';
+    case 'heatmap':
+    case 'geo_heatmap':
+      return 'heatmap';
+    case 'candlestick':
+      return 'candlestick';
+    case 'histogram':
+      return 'histogram';
+    case 'choropleth_map':
+    case 'dot_map':
+    case 'bubble_map':
+    case 'flow_map':
+    case 'connection_map':
+      return 'geomap';
+    default:
+      return 'barchart';
+  }
 }
 
 /** Exports a Grafana Dashboard JSON model for direct import into Grafana / observability stacks. */
@@ -641,9 +1414,10 @@ export function dashboardToGrafanaJson(d: DashboardSpec): string {
       id: idx + 1,
       title: w.title,
       description: w.explanation ?? w.subtitle ?? '',
-      type: w.kind === 'kpi' ? 'stat' : w.kind === 'table' ? 'table' : w.kind === 'pie' || w.kind === 'donut' ? 'piechart' : w.kind === 'line' || w.kind === 'area' ? 'timeseries' : 'barchart',
+      type: grafanaTypeForKind(w.kind),
       gridPos: { x, y, w: gridW, h: gridH },
       targets: [{ refId: 'A', rawSql: w.sql, format: 'table', datasource: { type: w.source } }],
+      ...(w.chartConfig ? { options: { studioChartKind: w.kind, studioChartConfig: w.chartConfig } } : {}),
     };
     x += gridW;
     return panel;
@@ -679,19 +1453,26 @@ export function dashboardToStandaloneHtml(
     const rows = res?.rows ?? [];
     const cols = res?.columns ?? [];
     const refreshed = res?.executedAt ? new Date(res.executedAt).toLocaleString() : 'Not executed';
+    const fmtOpts = {
+      decimals: w.chartConfig?.decimals,
+      prefix: w.chartConfig?.prefix,
+      suffix: w.chartConfig?.suffix,
+    };
     let contentHtml = '';
     if (w.kind === 'kpi') {
       const valIdx = w.yFields?.[0] ? Math.max(0, cols.indexOf(w.yFields[0])) : Math.max(0, cols.length - 1);
       const val = rows[0]?.[valIdx];
-      contentHtml = `<div class="kpi-val">${esc(formatMetricValue(val, w.format, w.unit))}</div>`;
+      contentHtml = `<div class="kpi-val">${esc(formatMetricValue(val, w.format, w.unit, fmtOpts))}</div>`;
     } else {
       contentHtml = `<div class="tbl-wrap"><table><thead><tr>${cols.map((c) => `<th>${esc(c)}</th>`).join('')}</tr></thead><tbody>` +
         rows.slice(0, 25).map((r) => `<tr>${r.map((c) => `<td>${esc(c === null ? '—' : String(c))}</td>`).join('')}</tr>`).join('') +
         `</tbody></table></div>`;
     }
+    const footnoteHtml = w.chartConfig?.footnote ? `<p class="footnote">${esc(w.chartConfig.footnote)}</p>` : '';
     return `<article class="card span-${w.colSpan}">
-      <header><div><h3>${esc(w.title)}</h3>${w.subtitle ? `<p>${esc(w.subtitle)}</p>` : ''}</div><span class="meta">${esc(w.source)} · ${esc(refreshed)}</span></header>
+      <header><div><h3>${esc(w.title)} <small>[${esc(w.kind)}]</small></h3>${w.subtitle ? `<p>${esc(w.subtitle)}</p>` : ''}</div><span class="meta">${esc(w.source)} · ${esc(refreshed)}</span></header>
       ${contentHtml}
+      ${footnoteHtml}
       <details><summary>Inspect SQL Query (${rows.length} rows)</summary><pre>${esc(w.sql)}</pre>${w.explanation ? `<p class="exp">${esc(w.explanation)}</p>` : ''}</details>
     </article>`;
   }).join('\n');
@@ -712,7 +1493,8 @@ export function dashboardToStandaloneHtml(
   @media (min-width: 900px) { .span-3 { grid-column: span 3; } .span-4 { grid-column: span 4; } .span-6 { grid-column: span 6; } .span-8 { grid-column: span 8; } }
   header { display: flex; justify-content: space-between; gap: 12px; align-items: baseline; margin-bottom: 12px; }
   h3 { margin: 0; font-size: 15px; }
-  header p, .meta { margin: 2px 0 0; font-size: 12px; opacity: 0.68; }
+  h3 small { opacity: 0.55; font-weight: 400; font-size: 11px; }
+  header p, .meta, .footnote { margin: 2px 0 0; font-size: 12px; opacity: 0.68; }
   .kpi-val { font-size: 34px; font-weight: 700; margin: 12px 0; }
   .tbl-wrap { overflow-x: auto; max-height: 280px; }
   table { width: 100%; border-collapse: collapse; font-size: 13px; }

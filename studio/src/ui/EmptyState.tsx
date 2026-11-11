@@ -2,7 +2,7 @@ import type { CreateDashboardRequest } from '../engine/dashboard';
 import type { CreateMotionRequest } from '../engine/motion';
 import { BLUEPRINTS, type Blueprint } from './blueprints';
 import { Icon, useStudio } from './context';
-import { STARTER_SAAS_DASHBOARD } from './dashboard/DashboardView';
+import { STARTER_SAAS_DASHBOARD } from './dashboard/starterDashboard';
 import type { IconName } from './icons';
 
 const ECOMMERCE_DASHBOARD: CreateDashboardRequest = {
@@ -202,7 +202,7 @@ interface QuickStarter {
 }
 
 export function EmptyState() {
-  const { workspace, store, agent, liveKey, auth, toggleVoice } = useStudio();
+  const { workspace, store, agent, liveKey, auth, toggleVoice, openDataSources } = useStudio();
   const canAskGemini = liveKey === 'configured' && (!auth.required || (auth.configured && auth.account != null));
 
   const starters: QuickStarter[] = [
@@ -300,13 +300,16 @@ export function EmptyState() {
           <button type="button" className="tonal-btn" onClick={() => starters[0].runLocal()}>
             <Icon name="dashboard" size={18} /> Open Live Dashboard
           </button>
+          <button type="button" className="tonal-btn" onClick={() => openDataSources('bigquery')}>
+            <Icon name="cloud_sync" size={18} /> Connect BigQuery
+          </button>
           <button type="button" className="tonal-btn" onClick={() => starters[3].runLocal()}>
             <Icon name="movie" size={18} /> Open Motion Studio
           </button>
         </div>
         <div className="suggestions" role="group" aria-label="Dashboards, motion explainers, and architecture blueprints">
           {starters.map((s) => (
-            <button key={s.id} type="button" className="suggestion-chip" onClick={() => launchStarter(s)}>
+            <button key={s.id} type="button" className="suggestion-chip" data-kind="starter" onClick={() => launchStarter(s)}>
               <span className="suggestion-head">
                 <Icon name={s.icon} size={18} />
                 <span className="suggestion-title">{s.title}</span>
@@ -315,7 +318,7 @@ export function EmptyState() {
             </button>
           ))}
           {BLUEPRINTS.slice(0, 4).map((b) => (
-            <button key={b.id} type="button" className="suggestion-chip" onClick={() => launchBlueprint(b)}>
+            <button key={b.id} type="button" className="suggestion-chip" data-kind="blueprint" onClick={() => launchBlueprint(b)}>
               <span className="suggestion-head">
                 <Icon name={b.icon} size={18} />
                 <span className="suggestion-title">{b.title}</span>

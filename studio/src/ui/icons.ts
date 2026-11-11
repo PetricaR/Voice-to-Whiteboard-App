@@ -103,6 +103,11 @@ import i_query_stats from '@material-symbols/svg-400/rounded/query_stats.svg?raw
 import i_support_agent from '@material-symbols/svg-400/rounded/support_agent.svg?raw';
 import i_vpn_key from '@material-symbols/svg-400/rounded/vpn_key.svg?raw';
 import i_zoom_in from '@material-symbols/svg-400/rounded/zoom_in.svg?raw';
+import i_grid_on from '@material-symbols/svg-400/rounded/grid_on.svg?raw';
+import i_keyboard_arrow_down from '@material-symbols/svg-400/rounded/keyboard_arrow_down.svg?raw';
+import i_keyboard_arrow_up from '@material-symbols/svg-400/rounded/keyboard_arrow_up.svg?raw';
+import i_restart_alt from '@material-symbols/svg-400/rounded/restart_alt.svg?raw';
+import i_warning from '@material-symbols/svg-400/rounded/warning.svg?raw';
 import i_zoom_out from '@material-symbols/svg-400/rounded/zoom_out.svg?raw';
 import i_filter_center_focus from '@material-symbols/svg-400/rounded/filter_center_focus.svg?raw';
 import i_map from '@material-symbols/svg-400/rounded/map.svg?raw';
@@ -155,6 +160,18 @@ import i_video_file from '@material-symbols/svg-400/rounded/video_file.svg?raw';
 import i_aspect_ratio from '@material-symbols/svg-400/rounded/aspect_ratio.svg?raw';
 import i_skip_previous from '@material-symbols/svg-400/rounded/skip_previous.svg?raw';
 import i_skip_next from '@material-symbols/svg-400/rounded/skip_next.svg?raw';
+import i_tune from '@material-symbols/svg-400/rounded/tune.svg?raw';
+import i_scatter_plot from '@material-symbols/svg-400/rounded/scatter_plot.svg?raw';
+import i_candlestick_chart from '@material-symbols/svg-400/rounded/candlestick_chart.svg?raw';
+import i_stacked_bar_chart from '@material-symbols/svg-400/rounded/stacked_bar_chart.svg?raw';
+import i_stacked_line_chart from '@material-symbols/svg-400/rounded/stacked_line_chart.svg?raw';
+import i_donut_large from '@material-symbols/svg-400/rounded/donut_large.svg?raw';
+import i_bubble_chart from '@material-symbols/svg-400/rounded/bubble_chart.svg?raw';
+import i_ssid_chart from '@material-symbols/svg-400/rounded/ssid_chart.svg?raw';
+import i_waterfall_chart from '@material-symbols/svg-400/rounded/waterfall_chart.svg?raw';
+import i_radar from '@material-symbols/svg-400/rounded/radar.svg?raw';
+import i_speed from '@material-symbols/svg-400/rounded/speed.svg?raw';
+import i_timeline from '@material-symbols/svg-400/rounded/timeline.svg?raw';
 
 
 export const ICONS = {
@@ -261,6 +278,11 @@ export const ICONS = {
   support_agent: i_support_agent,
   vpn_key: i_vpn_key,
   zoom_in: i_zoom_in,
+  grid_on: i_grid_on,
+  keyboard_arrow_down: i_keyboard_arrow_down,
+  keyboard_arrow_up: i_keyboard_arrow_up,
+  restart_alt: i_restart_alt,
+  warning: i_warning,
   zoom_out: i_zoom_out,
   filter_center_focus: i_filter_center_focus,
   map: i_map,
@@ -313,6 +335,18 @@ export const ICONS = {
   aspect_ratio: i_aspect_ratio,
   skip_previous: i_skip_previous,
   skip_next: i_skip_next,
+  tune: i_tune,
+  scatter_plot: i_scatter_plot,
+  candlestick_chart: i_candlestick_chart,
+  stacked_bar_chart: i_stacked_bar_chart,
+  stacked_line_chart: i_stacked_line_chart,
+  donut_large: i_donut_large,
+  bubble_chart: i_bubble_chart,
+  ssid_chart: i_ssid_chart,
+  waterfall_chart: i_waterfall_chart,
+  radar: i_radar,
+  speed: i_speed,
+  timeline: i_timeline,
 } as const;
 
 export type IconName = keyof typeof ICONS;

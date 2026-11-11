@@ -28,8 +28,8 @@ Application workspace for **Voice Whiteboard Studio**, combining four synchroniz
 - `src/agent/`
   - `tools.ts`, `dispatcher.ts`, `prompt.ts`, `session.ts`: `NON_BLOCKING` Gemini Live tool declarations and stateful tool dispatcher returning the live workspace summary on every turn.
 - `src/ui/`
-  - `dashboard/`: `DashboardView.tsx`, `ChartRenderer.tsx` (12 chart/table types), `QueryInspectorDrawer.tsx` (top-layer `<dialog popover="manual">` SQL lineage inspector), `DataSourceModal.tsx`.
+  - `dashboard/`: `DashboardView.tsx`, `ChartRenderer.tsx` (48 chart and table types), `ChartGalleryModal.tsx` (Add chart), `ChartControlsPanel.tsx` (type, axes, style, overlays), `QueryInspectorDrawer.tsx` (top-layer `<dialog popover="manual">` SQL lineage inspector), `DataSourceModal.tsx`.
   - `motion/`: `MotionView.tsx` (60fps stage, click hit-box layer selection, timeline scrubber, inline property editor, captions & Web Speech narration), `ExportMp4Dialog.tsx`.
   - `canvas/`, `DocView.tsx`, `VoiceDock.tsx` (with `/` slash commands), `PageTabs.tsx`, `TopBar.tsx`, `SidePanel.tsx`.
 - `server/`
-  - `index.ts`, `liveToken.ts`, `apiKey.ts`, `auth.ts`, `dataConnectors.ts`, `sqlGuard.ts`: Zero-key-leakage ephemeral token server, read-only SQL connector proxy, and `/s/:id` share endpoint.
+  - `index.ts`, `liveToken.ts`, `apiKey.ts`, `auth.ts`, `dataConnectors.ts`, `sqlGuard.ts`: Zero-key-leakage ephemeral token server and read-only SQL connector proxy.

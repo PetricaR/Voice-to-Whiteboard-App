@@ -18,6 +18,7 @@ export interface Studio {
   refreshLiveKey: () => void;
   notify: (message: string, action?: { label: string; run: () => void }) => void;
   openSettings: () => void;
+  openDataSources: (tab?: 'bigquery' | 'files') => void;
   /** Starts or stops the voice session. */
   toggleVoice: () => void;
   /** Whether the studio server requires sign-in, and who is signed in. */

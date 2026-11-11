@@ -1,40 +1,28 @@
 /**
  * The studio API & token server: the only place that holds the Gemini API key
- * and Stripe secret key.
+ * and the credentials of the data connectors.
  *
  *   GET  /api/live/status        → { configured, auth }          (never the key itself)
  *   POST /api/live/token         { model, voice?, thinkingLevel? } → { token, expireTime, account? }
  *   POST /api/auth/google        { credential } → { account }    (see server/auth.ts)
  *   POST /api/auth/logout
  *   POST /api/auth/delete-account → { ok: true, deleted: true }
- *   GET  /api/billing/status     → { configured, pricing, billing, economics }
- *   POST /api/billing/checkout   { billingPeriod? } → { sessionId, url }
- *   POST /api/billing/portal     → { url }
- *   POST /api/billing/webhook    (Stripe-Signature verified)
- *   GET  /api/workspace          → { workspace }
- *   PUT  /api/workspace          { activeId, pages, library? } → { ok: true, updatedAt }
- *   POST /api/shares             { title?, spec } → { id, url, createdAt }
- *   GET  /api/shares/:id         → { share }
- *   POST /api/telemetry/event    { kind, ... } → { ok: true }
- *   GET  /api/telemetry/summary  → TelemetrySummary (including undoRate)
+ *   GET  /api/data/sources       → { sources }                   (server/dataConnectors.ts)
+ *   GET  /api/data/schema        ?source&table&search → { source, tables, totalTables }
+ *   POST /api/data/query         { source, sql, params?, maxRows? } → ServerQueryResponse
+ *   …    /api/data/bq/*          BigQuery catalog (server/bigqueryCatalog.ts)
+ *
+ * On a deployment (sign-in required) only the studio's owners may register
+ * BigQuery projects, sync them or list the projects of the server's service
+ * account; everyone else queries the sources the owners set up.
  */
-import { randomBytes } from 'node:crypto';
 import type { IncomingMessage, ServerResponse } from 'node:http';
 import type * as LiveConfig from '../src/agent/liveConfig.ts';
 import { AuthError, type Auth } from './auth.ts';
+import { BqCatalogError, BqCatalogStore } from './bigqueryCatalog.ts';
 import { executeServerConnectorQuery, listConfiguredConnectors, type DataConnectorEnv } from './dataConnectors.ts';
-import { buildEconomicsReport } from './economics.ts';
 import type { SqlParamValue } from './sqlGuard.ts';
-import { StripeError, type BillingPeriod, type StripeService } from './stripe.ts';
-import {
-  MemoryUsageStore,
-  TELEMETRY_KINDS,
-  Usage,
-  type CloudWorkspace,
-  type SharedDiagramRecord,
-  type TelemetryEvent,
-  type TelemetryKind,
-} from './usage.ts';
+import type { Usage } from './usage.ts';
 
 /** What the server needs from src/agent/liveConfig.ts. */
 export type AgentConfig = Pick<typeof LiveConfig, 'LIVE_MODELS' | 'VOICES' | 'THINKING_LEVELS' | 'agentSetup'>;
@@ -47,12 +35,6 @@ const LOCKED_FIELDS = ['model', 'generationConfig', 'systemInstruction', 'tools'
 const MAX_BODY_BYTES = 2048;
 /** A Google ID token is 1–2 KB. */
 const MAX_SIGN_IN_BYTES = 8192;
-/** Stripe webhook events are typically 4–32 KB. */
-const MAX_WEBHOOK_BYTES = 65_536;
-/** Cloud workspaces and shared diagrams can hold multiple pages up to 512 KB. */
-const MAX_WORKSPACE_BYTES = 524_288;
-const MAX_SHARE_BYTES = 262_144;
-const MAX_TELEMETRY_BYTES = 4096;
 const MAX_DATA_QUERY_BYTES = 32_768;
 const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '[::1]'];
 
@@ -144,8 +126,9 @@ export interface LiveTokenOptions {
   requireSignIn?: boolean;
   auth?: Auth;
   usage?: Usage;
-  stripe?: StripeService;
   connectorEnv?: DataConnectorEnv;
+  bqCatalog?: BqCatalogStore;
+  bqPersistPath?: string;
   fetch?: typeof fetch;
   log?: (message: string) => void;
   now?: () => number;
@@ -160,8 +143,12 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
   const limiter = new RateLimiter(o.rateLimit ?? 10, 60_000, now);
   const generalLimiter = new RateLimiter(60, 60_000, now);
   const log = o.log ?? ((m: string) => console.warn(m));
-  const fallbackUsage = new Usage(new MemoryUsageStore(), undefined, [], now);
-  const activeUsage = () => o.usage ?? fallbackUsage;
+  const bqCatalog = o.bqCatalog ?? new BqCatalogStore({
+    persistPath: o.bqPersistPath,
+    env: (o.connectorEnv ?? process.env) as DataConnectorEnv & Record<string, string | undefined>,
+    fetch: o.fetch,
+    now,
+  });
 
   const NOT_CONFIGURED = { error: 'auth-not-configured', message: 'Sign-in is not set up on this studio server yet, so voice is off.' };
 
@@ -172,21 +159,6 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
     if (wait <= 0) return true;
     send(res, 429, { error: 'rate-limit', message }, { 'Retry-After': String(Math.ceil(wait / 1000)) });
     return false;
-  }
-
-  function requestOriginUrl(req: IncomingMessage): string {
-    const originHeader = req.headers.origin;
-    if (originHeader) {
-      try {
-        return new URL(originHeader).origin;
-      } catch {
-        // fall through
-      }
-    }
-    const proto = (req.headers['x-forwarded-proto'] as string | undefined)?.split(',')[0]?.trim()
-      || (o.trustProxy ? 'https' : 'http');
-    const host = req.headers.host || 'localhost:5173';
-    return `${proto}://${host}`;
   }
 
   async function authStatus(req: IncomingMessage) {
@@ -226,252 +198,216 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
     const user = await o.auth.userOf(req);
     if (!user) return send(res, 401, { error: 'signed-out', message: 'Sign in first to delete your account.' });
     await o.usage.deleteUser(user.id);
-    log(`[auth] Deleted account and cloud workspace for user ${user.id}`);
+    log(`[auth] Deleted the account of user ${user.id}`);
     return send(res, 200, { ok: true, deleted: true }, { 'Set-Cookie': o.auth.clearCookie() });
   }
 
-  async function handleBilling(req: IncomingMessage, res: ServerResponse, path: string) {
-    if (path === '/api/billing/status') {
-      if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method', message: 'Use GET.' }, { Allow: 'GET, HEAD' });
-      const user = o.auth ? await o.auth.userOf(req) : null;
-      const billing = user && o.usage ? await o.usage.billingOf(user.id) : null;
-      return send(res, 200, {
-        configured: Boolean(o.stripe?.configured),
-        pricing: o.stripe?.pricing ?? { currency: 'eur', monthlyCents: 1900, annualCents: 18000 },
-        billing,
-        economics: buildEconomicsReport({
-          freeDailyLimit: o.usage?.limits.free ?? 20,
-          proDailyLimit: o.usage?.limits.pro ?? 300,
-        }),
-      });
-    }
-
-    if (path === '/api/billing/checkout') {
-      if (req.method !== 'POST') return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
-      if (!o.stripe?.configured) {
-        return send(res, 503, { error: 'billing-not-configured', message: 'Stripe billing is not configured on this server yet.' });
-      }
-      if (!o.auth || !o.usage) return send(res, 503, NOT_CONFIGURED);
-      const user = await o.auth.userOf(req);
-      if (!user) return send(res, 401, { error: 'signed-out', message: 'Sign in with Google before upgrading to Pro.' });
-      const body = await readJson(req, res, MAX_BODY_BYTES);
-      if (body === undefined) return;
-      if (!admit(req, res, 'billing', 'Too many billing requests; wait a moment.')) return;
-      const rawPeriod = (body as { billingPeriod?: unknown } | null)?.billingPeriod;
-      const billingPeriod: BillingPeriod = rawPeriod === 'annual' ? 'annual' : 'monthly';
-      const existing = await o.usage.billingOf(user.id);
-      try {
-        const session = await o.stripe.createCheckoutSession({
-          user,
-          billingPeriod,
-          origin: requestOriginUrl(req),
-          existingCustomerId: existing?.stripeCustomerId,
-        });
-        return send(res, 200, session);
-      } catch (e) {
-        if (e instanceof StripeError) return send(res, e.status, { error: e.code, message: e.message });
-        throw e;
-      }
-    }
-
-    if (path === '/api/billing/portal') {
-      if (req.method !== 'POST') return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
-      if (!o.stripe?.configured) {
-        return send(res, 503, { error: 'billing-not-configured', message: 'Stripe billing is not configured on this server yet.' });
-      }
-      if (!o.auth || !o.usage) return send(res, 503, NOT_CONFIGURED);
-      const user = await o.auth.userOf(req);
-      if (!user) return send(res, 401, { error: 'signed-out', message: 'Sign in with Google to manage your subscription.' });
-      if (!admit(req, res, 'billing', 'Too many billing requests; wait a moment.')) return;
-      const existing = await o.usage.billingOf(user.id);
-      if (!existing?.stripeCustomerId) {
-        return send(res, 400, { error: 'no-subscription', message: 'No Stripe subscription customer record was found for this account.' });
-      }
-      try {
-        const portal = await o.stripe.createPortalSession({
-          customerId: existing.stripeCustomerId,
-          origin: requestOriginUrl(req),
-        });
-        return send(res, 200, portal);
-      } catch (e) {
-        if (e instanceof StripeError) return send(res, e.status, { error: e.code, message: e.message });
-        throw e;
-      }
-    }
-
-    return send(res, 404, { error: 'not-found', message: 'Not found.' });
+  function gcpUserToken(req: IncomingMessage): string | null {
+    const raw = req.headers['x-gcp-access-token'];
+    const token = Array.isArray(raw) ? raw[0] : raw;
+    return token?.trim() || null;
   }
 
-  async function handleWebhook(req: IncomingMessage, res: ServerResponse) {
-    if (req.method !== 'POST') return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
-    if (!o.stripe?.configured) {
-      return send(res, 503, { error: 'billing-not-configured', message: 'Stripe billing is not configured.' });
+  async function handleBigQueryCatalog(req: IncomingMessage, res: ServerResponse, path: string, canManage: boolean) {
+    const queryStr = (req.url ?? '').split('?')[1] ?? '';
+    const params = new URLSearchParams(queryStr);
+    const userAccessToken = gcpUserToken(req);
+
+    // Registering projects, syncing them and listing what the server's credentials can reach
+    // administer the studio; the catalog is shared by every user
+    const readOnly = req.method === 'GET' || req.method === 'HEAD';
+    const manages = path === '/api/data/bq/projects' || path.startsWith('/api/data/bq/sync') ||
+      (path.startsWith('/api/data/bq/sources') && !readOnly);
+    if (manages && !canManage) {
+      return send(res, 403, { error: 'owner-only', message: 'Only an owner of this studio can change its BigQuery sources.' });
     }
-    if (!o.usage) return send(res, 503, NOT_CONFIGURED);
-    const raw = await readBody(req, MAX_WEBHOOK_BYTES);
-    if (raw == null) return send(res, 413, { error: 'too-large', message: 'Webhook payload too large.' });
-    const sigHeader = req.headers['stripe-signature'];
-    const signature = Array.isArray(sigHeader) ? sigHeader[0] : sigHeader;
+    const notASource = (projectId: string) => (bqCatalog.isQueryableProject(projectId)
+      ? null
+      : { error: 'bad-request', message: `BigQuery project "${projectId}" is not an active data source of this studio.` });
+
     try {
-      const result = await o.stripe.handleWebhook(raw, signature, o.usage);
-      log(`[billing] Stripe webhook ${result.type} processed (user=${result.userId ?? 'none'}, plan=${result.plan ?? 'unchanged'})`);
-      return send(res, 200, result);
+      if (path === '/api/data/bq/projects') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method', message: 'Use GET.' }, { Allow: 'GET, HEAD' });
+        const projects = await bqCatalog.listAccessibleProjects({ userAccessToken, fetch: o.fetch });
+        return send(res, 200, projects);
+      }
+
+      if (path === '/api/data/bq/sources') {
+        if (req.method === 'GET' || req.method === 'HEAD') {
+          return send(res, 200, bqCatalog.listSources());
+        }
+        if (req.method === 'POST') {
+          if (!admit(req, res, 'bq-sources', 'Too many source changes; wait a moment.', true)) return;
+          const body = await readJson(req, res, MAX_BODY_BYTES);
+          if (body === undefined) return;
+          if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            return send(res, 400, { error: 'bad-request', message: 'Expected a JSON object.' });
+          }
+          const raw = body as Record<string, unknown>;
+          if (typeof raw.project_id !== 'string' || !raw.project_id.trim()) {
+            return send(res, 400, { error: 'bad-request', message: 'project_id is required.' });
+          }
+          const created = bqCatalog.addSource({
+            project_id: raw.project_id,
+            display_name: typeof raw.display_name === 'string' ? raw.display_name : null,
+            dataset_filter: typeof raw.dataset_filter === 'string' ? raw.dataset_filter : null,
+            secret_name: typeof raw.secret_name === 'string' ? raw.secret_name : null,
+          });
+          return send(res, 201, created);
+        }
+        return send(res, 405, { error: 'method', message: 'Use GET or POST.' }, { Allow: 'GET, HEAD, POST' });
+      }
+
+      if (path.startsWith('/api/data/bq/sources/')) {
+        const sourceId = decodeURIComponent(path.slice('/api/data/bq/sources/'.length)).trim();
+        if (!sourceId) return send(res, 400, { error: 'bad-request', message: 'Missing source ID.' });
+        if (req.method === 'PATCH') {
+          if (!admit(req, res, 'bq-sources', 'Too many source changes; wait a moment.', true)) return;
+          const body = await readJson(req, res, MAX_BODY_BYTES);
+          if (body === undefined) return;
+          if (!body || typeof body !== 'object' || Array.isArray(body)) {
+            return send(res, 400, { error: 'bad-request', message: 'Expected a JSON object.' });
+          }
+          const raw = body as Record<string, unknown>;
+          const updated = bqCatalog.updateSource(sourceId, {
+            ...(raw.display_name !== undefined ? { display_name: typeof raw.display_name === 'string' ? raw.display_name : null } : {}),
+            ...(raw.dataset_filter !== undefined ? { dataset_filter: typeof raw.dataset_filter === 'string' ? raw.dataset_filter : null } : {}),
+            ...(raw.secret_name !== undefined ? { secret_name: typeof raw.secret_name === 'string' ? raw.secret_name : null } : {}),
+            ...(typeof raw.is_active === 'boolean' ? { is_active: raw.is_active } : {}),
+          });
+          return send(res, 200, updated);
+        }
+        if (req.method === 'DELETE') {
+          const purge = params.get('purge') === '1' || params.get('purge') === 'true';
+          bqCatalog.deleteSource(sourceId, purge);
+          return send(res, 200, { ok: true });
+        }
+        return send(res, 405, { error: 'method', message: 'Use PATCH or DELETE.' }, { Allow: 'PATCH, DELETE' });
+      }
+
+      if (path === '/api/data/bq/sync') {
+        if (req.method !== 'POST') return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
+        if (!admit(req, res, 'bq-sync', 'Too many BigQuery sync requests; wait a moment.', true)) return;
+        const body = await readJson(req, res, MAX_BODY_BYTES);
+        if (body === undefined) return;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return send(res, 400, { error: 'bad-request', message: 'Expected a JSON sync payload.' });
+        }
+        const raw = body as Record<string, unknown>;
+        if (typeof raw.project_id !== 'string' || !raw.project_id.trim()) {
+          return send(res, 400, { error: 'bad-request', message: 'project_id is required.' });
+        }
+        const result = await bqCatalog.syncProject({
+          project_id: raw.project_id,
+          secret_name: typeof raw.secret_name === 'string' ? raw.secret_name : null,
+          secret_version: typeof raw.secret_version === 'string' ? raw.secret_version : 'latest',
+          dataset_filter: typeof raw.dataset_filter === 'string' ? raw.dataset_filter : null,
+          userAccessToken,
+          fetch: o.fetch,
+        });
+        return send(res, 200, result);
+      }
+
+      if (path === '/api/data/bq/sync/all') {
+        if (req.method !== 'POST') return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
+        if (!admit(req, res, 'bq-sync', 'Too many BigQuery sync requests; wait a moment.', true)) return;
+        const results = await bqCatalog.syncAll({ userAccessToken, fetch: o.fetch });
+        return send(res, 200, results);
+      }
+
+      if (path.startsWith('/api/data/bq/sync/source/')) {
+        if (req.method !== 'POST') return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
+        if (!admit(req, res, 'bq-sync', 'Too many BigQuery sync requests; wait a moment.', true)) return;
+        const sourceId = decodeURIComponent(path.slice('/api/data/bq/sync/source/'.length)).trim();
+        if (!sourceId) return send(res, 400, { error: 'bad-request', message: 'Missing source ID.' });
+        const result = await bqCatalog.syncSource(sourceId, { userAccessToken, fetch: o.fetch });
+        return send(res, 200, result);
+      }
+
+      if (path === '/api/data/bq/datasets') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method', message: 'Use GET.' }, { Allow: 'GET, HEAD' });
+        const projectId = params.get('project_id')?.trim() || undefined;
+        const search = params.get('search')?.trim() || undefined;
+        return send(res, 200, { datasets: bqCatalog.listDatasets({ project_id: projectId, search }) });
+      }
+
+      if (path === '/api/data/bq/preview') {
+        if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method', message: 'Use GET.' }, { Allow: 'GET, HEAD' });
+        const projectId = params.get('project_id')?.trim() ?? '';
+        const datasetId = params.get('dataset_id')?.trim() ?? '';
+        const tableId = params.get('table_id')?.trim() ?? '';
+        const limit = params.get('limit') ? Number(params.get('limit')) : undefined;
+        if (!projectId || !datasetId || !tableId) {
+          return send(res, 400, { error: 'bad-request', message: 'project_id, dataset_id, and table_id query parameters are required.' });
+        }
+        const refused = notASource(projectId);
+        if (refused) return send(res, 400, refused);
+        const estimate = await bqCatalog.estimateTablePreview({
+          project_id: projectId,
+          dataset_id: datasetId,
+          table_id: tableId,
+          limit: Number.isFinite(limit) ? limit : undefined,
+          userAccessToken,
+          fetch: o.fetch,
+        });
+        return send(res, 200, estimate);
+      }
+
+      if (path === '/api/data/bq/preview/run') {
+        if (req.method !== 'POST') return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
+        if (!admit(req, res, 'data-query', 'Too many data preview queries; wait a moment.', true)) return;
+        const body = await readJson(req, res, MAX_BODY_BYTES);
+        if (body === undefined) return;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return send(res, 400, { error: 'bad-request', message: 'Expected a JSON preview payload.' });
+        }
+        const raw = body as Record<string, unknown>;
+        const projectId = typeof raw.project_id === 'string' ? raw.project_id.trim() : '';
+        const datasetId = typeof raw.dataset_id === 'string' ? raw.dataset_id.trim() : '';
+        const tableId = typeof raw.table_id === 'string' ? raw.table_id.trim() : '';
+        if (!projectId || !datasetId || !tableId) {
+          return send(res, 400, { error: 'bad-request', message: 'project_id, dataset_id, and table_id are required.' });
+        }
+        const refused = notASource(projectId);
+        if (refused) return send(res, 400, refused);
+        const preview = await bqCatalog.runTablePreview({
+          project_id: projectId,
+          dataset_id: datasetId,
+          table_id: tableId,
+          limit: typeof raw.limit === 'number' ? raw.limit : undefined,
+          sample: typeof raw.sample === 'boolean' ? raw.sample : undefined,
+          userAccessToken,
+          fetch: o.fetch,
+        });
+        return send(res, 200, preview);
+      }
+
+      return send(res, 404, { error: 'not-found', message: 'Not found.' });
     } catch (e) {
-      if (e instanceof StripeError) {
-        log(`[billing] Stripe webhook rejected (${e.code}): ${e.message}`);
-        return send(res, e.status, { error: e.code, message: e.message });
+      if (e instanceof BqCatalogError) {
+        return send(res, e.status, { error: 'bq-error', message: e.message });
       }
-      throw e;
+      return send(res, 502, { error: 'bq-error', message: e instanceof Error ? e.message : String(e) });
     }
-  }
-
-  async function handleWorkspace(req: IncomingMessage, res: ServerResponse) {
-    if (!o.auth || !o.usage) return send(res, 503, NOT_CONFIGURED);
-    const user = await o.auth.userOf(req);
-    if (!user) return send(res, 401, { error: 'signed-out', message: 'Sign in with Google to sync your workspace to the cloud.' });
-
-    if (req.method === 'GET' || req.method === 'HEAD') {
-      const workspace = await o.usage.loadWorkspace(user.id);
-      return send(res, 200, { workspace });
-    }
-
-    if (req.method === 'PUT' || req.method === 'POST') {
-      if (!admit(req, res, 'workspace', 'Too many workspace saves; wait a moment.', true)) return;
-      const body = await readJson(req, res, MAX_WORKSPACE_BYTES);
-      if (body === undefined) return;
-      if (!body || typeof body !== 'object' || Array.isArray(body)) {
-        return send(res, 400, { error: 'bad-request', message: 'Expected a workspace JSON object.' });
-      }
-      const raw = body as Record<string, unknown>;
-      if (!Array.isArray(raw.pages) || raw.pages.length === 0 || raw.pages.length > 100) {
-        return send(res, 400, { error: 'bad-request', message: 'Workspace must include between 1 and 100 pages.' });
-      }
-      const updatedAt = new Date(now()).toISOString();
-      const workspace: CloudWorkspace = {
-        version: typeof raw.version === 'number' ? raw.version : 1,
-        activeId: typeof raw.activeId === 'string' ? raw.activeId : '',
-        pages: raw.pages,
-        library: Array.isArray(raw.library) ? raw.library.slice(0, 200) : [],
-        updatedAt,
-      };
-      await o.usage.saveWorkspace(user.id, workspace);
-      return send(res, 200, { ok: true, updatedAt });
-    }
-
-    return send(res, 405, { error: 'method', message: 'Use GET or PUT.' }, { Allow: 'GET, HEAD, PUT, POST' });
-  }
-
-  async function handleShares(req: IncomingMessage, res: ServerResponse, path: string) {
-    const store = activeUsage();
-    if (path === '/api/shares') {
-      if (req.method !== 'POST') return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
-      if (!admit(req, res, 'shares', 'Too many share links created; wait a moment.')) return;
-      const body = await readJson(req, res, MAX_SHARE_BYTES);
-      if (body === undefined) return;
-      if (!body || typeof body !== 'object' || Array.isArray(body)) {
-        return send(res, 400, { error: 'bad-request', message: 'Expected a share object.' });
-      }
-      const { title, spec } = body as { title?: unknown; spec?: unknown };
-      if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
-        return send(res, 400, { error: 'bad-request', message: 'Share payload must include a diagram spec object.' });
-      }
-      const specObj = spec as Record<string, unknown>;
-      const hasDiagramArrays = Array.isArray(specObj.nodes) && Array.isArray(specObj.edges);
-      const hasDashboardOrMotion = specObj.dashboard != null || specObj.motion != null;
-      if (!hasDiagramArrays && !hasDashboardOrMotion) {
-        return send(res, 400, { error: 'bad-request', message: 'Share payload must include a dashboard, motion composition, or diagram spec.' });
-      }
-      const user = o.auth ? await o.auth.userOf(req) : null;
-      const id = randomBytes(8).toString('base64url');
-      const createdAt = new Date(now()).toISOString();
-      const record: SharedDiagramRecord = {
-        id,
-        title: typeof title === 'string' && title.trim() ? title.trim().slice(0, 120) : String(specObj.title ?? 'Shared Studio Page').slice(0, 120),
-        spec,
-        authorName: user?.name ?? undefined,
-        userId: user?.id ?? undefined,
-        createdAt,
-      };
-      await store.saveShare(record);
-      await store.recordTelemetry({ kind: 'share', userId: user?.id, diagramType: typeof specObj.type === 'string' ? specObj.type : undefined });
-      return send(res, 201, { id, url: `/s/${id}`, createdAt });
-    }
-
-    if (path.startsWith('/api/shares/')) {
-      if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method', message: 'Use GET.' }, { Allow: 'GET, HEAD' });
-      const id = decodeURIComponent(path.slice('/api/shares/'.length)).trim();
-      if (!id || !/^[A-Za-z0-9_-]{4,32}$/.test(id)) {
-        return send(res, 400, { error: 'bad-request', message: 'Invalid share ID.' });
-      }
-      const share = await store.loadShare(id);
-      if (!share) return send(res, 404, { error: 'not-found', message: 'Shared diagram not found or expired.' });
-      return send(res, 200, { share });
-    }
-
-    return send(res, 404, { error: 'not-found', message: 'Not found.' });
-  }
-
-  async function handleTelemetry(req: IncomingMessage, res: ServerResponse, path: string) {
-    const store = activeUsage();
-    if (path === '/api/telemetry/summary') {
-      if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method', message: 'Use GET.' }, { Allow: 'GET, HEAD' });
-      const summary = await store.telemetrySummary();
-      return send(res, 200, summary);
-    }
-
-    if (path === '/api/telemetry/event') {
-      if (req.method !== 'POST') return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
-      if (!admit(req, res, 'telemetry', 'Too many telemetry events.', true)) return;
-      const body = await readJson(req, res, MAX_TELEMETRY_BYTES);
-      if (body === undefined) return;
-      if (!body || typeof body !== 'object' || Array.isArray(body)) {
-        return send(res, 400, { error: 'bad-request', message: 'Expected a JSON telemetry event.' });
-      }
-      const raw = body as Record<string, unknown>;
-      const kind = raw.kind as TelemetryKind;
-      if (typeof kind !== 'string' || !TELEMETRY_KINDS.includes(kind)) {
-        return send(res, 400, { error: 'bad-request', message: 'Unknown telemetry event kind.' });
-      }
-      const user = o.auth ? await o.auth.userOf(req) : null;
-      const event: TelemetryEvent = {
-        kind,
-        timestamp: new Date(now()).toISOString(),
-        userId: user?.id,
-        sessionId: typeof raw.sessionId === 'string' ? raw.sessionId.slice(0, 64) : undefined,
-        toolName: typeof raw.toolName === 'string' ? raw.toolName.slice(0, 64) : undefined,
-        diagramType: typeof raw.diagramType === 'string' ? raw.diagramType.slice(0, 32) : undefined,
-        errorCode: typeof raw.errorCode === 'string' ? raw.errorCode.slice(0, 64) : undefined,
-        message: typeof raw.message === 'string' ? raw.message.slice(0, 500) : undefined,
-        durationMs: typeof raw.durationMs === 'number' && Number.isFinite(raw.durationMs) ? raw.durationMs : undefined,
-      };
-      if (kind === 'client_error' || kind === 'voice_error') {
-        log(JSON.stringify({
-          severity: 'ERROR',
-          component: 'studio-telemetry',
-          kind: event.kind,
-          errorCode: event.errorCode,
-          message: event.message,
-          userId: event.userId,
-          timestamp: event.timestamp,
-        }));
-      }
-      await store.recordTelemetry(event);
-      return send(res, 200, { ok: true });
-    }
-
-    return send(res, 404, { error: 'not-found', message: 'Not found.' });
   }
 
   async function handleData(req: IncomingMessage, res: ServerResponse, path: string) {
+    // Without sign-in the server is on loopback and its one user owns it
+    let canManage = true;
     if (o.requireSignIn) {
       if (!o.auth || !o.usage) return send(res, 503, NOT_CONFIGURED);
       const user = await o.auth.userOf(req);
       if (!user) return send(res, 401, { error: 'signed-out', message: 'Sign in with Google to query server data connectors.' });
+      canManage = o.usage.isOwner(user);
+    }
+
+    if (path.startsWith('/api/data/bq/')) {
+      return handleBigQueryCatalog(req, res, path, canManage);
     }
 
     if (path === '/api/data/sources') {
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method', message: 'Use GET.' }, { Allow: 'GET, HEAD' });
-      return send(res, 200, { sources: listConfiguredConnectors(o.connectorEnv ?? process.env) });
+      return send(res, 200, { sources: listConfiguredConnectors(o.connectorEnv ?? process.env, bqCatalog) });
     }
 
     if (path === '/api/data/schema') {
@@ -479,7 +415,19 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
       const queryStr = (req.url ?? '').split('?')[1] ?? '';
       const params = new URLSearchParams(queryStr);
       const source = params.get('source')?.trim() ?? '';
+      const table = params.get('table')?.trim() || undefined;
       if (!source) return send(res, 400, { error: 'bad-request', message: 'Missing source query parameter.' });
+      if (source === 'bigquery' || source.startsWith('bigquery:')) {
+        const resolved = bqCatalog.resolveSourceConnector(source, o.connectorEnv ?? process.env);
+        if (!resolved?.source?.is_active) {
+          return send(res, 400, { error: 'bad-request', message: `"${source}" is not an active BigQuery source of this studio.` });
+        }
+        // A registered source that was never synced (a new instance) is synced on first use
+        if (resolved.source.last_synced_at == null && bqCatalog.countTablesForProject(resolved.projectId) === 0) {
+          await bqCatalog.syncSourceOnce(resolved.source, { userAccessToken: gcpUserToken(req), fetch: o.fetch });
+        }
+        return send(res, 200, { source, tables: bqCatalog.getSchemaTables(source, table) });
+      }
       return send(res, 200, { source, tables: [] });
     }
 
@@ -504,7 +452,12 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
             : undefined,
           maxRows: typeof raw.maxRows === 'number' ? raw.maxRows : undefined,
         },
-        { env: o.connectorEnv ?? process.env, fetch: o.fetch },
+        {
+          env: o.connectorEnv ?? process.env,
+          fetch: o.fetch,
+          bqCatalog,
+          userAccessToken: gcpUserToken(req),
+        },
       );
       return send(res, result.ok ? 200 : 400, result);
     }
@@ -513,11 +466,6 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
   }
 
   async function handle(req: IncomingMessage, res: ServerResponse, path: string) {
-    // Stripe webhooks arrive from stripe.com servers and are authenticated via HMAC-SHA256 Stripe-Signature
-    if (path === '/api/billing/webhook') {
-      return handleWebhook(req, res);
-    }
-
     const denied = checkRequestOrigin(req, hosts);
     if (denied) return send(res, 403, { error: 'forbidden', message: denied });
 
@@ -531,10 +479,6 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
       return send(res, 200, { ok: true }, o.auth ? { 'Set-Cookie': o.auth.clearCookie() } : {});
     }
     if (path === '/api/auth/delete-account') return deleteAccount(req, res);
-    if (path.startsWith('/api/billing/')) return handleBilling(req, res, path);
-    if (path === '/api/workspace') return handleWorkspace(req, res);
-    if (path === '/api/shares' || path.startsWith('/api/shares/')) return handleShares(req, res, path);
-    if (path.startsWith('/api/telemetry/')) return handleTelemetry(req, res, path);
     if (path.startsWith('/api/data/')) return handleData(req, res, path);
 
     if (path !== '/api/live/token') return send(res, 404, { error: 'not-found', message: 'Not found.' });
@@ -573,7 +517,6 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
     const { model, voice, thinkingLevel } = request as { model: string; voice?: string; thinkingLevel?: string };
     try {
       const token = await createLiveToken(apiKey, config.agentSetup({ model, voice, thinkingLevel }), { fetch: o.fetch, now: now() });
-      await activeUsage().recordTelemetry({ kind: 'session_start' }).catch(() => undefined);
       return send(res, 200, reservation?.ok ? { ...token, account: reservation.account } : token);
     } catch (e) {
       if (reservation?.ok) await reservation.release().catch(() => undefined);
@@ -589,11 +532,6 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
     if (
       !path.startsWith('/api/live/') &&
       !path.startsWith('/api/auth/') &&
-      !path.startsWith('/api/billing/') &&
-      path !== '/api/workspace' &&
-      path !== '/api/shares' &&
-      !path.startsWith('/api/shares/') &&
-      !path.startsWith('/api/telemetry/') &&
       !path.startsWith('/api/data/')
     ) {
       next();

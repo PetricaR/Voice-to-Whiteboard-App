@@ -1,29 +1,25 @@
 /**
- * Who may start Live sessions and manage subscriptions, from the environment:
+ * Who may start Live sessions, from the environment:
  *
  *   STUDIO_AUTH                 google | off. Default: google on Cloud Run, off on
  *                               loopback (the key's owner is the only user there).
  *   GOOGLE_CLIENT_ID            OAuth web client id(s), comma-separated
  *   SESSION_SECRET              signs the session cookie (≥ 32 bytes; Secret Manager)
  *   STUDIO_ALLOWED_EMAILS       optional allow-list: addresses or @domains
- *   STUDIO_OWNER_EMAILS         unlimited sessions (still within the studio's total)
+ *   STUDIO_OWNER_EMAILS         unlimited sessions (still within the studio's total);
+ *                               owners also set up the BigQuery sources of a deployment
  *   STUDIO_FREE_DAILY_SESSIONS  default 20      STUDIO_PRO_DAILY_SESSIONS  default 300
  *   STUDIO_DAILY_SESSIONS_TOTAL default 1500, every user together
  *   STUDIO_USAGE_STORE          firestore | memory. Default: firestore on Cloud Run
  *   FIRESTORE_DATABASE          optional, default "(default)"
- *   STRIPE_SECRET_KEY           Stripe secret key for Pro checkout & portal
- *   STRIPE_WEBHOOK_SECRET       Stripe webhook signing secret (whsec_...)
- *   STRIPE_PRICE_ID_MONTHLY     optional Stripe monthly price ID
- *   STRIPE_PRICE_ID_ANNUAL      optional Stripe annual price ID
  *
  * Sign-in that is required but not configured fails closed: no tokens at all.
  */
 import { createAuth } from './auth.ts';
 import type { LiveTokenOptions } from './liveToken.ts';
-import { stripeFromEnv } from './stripe.ts';
 import { createFirestoreUsageStore, DEFAULT_LIMITS, MemoryUsageStore, Usage, type Limits } from './usage.ts';
 
-export type Access = Pick<LiveTokenOptions, 'requireSignIn' | 'auth' | 'usage' | 'stripe'>;
+export type Access = Pick<LiveTokenOptions, 'requireSignIn' | 'auth' | 'usage'>;
 
 const list = (value: string | undefined) => value?.split(',').map((s) => s.trim()).filter(Boolean) ?? [];
 
@@ -37,19 +33,18 @@ export async function accessFromEnv(
   o: { onCloudRun: boolean; log?: (message: string) => void },
 ): Promise<Access> {
   const log = o.log ?? ((m: string) => console.warn(m));
-  const stripe = stripeFromEnv(env);
   const mode = (env.STUDIO_AUTH ?? (o.onCloudRun ? 'google' : 'off')).trim().toLowerCase();
-  if (mode === 'off') return { requireSignIn: false, stripe };
+  if (mode === 'off') return { requireSignIn: false };
   if (mode !== 'google') {
     log(`[auth] STUDIO_AUTH=${mode} is not known (use google or off); sign-in stays required and voice is off.`);
-    return { requireSignIn: true, stripe };
+    return { requireSignIn: true };
   }
 
   const clientIds = list(env.GOOGLE_CLIENT_ID);
   const sessionSecret = env.SESSION_SECRET?.trim() ?? '';
   if (clientIds.length === 0 || sessionSecret.length < 32) {
     log('[auth] Sign-in is required but GOOGLE_CLIENT_ID or SESSION_SECRET (≥ 32 characters) is missing; voice is off until both are set.');
-    return { requireSignIn: true, stripe };
+    return { requireSignIn: true };
   }
 
   const limits: Limits = {
@@ -74,6 +69,5 @@ export async function accessFromEnv(
       secureCookies: o.onCloudRun || env.STUDIO_SECURE_COOKIES === '1',
     }),
     usage: new Usage(store, limits, list(env.STUDIO_OWNER_EMAILS)),
-    stripe,
   };
 }

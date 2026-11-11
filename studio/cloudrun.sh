@@ -12,17 +12,18 @@ cd "$(dirname "$0")"
 
 PROJECT=${PROJECT:-formare-dev}
 REGION=${REGION:-europe-west4}
-SERVICE=${SERVICE:-voice-whiteboard-studio}
-SA_NAME=${SA_NAME:-voice-whiteboard-studio}
+SERVICE=${SERVICE:-voice-diagram-studio}
+SA_NAME=${SA_NAME:-voice-diagram-studio}
 SA="$SA_NAME@$PROJECT.iam.gserviceaccount.com"
+BUILD_SA=${BUILD_SA:-projects/$PROJECT/serviceAccounts/formare-mailer-build@$PROJECT.iam.gserviceaccount.com}
 KEY_SECRET=${KEY_SECRET:-gemini-drawio-api-key}
-SESSION_SECRET_NAME=${SESSION_SECRET_NAME:-voice-whiteboard-session-secret}
+SESSION_SECRET_NAME=${SESSION_SECRET_NAME:-voice-studio-session-secret}
 MAX_INSTANCES=${MAX_INSTANCES:-10}
 
 setup() {
   if ! gcloud iam service-accounts describe "$SA" --project "$PROJECT" >/dev/null 2>&1; then
     gcloud iam service-accounts create "$SA_NAME" --project "$PROJECT" \
-      --display-name "Voice Diagram Studio runtime" \
+      --display-name "Voice Whiteboard Studio runtime" \
       --description "Cloud Run service $SERVICE: reads its two secrets and the studio_users / studio_usage Firestore collections"
   fi
   if ! gcloud secrets describe "$SESSION_SECRET_NAME" --project "$PROJECT" >/dev/null 2>&1; then
@@ -48,11 +49,20 @@ deploy() {
   # "|" separates the variables: e-mail lists contain "@" and ","
   [[ -n "${GOOGLE_CLIENT_ID:-}" ]] && env+="|GOOGLE_CLIENT_ID=$GOOGLE_CLIENT_ID"
   [[ -n "${STUDIO_OWNER_EMAILS:-}" ]] && env+="|STUDIO_OWNER_EMAILS=$STUDIO_OWNER_EMAILS"
+  # Who may sign in at all (addresses or @domains). Without it every Google account can.
+  [[ -n "${STUDIO_ALLOWED_EMAILS:-}" ]] && env+="|STUDIO_ALLOWED_EMAILS=$STUDIO_ALLOWED_EMAILS"
+  [[ -n "${BIGQUERY_PROJECT_ID:-}" ]] && env+="|BIGQUERY_PROJECT_ID=$BIGQUERY_PROJECT_ID"
+  [[ -n "${STUDIO_BIGQUERY_PROJECTS:-}" ]] && env+="|STUDIO_BIGQUERY_PROJECTS=$STUDIO_BIGQUERY_PROJECTS"
+  if [[ -z "${STUDIO_ALLOWED_EMAILS:-}" ]]; then
+    echo "Note: STUDIO_ALLOWED_EMAILS is not set in this deploy; unless an earlier deploy set it, any Google account can sign in." >&2
+  fi
   gcloud run deploy "$SERVICE" --source . --project "$PROJECT" --region "$REGION" \
+    --build-service-account "$BUILD_SA" \
     --service-account "$SA" \
     --max-instances "$MAX_INSTANCES" \
     --set-secrets "GEMINI_API_KEY=$KEY_SECRET:latest,SESSION_SECRET=$SESSION_SECRET_NAME:latest" \
-    --update-env-vars "^|^$env"
+    --update-env-vars "^|^$env" \
+    --quiet
 }
 
 case "${1:-}" in

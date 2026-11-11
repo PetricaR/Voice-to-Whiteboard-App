@@ -18,6 +18,10 @@ export const DEFAULT_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/' +
 export const TOKEN_ENDPOINT = 'wss://generativelanguage.googleapis.com/ws/' +
   'google.ai.generativelanguage.v1alpha.GenerativeService.BidiGenerateContentConstrained';
 
+/** Close codes of a dropped connection (network loss, a server restart), as opposed to a refusal. */
+const DROPPED = new Set([1006, 1011, 1012, 1013]);
+const MAX_RECONNECTS = 3;
+
 export interface FunctionCall {
   id: string;
   name: string;
@@ -35,6 +39,8 @@ export interface LiveOptions extends LiveSessionOptions {
 
 export interface LiveCallbacks {
   onReady?: () => void;
+  /** The connection dropped and the session is being resumed on a new one. */
+  onReconnecting?: () => void;
   onInputTranscript?: (text: string) => void;
   onOutputTranscript?: (text: string) => void;
   onAudio?: (base64: string, sampleRate: number) => void;
@@ -53,6 +59,8 @@ export class LiveClient {
   private goAway = false;
   private closed = false;
   private everReady = false;
+  private reconnects = 0;
+  private reconnectTimer: ReturnType<typeof setTimeout> | undefined;
   ready = false;
 
   constructor(private options: LiveOptions, private callbacks: LiveCallbacks) {}
@@ -116,6 +124,14 @@ export class LiveClient {
         this.connect(this.resumeHandle);
       } else if (!this.closed && this.everReady && evt.code === 1000 && !evt.reason) {
         this.close();
+      } else if (!this.closed && this.everReady && this.resumeHandle != null && DROPPED.has(evt.code) && this.reconnects < MAX_RECONNECTS) {
+        // A dropped connection (Wi-Fi change, laptop lid) resumes the same conversation
+        const handle = this.resumeHandle;
+        const delay = 400 * 2 ** this.reconnects++;
+        this.callbacks.onReconnecting?.();
+        this.reconnectTimer = setTimeout(() => {
+          if (!this.closed) this.connect(handle);
+        }, delay);
       } else if (!this.closed) {
         // Setup errors (unknown model, invalid key) only arrive as the close reason
         this.fail(new Error(evt.reason || `Connection closed (${evt.code})`));
@@ -127,6 +143,7 @@ export class LiveClient {
     if (this.closed) return;
     this.closed = true;
     this.ready = false;
+    clearTimeout(this.reconnectTimer);
     const ws = this.ws;
     this.ws = null;
     try {
@@ -161,6 +178,7 @@ export class LiveClient {
     if (msg.setupComplete != null) {
       this.ready = true;
       this.everReady = true;
+      this.reconnects = 0;
       cb.onReady?.();
     }
     const sc = msg.serverContent;

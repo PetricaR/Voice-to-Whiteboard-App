@@ -121,3 +121,8 @@ export async function signInWithGoogle(credential: string): Promise<Account> {
 export async function signOut(): Promise<void> {
   await post('/api/auth/logout', {});
 }
+
+/** Removes the profile and usage the studio server keeps for the signed-in user, and signs out. */
+export async function deleteAccount(): Promise<void> {
+  await post('/api/auth/delete-account', {});
+}

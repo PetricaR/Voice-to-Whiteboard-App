@@ -250,7 +250,7 @@
   position: relative;
   min-width: 0;
   overflow-y: auto;
-  padding: 40px 48px 176px;
+  padding: 40px 48px calc(var(--dock-space, 58px) + 40px);
 }
 
 .doc-toc-toggle {
@@ -560,7 +560,7 @@
   }
 
   .doc-main {
-    padding: 32px 28px 176px;
+    padding: 32px 28px calc(var(--dock-space, 58px) + 32px);
   }
 }
 
@@ -599,7 +599,7 @@
   }
 
   .doc-main {
-    padding: 16px 16px 176px;
+    padding: 16px 16px calc(var(--dock-space, 58px) + 24px);
   }
 
   .chapter-title {

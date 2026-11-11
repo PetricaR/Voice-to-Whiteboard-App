@@ -4,7 +4,7 @@
  * plan, today's sessions and Sign out.
  */
 import { useEffect, useRef, useState } from 'react';
-import type { Account } from '../voice/liveToken';
+import { deleteAccount, type Account } from '../voice/liveToken';
 import { Icon, useStudio } from './context';
 
 const PLAN: Record<Account['plan'], string> = { free: 'Free plan', pro: 'Pro plan', owner: 'Owner' };
@@ -22,7 +22,7 @@ function Avatar({ account, size }: { account: Account; size: number }) {
 }
 
 export function AccountMenu() {
-  const { auth, requestSignIn, signOut } = useStudio();
+  const { auth, requestSignIn, signOut, notify } = useStudio();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -51,6 +51,18 @@ export function AccountMenu() {
       </button>
     );
   }
+
+  const removeAccount = () => {
+    setOpen(false);
+    const sure = window.confirm(
+      'Delete your studio account? Your profile and usage are removed from the studio server. ' +
+      'The pages saved in this browser stay.',
+    );
+    if (!sure) return;
+    deleteAccount()
+      .then(signOut)
+      .catch((e: unknown) => notify(e instanceof Error ? e.message : String(e)));
+  };
 
   const usage = account.limit == null
     ? `${account.used} ${account.used === 1 ? 'session' : 'sessions'} today`
@@ -83,6 +95,9 @@ export function AccountMenu() {
           <div className="menu-divider" />
           <button type="button" role="menuitem" onClick={() => { setOpen(false); signOut(); }}>
             <Icon name="logout" size={20} /><span>Sign out</span>
+          </button>
+          <button type="button" role="menuitem" onClick={removeAccount}>
+            <Icon name="delete" size={20} /><span>Delete account</span>
           </button>
         </div>
       )}

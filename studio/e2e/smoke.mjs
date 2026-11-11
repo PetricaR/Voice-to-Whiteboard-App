@@ -157,9 +157,37 @@ async function run(colorScheme) {
   // Click a KPI figure to open the non-modal top-layer Query & Lineage Inspector
   await page.click('.kpi-number-btn >> nth=0');
   await page.waitForSelector('.inspector-drawer:popover-open, .inspector-drawer[open]');
-  await page.waitForTimeout(300);
+  await page.waitForTimeout(350);
+  const layoutCheck = await page.evaluate(() => {
+    const kpis = Array.from(document.querySelectorAll('.kpi-number-btn')).map((el) => el.getBoundingClientRect());
+    const tabs = document.querySelector('.page-tabs')?.getBoundingClientRect();
+    const drawer = document.querySelector('.inspector-drawer')?.getBoundingClientRect();
+    const dock = document.querySelector('.voice-dock')?.getBoundingClientRect();
+    const stage = document.querySelector('.chart-stage')?.getBoundingClientRect();
+    const svgVb = document.querySelector('.cartesian-svg')?.getAttribute('viewBox')?.split(' ').map(Number);
+    return {
+      kpiRowDeltaY: kpis.length >= 2 ? Math.abs(kpis[0].y - kpis[1].y) : 0,
+      drawerBelowTabs: tabs && drawer ? drawer.y >= tabs.y + tabs.height - 1 : false,
+      dockClearOfDrawer: dock && drawer ? dock.x + dock.width <= drawer.x : false,
+      chartStageDeltaW: stage && svgVb ? Math.abs(stage.width - svgVb[2]) : 0,
+    };
+  });
+  if (layoutCheck.kpiRowDeltaY > 1.5) errors.push(`[${colorScheme}] KPI baseline misaligned by ${layoutCheck.kpiRowDeltaY}px`);
+  if (!layoutCheck.drawerBelowTabs) errors.push(`[${colorScheme}] inspector drawer overlaps top chrome/page tabs`);
+  if (!layoutCheck.dockClearOfDrawer) errors.push(`[${colorScheme}] voice dock overlaps inspector drawer`);
+  if (layoutCheck.chartStageDeltaW > 4) errors.push(`[${colorScheme}] cartesian viewBox width drifted by ${layoutCheck.chartStageDeltaW}px`);
+
   await page.screenshot({ path: `${out}/${colorScheme}-10-live-dashboard-inspector.png` });
   await page.click('.inspector-drawer button[aria-label="Close SQL inspector"]');
+  await page.waitForFunction(() => !document.querySelector('.inspector-drawer:popover-open, .inspector-drawer[open]'));
+
+  // Verify widget exit fade-out keeps [data-closing] during transition, then unmounts cleanly and restores on Undo
+  await page.click('button[aria-label="Remove Active Customers"]');
+  const hadClosingShell = await page.locator('.widget-card-shell[data-closing]').count();
+  if (hadClosingShell !== 1) errors.push(`[${colorScheme}] expected 1 exiting [data-closing] widget shell, found ${hadClosingShell}`);
+  await page.waitForFunction(() => document.querySelectorAll('.widget-card-shell').length === 6);
+  await page.click('button[aria-label^="Undo"]');
+  await page.waitForFunction(() => document.querySelectorAll('.widget-card-shell').length === 7);
 
   // Sort the Enterprise Accounts table by its first column
   await page.click('.dash-table .th-sort-btn >> nth=0');

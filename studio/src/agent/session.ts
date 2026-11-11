@@ -134,6 +134,7 @@ export class VoiceAgent {
         this.settle();
         for (const text of this.pendingText.splice(0)) client.sendText(text);
       },
+      onReconnecting: () => this.set({ status: 'connecting' }),
       onInputTranscript: (text) => {
         if (this.newTurn) {
           this.newTurn = false;

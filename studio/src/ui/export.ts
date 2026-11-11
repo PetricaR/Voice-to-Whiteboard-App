@@ -198,7 +198,7 @@ function documentationXml(scene: Scene, index: number, name: string): string {
 /** A .drawio file with one page per scene. */
 export function toDrawio(scenes: Scene | Scene[]): string {
   const list = Array.isArray(scenes) ? scenes : [scenes];
-  return '<mxfile host="Voice Diagram Studio">' +
+  return '<mxfile host="Voice Whiteboard Studio">' +
     list.map((s, i) => {
       const name = s.title || `Page ${i + 1}`;
       return diagramXml(s, i, name) + (s.blocks.length > 0 ? documentationXml(s, i, `${name} · Documentation`) : '');

@@ -4,13 +4,16 @@
  * pages), so the model always edits the real canvas (including changes the
  * user made by hand) instead of its memory.
  */
+import { bqApi } from '../data/bqCatalogClient';
 import {
   executeSqlQuery,
+  importRowsIntoLocalTable,
   inspectDataSchema,
   listAllDataSources,
   type QueryExecutionResult,
+  type TableSchemaInfo,
 } from '../data/sqlEngine';
-import { validateReadOnlySql } from '../data/sqlGuard';
+import { dialectOfSource, validateReadOnlySql } from '../data/sqlGuard';
 import { resolveBlock } from '../engine/blocks';
 import { loadAllBlueprints, retrieveCatalogContext } from '../engine/catalog';
 import {
@@ -155,6 +158,58 @@ function blockLabel(kind: 'text' | 'table', input: BlockInput, existed: boolean,
   return existed ? `Updated ${name}` : `Wrote ${name}`;
 }
 
+/** Tables whose columns fit into one answer; beyond that the model gets an index and asks again. */
+const SCHEMA_FULL_TABLES = 12;
+const SCHEMA_INDEX_TABLES = 150;
+const SCHEMA_COLUMNS = 60;
+
+const clip = (text: string | undefined, max: number) =>
+  (text == null || text.length <= max ? text : `${text.slice(0, max - 1)}…`);
+
+/**
+ * A warehouse catalog can hold thousands of tables; sent whole it would fill
+ * the model's context. Few tables are described in full, many as an index of
+ * names the model narrows with `table` or `search`.
+ */
+export function schemaForModel(all: TableSchemaInfo[], search?: string): Record<string, unknown> {
+  const words = (search ?? '').toLowerCase().split(/\s+/).filter(Boolean);
+  const matches = (t: TableSchemaInfo) => {
+    if (words.length === 0) return true;
+    const text = [t.name, t.fullName, t.description, ...t.columns.map((c) => c.name)].join(' ').toLowerCase();
+    return words.every((w) => text.includes(w));
+  };
+  const tables = all.filter(matches);
+  if (tables.length <= SCHEMA_FULL_TABLES) {
+    return {
+      tables: tables.map((t) => ({
+        name: t.name,
+        ...(t.fullName ? { fullName: t.fullName } : {}),
+        dataset: t.dataset,
+        description: clip(t.description, 240),
+        rowCount: t.rowCount,
+        columns: t.columns.slice(0, SCHEMA_COLUMNS).map((c) => ({
+          name: c.name,
+          type: c.type,
+          ...(c.description ? { description: clip(c.description, 120) } : {}),
+        })),
+        ...(t.columns.length > SCHEMA_COLUMNS ? { moreColumns: t.columns.length - SCHEMA_COLUMNS } : {}),
+        ...(t.sampleRows?.length ? { sampleRows: t.sampleRows } : {}),
+      })),
+      ...(words.length > 0 && tables.length === 0 ? { note: `No table matches "${search}". Call inspect_schema without search to list the tables.` } : {}),
+    };
+  }
+  return {
+    tableCount: tables.length,
+    tableIndex: tables.slice(0, SCHEMA_INDEX_TABLES).map((t) => ({
+      name: t.name,
+      rowCount: t.rowCount,
+      columns: t.columns.length,
+      ...(t.description ? { description: clip(t.description, 80) } : {}),
+    })),
+    note: `${tables.length} tables${tables.length > SCHEMA_INDEX_TABLES ? ` (the first ${SCHEMA_INDEX_TABLES} are listed)` : ''}: too many to describe at once. Call inspect_schema again with table (a table or dataset name) or search (words) to get the columns.`,
+  };
+}
+
 async function computeDashboardResults(d: DashboardSpec): Promise<Record<string, QueryExecutionResult | undefined>> {
   const out: Record<string, QueryExecutionResult | undefined> = {};
   const params = filterParamsOf(d);
@@ -190,7 +245,52 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const table = str(a.table);
       try {
         const schema = await inspectDataSchema({ source, table });
-        return { ok: true, source: schema.source, tables: schema.tables, diagram: stateOf(ctx) };
+        return { ok: true, source: schema.source, ...schemaForModel(schema.tables, str(a.search)), diagram: stateOf(ctx) };
+      } catch (e) {
+        return { ok: false, errors: [e instanceof Error ? e.message : String(e)], diagram: stateOf(ctx) };
+      }
+    }
+
+    case 'sync_bigquery': {
+      const projectId = str(a.project_id);
+      const datasetFilter = str(a.dataset_filter) ?? null;
+      const loadTable = str(a.load_table_to_local);
+      try {
+        let synced: unknown;
+        if (projectId) {
+          await bqApi.addSource({ project_id: projectId, dataset_filter: datasetFilter }).catch(() => undefined);
+          synced = await bqApi.sync({ project_id: projectId, dataset_filter: datasetFilter });
+        } else {
+          synced = await bqApi.syncAll();
+        }
+        let loadedLocalTable: unknown;
+        if (loadTable && projectId) {
+          const parts = loadTable.replace(/`/g, '').split('.').filter(Boolean);
+          const dsId = parts.length >= 2 ? parts[parts.length - 2] : undefined;
+          const tblId = parts.length >= 2 ? parts[parts.length - 1] : undefined;
+          if (dsId && tblId) {
+            const preview = await bqApi.runPreview({
+              project_id: projectId,
+              dataset_id: dsId,
+              table_id: tblId,
+              limit: 1000,
+              sample: false,
+            });
+            loadedLocalTable = await importRowsIntoLocalTable({
+              tableName: `${dsId}_${tblId}`,
+              columns: preview.columns,
+              rows: preview.rows,
+              dataset: `${projectId}.${dsId}`,
+              datasetLabel: `BigQuery · ${projectId}.${dsId}`,
+            });
+          }
+        }
+        return {
+          ok: true,
+          synced,
+          ...(loadedLocalTable ? { loadedLocalTable } : {}),
+          diagram: stateOf(ctx),
+        };
       } catch (e) {
         return { ok: false, errors: [e instanceof Error ? e.message : String(e)], diagram: stateOf(ctx) };
       }
@@ -232,12 +332,12 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         if (f?.param) filterParams[f.param] = f.value ?? f.options?.[0] ?? 'ALL';
       }
       for (const w of req.widgets ?? []) {
-        const check = validateReadOnlySql(w?.sql ?? '');
+        const src = w?.source || defaultSrc;
+        const check = validateReadOnlySql(w?.sql ?? '', { dialect: dialectOfSource(src) });
         if (!check.ok) {
           sqlErrors.push(`Widget "${w?.title ?? 'unnamed'}": ${check.error}`);
           continue;
         }
-        const src = w.source || defaultSrc;
         if (src === 'local') {
           const qr = await executeSqlQuery(w.sql, { source: 'local', params: filterParams });
           if (!qr.ok) {
@@ -289,12 +389,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const sqlErrors: string[] = [];
       for (const w of [...(req.add_widgets ?? []), ...(req.update_widgets ?? [])]) {
         if (w.sql !== undefined) {
-          const check = validateReadOnlySql(w.sql);
+          // An updated widget keeps its own source unless the edit names another
+          const src = w.source || curDash.widgets.find((x) => x.id === (w as { id?: string }).id)?.source || curDash.defaultSource;
+          const check = validateReadOnlySql(w.sql, { dialect: dialectOfSource(src) });
           if (!check.ok) {
-            sqlErrors.push(check.error!);
+            sqlErrors.push(check.error);
             continue;
           }
-          const src = w.source || curDash.defaultSource;
           if (src === 'local') {
             const qr = await executeSqlQuery(w.sql, { source: 'local', params });
             if (!qr.ok) {

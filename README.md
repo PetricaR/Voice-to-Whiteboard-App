@@ -71,7 +71,13 @@ In addition to zero-config local SQLite-Wasm and drag-and-drop CSV/TSV/JSON/Parq
 
 | Connector | Environment Variables |
 | --- | --- |
-| **BigQuery** | `BIGQUERY_PROJECT_ID` (uses Application Default Credentials or `BIGQUERY_ACCESS_TOKEN`) |
-| **ClickHouse HTTP** | `CLICKHOUSE_HTTP_URL`, optional `CLICKHOUSE_USER`, `CLICKHOUSE_PASSWORD`, `CLICKHOUSE_DATABASE` |
-| **PostgreSQL HTTP Proxy** | `POSTGRES_HTTP_URL`, optional `POSTGRES_HTTP_TOKEN` |
-| **REST JSON Feed** | `REST_DATA_SOURCES` (JSON map of `{ "id": "https://..." }`) |
+| **BigQuery** | `BIGQUERY_PROJECT_ID` (default project), optional `STUDIO_BIGQUERY_PROJECTS` (more projects, comma-separated), `BIGQUERY_MAX_BYTES_BILLED` (bytes one query may scan, default 1 GiB). Uses Application Default Credentials or `BIGQUERY_ACCESS_TOKEN`. |
+| **ClickHouse HTTP** | `CLICKHOUSE_READONLY_URL` (endpoint of a read-only user) |
+| **PostgreSQL HTTP Proxy** | `POSTGRES_HTTP_QUERY_URL`, optional `POSTGRES_HTTP_TOKEN` |
+| **REST JSON Feed** | `STUDIO_REST_SOURCES` (JSON map of `{ "id": "https://..." }`) |
+
+Give every connector credentials that can only read. The studio checks each query with a read-only SQL guard that
+reads SQL the way the target database does, but the guard is a guardrail: the database role is the access control.
+
+On a deployment with sign-in, only the owners (`STUDIO_OWNER_EMAILS`) can register or sync BigQuery projects;
+everyone else queries the sources the owners set up. Set `STUDIO_ALLOWED_EMAILS` to limit who can sign in at all.

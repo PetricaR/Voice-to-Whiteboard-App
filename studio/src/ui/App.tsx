@@ -1,17 +1,17 @@
 import { ReactFlowProvider } from '@xyflow/react';
-import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { VoiceAgent } from '../agent/session';
 import type { QueryExecutionResult } from '../data/sqlEngine';
 import { Workspace, type LibraryEntry, type SavedWorkspace } from '../engine/workspace';
 import { fetchServerStatus, onAccountChange, signOut as serverSignOut, type ServerStatus } from '../voice/liveToken';
 import { DiagramCanvas } from './canvas/DiagramCanvas';
 import { StudioContext, useStudio, type Studio } from './context';
-import { DashboardView } from './dashboard/DashboardView';
+import type { DataModalTab } from './dashboard/DataSourceModal';
 import { DocView } from './DocView';
+import { prefersReducedMotion } from './domTransitions';
 import { EmptyState } from './EmptyState';
 import { download, fileName, fromJson, normalizeScene, pagesToJson } from './export';
-import { ExportMp4Dialog } from './motion/ExportMp4Dialog';
-import { MotionView, type MotionCommand } from './motion/MotionView';
+import type { MotionCommand } from './motion/MotionView';
 import { PageTabs } from './PageTabs';
 import { loadSettings, saveSettings, type Settings } from './settings';
 import { SettingsDialog } from './SettingsDialog';
@@ -22,6 +22,20 @@ import { applyTheme } from './theme';
 import { TopBar } from './TopBar';
 import { VoiceDock } from './VoiceDock';
 import { ZoomControls } from './ZoomControls';
+
+// The dashboard, motion and data surfaces load when they are first shown, so
+// the page starts with the canvas and the voice dock only
+const DashboardView = lazy(() => import('./dashboard/DashboardView').then((m) => ({ default: m.DashboardView })));
+const MotionView = lazy(() => import('./motion/MotionView').then((m) => ({ default: m.MotionView })));
+const DataSourceModal = lazy(() => import('./dashboard/DataSourceModal').then((m) => ({ default: m.DataSourceModal })));
+/** True from the first time `value` is: a dialog is loaded when first opened and then stays mounted to animate out. */
+function useOnceTrue(value: boolean): boolean {
+  const seen = useRef(false);
+  if (value) seen.current = true;
+  return seen.current;
+}
+
+const ExportMp4Dialog = lazy(() => import('./motion/ExportMp4Dialog').then((m) => ({ default: m.ExportMp4Dialog })));
 
 const WORKSPACE_KEY = 'studio.workspace';
 const LIBRARY_KEY = 'studio.library';
@@ -141,6 +155,13 @@ export function App() {
   settingsRef.current = settings;
   const agent = useMemo(() => new VoiceAgent(workspace, () => settingsRef.current), [workspace]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [dataModalOpen, setDataModalOpen] = useState(false);
+  const dataModalUsed = useOnceTrue(dataModalOpen);
+  const [dataModalTab, setDataModalTab] = useState<DataModalTab>('bigquery');
+  const openDataSources = useCallback((tab: DataModalTab = 'bigquery') => {
+    setDataModalTab(tab);
+    setDataModalOpen(true);
+  }, []);
   const [prefs, setPrefs] = useState<UiPrefs>(loadPrefs);
   // Bumped by "/" to focus the request field of the dock
   const [focusRequest, setFocusRequest] = useState(0);
@@ -156,11 +177,29 @@ export function App() {
   const [inspectorWidgetRequest, setInspectorWidgetRequest] = useState<string | null>(null);
   const [motionCommand, setMotionCommand] = useState<MotionCommand | null>(null);
   const [exportMp4Open, setExportMp4Open] = useState(false);
+  const exportMp4Used = useOnceTrue(exportMp4Open);
+  const [dashboardMounted, setDashboardMounted] = useState(activeView === 'dashboard');
+  const prevActiveIdRef = useRef(activeId);
 
   useEffect(() => {
     setDashboardResults({});
     setInspectorWidgetRequest(null);
-  }, [activeId]);
+    if (prevActiveIdRef.current !== activeId) {
+      prevActiveIdRef.current = activeId;
+      setDashboardMounted(activeView === 'dashboard');
+    }
+  }, [activeId, activeView]);
+
+  useEffect(() => {
+    if (activeView === 'dashboard') {
+      setDashboardMounted(true);
+      return;
+    }
+    if (!dashboardMounted) return;
+    const ms = prefersReducedMotion() ? 100 : 230;
+    const t = window.setTimeout(() => setDashboardMounted(false), ms);
+    return () => window.clearTimeout(t);
+  }, [activeView, dashboardMounted]);
 
   useEffect(() => {
     agent.studio = {
@@ -343,8 +382,9 @@ export function App() {
   const studio: Studio = useMemo(() => ({
     workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice,
     openSettings: () => setSettingsOpen(true),
+    openDataSources,
     auth, requestSignIn, signOut, ensureCanTalk,
-  }), [workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice, auth, requestSignIn, signOut, ensureCanTalk]);
+  }), [workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice, openDataSources, auth, requestSignIn, signOut, ensureCanTalk]);
 
   const togglePanel = useCallback(() => updatePrefs({ panelOpen: !prefs.panelOpen }), [prefs.panelOpen, updatePrefs]);
 
@@ -373,21 +413,24 @@ export function App() {
               </div>
               {empty && activeView === 'diagram' && <EmptyState />}
               <ZoomControls minimap={prefs.minimap} setMinimap={(minimap) => updatePrefs({ minimap })} hidden={nonCanvasOpen} />
-              {activeView === 'dashboard' && (
-                <DashboardView
-                  key={`dash-${activeId}`}
-                  onResultsChange={setDashboardResults}
-                  inspectorWidgetRequest={inspectorWidgetRequest}
-                  onClearInspectorRequest={() => setInspectorWidgetRequest(null)}
-                />
-              )}
-              {activeView === 'motion' && (
-                <MotionView
-                  key={`motion-${activeId}`}
-                  dashboardResults={dashboardResults}
-                  command={motionCommand}
-                />
-              )}
+              <Suspense fallback={null}>
+                {(activeView === 'dashboard' || (dashboardMounted && prevActiveIdRef.current === activeId)) && (
+                  <DashboardView
+                    key={`dash-${activeId}`}
+                    closing={activeView !== 'dashboard'}
+                    onResultsChange={setDashboardResults}
+                    inspectorWidgetRequest={inspectorWidgetRequest}
+                    onClearInspectorRequest={() => setInspectorWidgetRequest(null)}
+                  />
+                )}
+                {activeView === 'motion' && (
+                  <MotionView
+                    key={`motion-${activeId}`}
+                    dashboardResults={dashboardResults}
+                    command={motionCommand}
+                  />
+                )}
+              </Suspense>
               {activeView === 'doc' && <DocView key={activeId} />}
               <VoiceDock focusRequest={focusRequest} />
               <Snackbar toast={toast} onDone={() => setToast(null)} />
@@ -398,8 +441,15 @@ export function App() {
           </main>
           <Shortcuts focusComposer={focusComposer} />
           <SettingsDialog open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+          <Suspense fallback={null}>
+            {dataModalUsed && (
+              <DataSourceModal open={dataModalOpen} initialTab={dataModalTab} onClose={() => setDataModalOpen(false)} />
+            )}
+            {exportMp4Used && (
+              <ExportMp4Dialog open={exportMp4Open} motion={store.scene.motion} onClose={() => setExportMp4Open(false)} />
+            )}
+          </Suspense>
           <SignInDialog open={signInOpen} onClose={closeSignIn} />
-          <ExportMp4Dialog open={exportMp4Open} motion={store.scene.motion} onClose={() => setExportMp4Open(false)} />
         </div>
       </ReactFlowProvider>
     </StudioContext.Provider>

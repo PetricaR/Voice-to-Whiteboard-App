@@ -31,6 +31,7 @@ async function middleware(root: string, logger: Logger, loadConfig: () => Promis
     loadConfig,
     models: list(process.env.STUDIO_LIVE_MODELS),
     allowedHosts: list(process.env.STUDIO_ALLOWED_HOSTS),
+    bqPersistPath: join(root, '.bq-catalog.local'),
     log: warn,
   });
 }

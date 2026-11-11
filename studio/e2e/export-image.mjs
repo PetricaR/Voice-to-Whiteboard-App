@@ -28,8 +28,9 @@ await page.route('**/api/live/status', (route) => route.fulfill({ json: { config
 await page.goto(url);
 await page.evaluate(() => localStorage.clear());
 await page.reload();
-await page.waitForSelector('.suggestion-chip');
-await page.click('.suggestion-chip >> nth=0');
+// The first chips start dashboards; the export is about a diagram
+await page.waitForSelector('.suggestion-chip[data-kind="blueprint"]');
+await page.click('.suggestion-chip[data-kind="blueprint"] >> nth=0');
 await page.waitForSelector('.react-flow__node-shape');
 await page.waitForTimeout(800);
 // A selected node must not show up selected in the picture

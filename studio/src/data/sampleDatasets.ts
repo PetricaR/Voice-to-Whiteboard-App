@@ -160,6 +160,56 @@ const SALES_PIPELINE_ROWS: (string | number)[][] = [
   ['DL-512', 'Mercosur Retail', '5. Closed Won', 'LATAM', 'Sofia Costa', 138_000, 100, 138_000, '2026-Q4'],
 ];
 
+const STOCK_OHLC_ROWS: (string | number)[][] = [
+  ['2026-09-01', 'CLDX', 142.5, 148.2, 140.8, 146.9, 1840],
+  ['2026-09-08', 'CLDX', 146.9, 151.4, 144.2, 145.1, 1620],
+  ['2026-09-15', 'CLDX', 145.1, 154.8, 144.6, 153.2, 2310],
+  ['2026-09-22', 'CLDX', 153.2, 156.0, 148.5, 149.8, 1950],
+  ['2026-09-29', 'CLDX', 149.8, 158.6, 149.0, 157.4, 2480],
+  ['2026-10-06', 'CLDX', 157.4, 163.5, 155.2, 161.8, 2740],
+  ['2026-10-13', 'CLDX', 161.8, 162.9, 154.0, 156.2, 2190],
+  ['2026-10-20', 'CLDX', 156.2, 166.4, 155.8, 164.9, 2890],
+  ['2026-10-27', 'CLDX', 164.9, 171.2, 163.1, 169.5, 3120],
+  ['2026-11-03', 'CLDX', 169.5, 174.8, 166.0, 172.6, 2980],
+];
+
+const PROJECT_ROADMAP_ROWS: (string | number)[][] = [
+  ['PRJ-01', 'Warehouse Schema Audit', 'Data Platform', 'Elena Vance', 0, 14, 14, 100, 45_000],
+  ['PRJ-02', 'SQLite-Wasm Engine v2', 'Data Platform', 'Marcus Weber', 10, 32, 22, 100, 82_000],
+  ['PRJ-03', 'Gemini Live Voice Streaming', 'AI Runtime', 'Sora Takahashi', 18, 48, 30, 88, 120_000],
+  ['PRJ-04', '40+ Holistics Chart Studio', 'Visualization', 'Devon Brooks', 28, 62, 34, 76, 95_000],
+  ['PRJ-05', 'Enterprise SSO & IAM Guard', 'Security', 'Maya Lin', 40, 74, 34, 55, 78_000],
+  ['PRJ-06', 'WebCodecs 60fps MP4 Export', 'Motion Studio', 'Jonas Lind', 52, 84, 32, 42, 68_000],
+  ['PRJ-07', 'Global Edge GA Launch', 'Cloud Ops', 'Kenji Sato', 70, 96, 26, 20, 110_000],
+];
+
+const ORG_DIRECTORY_ROWS: (string | number | null)[][] = [
+  ['ceo', 'Chief Executive Officer', null, 'Executive', 186, 28_500_000],
+  ['vp_eng', 'VP Engineering', 'ceo', 'Engineering', 84, 13_400_000],
+  ['vp_gtm', 'VP Revenue & GTM', 'ceo', 'Go-To-Market', 62, 9_200_000],
+  ['vp_ops', 'VP Finance & Ops', 'ceo', 'Operations', 40, 5_900_000],
+  ['dir_ai', 'AI & Voice Agents', 'vp_eng', 'Engineering', 32, 5_600_000],
+  ['dir_data', 'SQL & Analytics Engine', 'vp_eng', 'Engineering', 28, 4_400_000],
+  ['dir_infra', 'Cloud & Security SRE', 'vp_eng', 'Engineering', 24, 3_400_000],
+  ['dir_ent', 'Enterprise Sales', 'vp_gtm', 'Go-To-Market', 36, 5_500_000],
+  ['dir_cs', 'Customer Success', 'vp_gtm', 'Go-To-Market', 26, 3_700_000],
+  ['dir_fin', 'FP&A & RevOps', 'vp_ops', 'Operations', 22, 3_200_000],
+  ['dir_people', 'Talent & Workplace', 'vp_ops', 'Operations', 18, 2_700_000],
+];
+
+const GLOBAL_FLOWS_ROWS: (string | number)[][] = [
+  ['New York', 'North America', 40.71, -74.01, 'London', 'EMEA', 51.51, -0.13, 420, 540_000, 68],
+  ['San Francisco', 'North America', 37.77, -122.42, 'Tokyo', 'APAC', 35.68, 139.69, 365, 468_000, 112],
+  ['New York', 'North America', 40.71, -74.01, 'Frankfurt', 'EMEA', 50.11, 8.68, 310, 392_000, 76],
+  ['London', 'EMEA', 51.51, -0.13, 'Singapore', 'APAC', 1.35, 103.82, 275, 348_000, 148],
+  ['San Francisco', 'North America', 37.77, -122.42, 'Sydney', 'APAC', -33.87, 151.21, 215, 276_000, 138],
+  ['Miami', 'North America', 25.76, -80.19, 'Sao Paulo', 'LATAM', -23.55, -46.63, 190, 234_000, 94],
+  ['Frankfurt', 'EMEA', 50.11, 8.68, 'Mumbai', 'APAC', 19.08, 72.88, 240, 295_000, 106],
+  ['Tokyo', 'APAC', 35.68, 139.69, 'Singapore', 'APAC', 1.35, 103.82, 295, 362_000, 64],
+  ['London', 'EMEA', 51.51, -0.13, 'Sao Paulo', 'LATAM', -23.55, -46.63, 145, 182_000, 132],
+  ['Toronto', 'North America', 43.65, -79.38, 'Paris', 'EMEA', 48.86, 2.35, 175, 218_000, 79],
+];
+
 export const SAMPLE_TABLES: SampleTableSpec[] = [
   {
     name: 'monthly_revenue',
@@ -265,5 +315,74 @@ export const SAMPLE_TABLES: SampleTableSpec[] = [
       { name: 'close_quarter', type: 'TEXT', description: 'Expected close quarter' },
     ],
     rows: SALES_PIPELINE_ROWS.map((r) => [r[0], r[1], r[2], r[3], String(r[4]).trim(), r[5], r[6], r[7], r[8]]),
+  },
+  {
+    name: 'stock_ohlc',
+    dataset: 'financial_markets',
+    datasetLabel: 'Financial OHLC & Market Volume',
+    description: 'Weekly open, high, low, close (OHLC) share prices and trading volume for cloud index ticker CLDX.',
+    columns: [
+      { name: 'trading_date', type: 'TEXT', description: 'Trading week YYYY-MM-DD' },
+      { name: 'ticker', type: 'TEXT', description: 'Ticker symbol (CLDX)' },
+      { name: 'open_usd', type: 'REAL', description: 'Opening price in USD' },
+      { name: 'high_usd', type: 'REAL', description: 'Intraday/weekly high in USD' },
+      { name: 'low_usd', type: 'REAL', description: 'Intraday/weekly low in USD' },
+      { name: 'close_usd', type: 'REAL', description: 'Closing price in USD' },
+      { name: 'volume_k', type: 'INTEGER', description: 'Trading volume in thousands of shares' },
+    ],
+    rows: STOCK_OHLC_ROWS,
+  },
+  {
+    name: 'project_roadmap',
+    dataset: 'product_delivery',
+    datasetLabel: 'Product Roadmap & Gantt Schedule',
+    description: 'Engineering & launch milestones with start/end day offsets, completion progress, and budget allocation.',
+    columns: [
+      { name: 'task_id', type: 'TEXT', description: 'Milestone ID' },
+      { name: 'task_name', type: 'TEXT', description: 'Initiative or milestone name' },
+      { name: 'workstream', type: 'TEXT', description: 'Data Platform, AI Runtime, Visualization, Security, Motion Studio, Cloud Ops' },
+      { name: 'owner', type: 'TEXT', description: 'Lead owner' },
+      { name: 'start_day', type: 'INTEGER', description: 'Start offset in days from quarter start' },
+      { name: 'end_day', type: 'INTEGER', description: 'End offset in days from quarter start' },
+      { name: 'duration_days', type: 'INTEGER', description: 'Planned duration in days' },
+      { name: 'progress_pct', type: 'INTEGER', description: 'Completion percentage (0-100)' },
+      { name: 'budget_usd', type: 'INTEGER', description: 'Allocated budget in USD' },
+    ],
+    rows: PROJECT_ROADMAP_ROWS,
+  },
+  {
+    name: 'org_directory',
+    dataset: 'company_hierarchy',
+    datasetLabel: 'Organization Hierarchy & Budgets',
+    description: 'Executive, VP, and Director reporting tree with parent_id links, team headcount, and annual department budgets.',
+    columns: [
+      { name: 'node_id', type: 'TEXT', description: 'Unique role/team node ID' },
+      { name: 'role_title', type: 'TEXT', description: 'Role or division title' },
+      { name: 'parent_id', type: 'TEXT', description: 'Reporting parent node_id (NULL for CEO root)' },
+      { name: 'department', type: 'TEXT', description: 'Executive, Engineering, Go-To-Market, Operations' },
+      { name: 'headcount', type: 'INTEGER', description: 'Total team headcount' },
+      { name: 'budget_usd', type: 'INTEGER', description: 'Annual budget in USD' },
+    ],
+    rows: ORG_DIRECTORY_ROWS,
+  },
+  {
+    name: 'global_flows',
+    dataset: 'geo_network',
+    datasetLabel: 'Global Geo Hubs & Network Flows',
+    description: 'Origin-destination city coordinates (lat/lon), regional corridors, bandwidth Gbps, attributed revenue, and RTT latency.',
+    columns: [
+      { name: 'origin_city', type: 'TEXT', description: 'Source city hub' },
+      { name: 'origin_region', type: 'TEXT', description: 'North America, EMEA, APAC, LATAM' },
+      { name: 'origin_lat', type: 'REAL', description: 'Origin latitude (-90..90)' },
+      { name: 'origin_lon', type: 'REAL', description: 'Origin longitude (-180..180)' },
+      { name: 'dest_city', type: 'TEXT', description: 'Destination city hub' },
+      { name: 'dest_region', type: 'TEXT', description: 'North America, EMEA, APAC, LATAM' },
+      { name: 'dest_lat', type: 'REAL', description: 'Destination latitude (-90..90)' },
+      { name: 'dest_lon', type: 'REAL', description: 'Destination longitude (-180..180)' },
+      { name: 'volume_gbps', type: 'INTEGER', description: 'Traffic throughput in Gbps' },
+      { name: 'revenue_usd', type: 'INTEGER', description: 'Corridor ARR in USD' },
+      { name: 'latency_ms', type: 'INTEGER', description: 'Round-trip latency in ms' },
+    ],
+    rows: GLOBAL_FLOWS_ROWS,
   },
 ];

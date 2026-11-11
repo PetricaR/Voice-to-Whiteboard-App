@@ -21,7 +21,12 @@ let signedIn = false;
 let tokenReply = null;
 const posted = [];
 
-const browser = await chromium.launch({ channel: 'chrome', headless: true });
+// A fake microphone that is allowed, so the checks below see the server's answer and not a refused microphone
+const browser = await chromium.launch({
+  channel: 'chrome',
+  headless: true,
+  args: ['--use-fake-ui-for-media-stream', '--use-fake-device-for-media-stream'],
+});
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
 const errors = [];
 page.on('pageerror', (e) => errors.push(e.message));

@@ -128,10 +128,22 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'inspect_schema',
-    description: 'Inspects table names, column types, and sample rows of a data source so you can write accurate, schema-grounded SQL queries.',
+    description: 'Inspects table names, column types, and sample rows of a data source so you can write accurate, schema-grounded SQL queries. A large source answers with a list of its tables only: call again with "table" or "search" to get the columns of the ones you need.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
-      source: str('Data source id ("local" by default, or "bigquery", "clickhouse", "postgres", "rest:<name>").'),
+      source: str('Data source id ("local" by default, or "bigquery", "bigquery:<project_id>", "clickhouse", "postgres", "rest:<name>").'),
+      table: str('Optional dataset or table name filter.'),
+      search: str('Optional words to find tables by name, description or column name (e.g. "orders revenue").'),
+    }, []),
+  },
+  {
+    name: 'sync_bigquery',
+    description: 'Connects and syncs datasets, tables, and column schemas from Google Cloud BigQuery into the studio catalog (and optionally loads a table into local SQLite-Wasm).',
+    behavior: 'NON_BLOCKING',
+    parameters: obj({
+      project_id: str('Optional GCP project ID to register and sync. When omitted, syncs all active BigQuery sources.'),
+      dataset_filter: str('Optional dataset prefix filter, e.g. "mart_".'),
+      load_table_to_local: str('Optional "dataset.table" in project_id to materialize into local SQLite-Wasm (up to 1000 rows).'),
     }, []),
   },
   {

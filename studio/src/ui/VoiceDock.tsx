@@ -69,6 +69,15 @@ function statusLabel(v: VoiceSnapshot): string {
 }
 
 const COMPACT = typeof window === 'undefined' ? null : window.matchMedia('(max-width: 720px)');
+const DOCK_MINIMIZED_KEY = 'studio.dockMinimized';
+
+function loadMinimized(): boolean {
+  try {
+    return localStorage.getItem(DOCK_MINIMIZED_KEY) === '1';
+  } catch {
+    return false;
+  }
+}
 
 function subscribeCompact(listener: () => void): () => void {
   COMPACT?.addEventListener('change', listener);
@@ -89,22 +98,56 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
   const v = useVoice(agent);
   const [text, setText] = useState('');
   const [focused, setFocused] = useState(false);
+  const [minimized, setMinimizedState] = useState<boolean>(loadMinimized);
+  const pendingFocusRef = useRef(false);
   const fieldRef = useRef<HTMLTextAreaElement>(null);
   const dockRef = useRef<HTMLDivElement>(null);
   // Phones get shorter placeholders, so they fit on one line
   const compact = useSyncExternalStore(subscribeCompact, () => COMPACT?.matches ?? false);
 
-  // "/" anywhere on the page
+  const setMinimized = (next: boolean) => {
+    setMinimizedState(next);
+    try {
+      if (next) localStorage.setItem(DOCK_MINIMIZED_KEY, '1');
+      else localStorage.removeItem(DOCK_MINIMIZED_KEY);
+    } catch {
+      // not persisted
+    }
+  };
+
+  // "/" anywhere on the page expands (if minimized) and focuses the request field
   useEffect(() => {
-    if (focusRequest > 0) fieldRef.current?.focus();
+    if (focusRequest <= 0) return;
+    if (minimized) {
+      pendingFocusRef.current = true;
+      setMinimized(false);
+    } else {
+      fieldRef.current?.focus();
+    }
   }, [focusRequest]);
 
-  // The snackbar and the empty state stay clear of the dock as it grows
+  useEffect(() => {
+    if (!minimized && pendingFocusRef.current) {
+      pendingFocusRef.current = false;
+      fieldRef.current?.focus();
+    }
+  }, [minimized]);
+
+  // Surface voice/auth errors immediately even if the dock was minimized
+  useEffect(() => {
+    if (v.status === 'error' && minimized) {
+      setMinimizedState(false);
+    }
+  }, [v.status, minimized]);
+
+  // The snackbar and surface bottom padding stay clear of the centered bar; minimized corner pill frees full height
   useLayoutEffect(() => {
     const dock = dockRef.current;
     const host = dock?.parentElement;
     if (dock == null || host == null) return;
-    const update = () => host.style.setProperty('--dock-space', `${Math.ceil(dock.offsetHeight) + 36}px`);
+    const update = () => {
+      host.style.setProperty('--dock-space', minimized ? '0px' : `${Math.ceil(dock.offsetHeight) + 20}px`);
+    };
     update();
     const observer = new ResizeObserver(update);
     observer.observe(dock);
@@ -112,7 +155,7 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
       observer.disconnect();
       host.style.removeProperty('--dock-space');
     };
-  }, []);
+  }, [minimized]);
 
   const session = v.status !== 'idle' && v.status !== 'error';
   const connecting = v.status === 'connecting';
@@ -138,11 +181,8 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
   };
 
   let caption: ReactNode = null;
-  if (v.reply) caption = <span className="reply">{v.reply}</span>;
-  else if (v.heard) caption = <span className="heard">{v.heard}</span>;
-  else if (v.status === 'listening') {
-    caption = <span className="hint">{v.micOn ? 'Ask for a live SQL dashboard, motion explainer, or diagram' : 'Type a request below, or turn the microphone on'}</span>;
-  }
+  if (v.reply) caption = <span className="reply" title={v.reply}>{v.reply}</span>;
+  else if (v.heard) caption = <span className="heard" title={v.heard}>{v.heard}</span>;
 
   const trimmedLower = text.trimStart().toLowerCase();
   const matchingSlash = trimmedLower.startsWith('/')
@@ -152,6 +192,67 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
   const classes = ['voice-dock', `state-${v.status}`];
   if (session) classes.push('live');
   if (v.micOn) classes.push('mic-on');
+  if (minimized) classes.push('minimized');
+
+  if (minimized) {
+    return (
+      <div ref={dockRef} className={classes.join(' ')} role="region" aria-label="Assistant">
+        <div className="dock-mini-pill">
+          <button
+            type="button"
+            className="dock-expand"
+            onClick={() => {
+              pendingFocusRef.current = true;
+              setMinimized(false);
+            }}
+            aria-label="Expand chat"
+            data-tooltip={v.reply ? v.reply.slice(0, 56) : 'Open chat (/)'}
+          >
+            {session ? (
+              <Waveform level={v.status === 'listening' && v.micOn ? v.level : 0} />
+            ) : (
+              <Icon name="chat" size={16} />
+            )}
+            {!session && <kbd className="dock-mini-kbd" aria-hidden="true">/</kbd>}
+          </button>
+          {session ? (
+            <>
+              <button
+                type="button"
+                className={`dock-mic${v.micOn ? ' on' : ''}`}
+                onClick={toggleMic}
+                disabled={connecting}
+                aria-label={v.micOn ? 'Mute the microphone' : 'Turn the microphone on'}
+                data-tooltip={v.micOn ? 'Mute' : 'Unmute (Space)'}
+              >
+                {connecting ? <span className="dock-spinner" aria-hidden="true" />
+                  : <Icon name={v.micOn ? 'mic-fill' : 'mic_off'} size={16} />}
+              </button>
+              <button
+                type="button"
+                className="dock-end"
+                onClick={() => agent.stop()}
+                aria-label="End the voice session"
+                data-tooltip={v.micOn || connecting ? 'End (Space)' : 'End'}
+              >
+                <Icon name="close" size={16} />
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              className="dock-talk"
+              onClick={toggleVoice}
+              aria-label="Talk"
+              data-tooltip="Talk (Space)"
+            >
+              <Icon name="mic" size={16} />
+            </button>
+          )}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div ref={dockRef} className={classes.join(' ')} role="region" aria-label="Assistant">
@@ -168,7 +269,7 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
                 fieldRef.current?.focus();
               }}
             >
-              <Icon name={item.icon} size={16} />
+              <Icon name={item.icon} size={14} />
               <code>{item.cmd}</code>
               <span>{item.label}</span>
             </button>
@@ -178,12 +279,13 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
       {v.status !== 'idle' && (
         <div className="dock-live">
           <div className="dock-live-head">
-            {isError ? <Icon name="error" size={18} className="dock-error-icon" />
+            {isError ? <Icon name="error" size={15} className="dock-error-icon" />
               : <Waveform level={v.status === 'listening' && v.micOn ? v.level : 0} />}
-            <span className="dock-status" role="status">{statusLabel(v)}</span>
+            <span className={`dock-status${caption ? ' has-caption' : ''}`} role="status">{statusLabel(v)}</span>
+            {caption && <div className="dock-text">{caption}</div>}
             {session && v.lastLatency != null && (
               <span className="dock-latency" data-tooltip="Time from your request to the change on the canvas">
-                Last edit {v.lastLatency.toFixed(1)} s
+                {v.lastLatency.toFixed(1)}s
               </span>
             )}
             {isError && (
@@ -194,19 +296,18 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
                   </button>
                 )}
                 <button type="button" className="icon-btn dock-dismiss" onClick={() => agent.stop()} aria-label="Dismiss" data-tooltip="Dismiss">
-                  <Icon name="close" size={18} />
+                  <Icon name="close" size={15} />
                 </button>
               </>
             )}
           </div>
-          {caption && <div className="dock-text">{caption}</div>}
         </div>
       )}
 
       <form className="dock-composer" onSubmit={(e) => { e.preventDefault(); send(); }}>
         <textarea
           ref={fieldRef}
-          className="dock-field"
+          className={`dock-field${hasText ? ' has-text' : ''}`}
           rows={1}
           value={text}
           onChange={(e) => setText(e.target.value)}
@@ -221,8 +322,8 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
               e.currentTarget.blur();
             }
           }}
-          placeholder={session && v.micOn ? (compact ? 'Type while you talk…' : 'Type a request while you talk…')
-            : compact ? 'Ask for a dashboard, motion, or diagram…' : 'Describe a live SQL dashboard, motion explainer, or diagram (type / for commands)…'}
+          placeholder={session && v.micOn ? 'Type while talking…'
+            : compact ? 'Ask anything…' : 'Ask anything, or type / for commands…'}
           aria-label="Request"
           enterKeyHint="send"
         />
@@ -231,7 +332,7 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
         <div className="dock-actions">
           {hasText && (
             <button type="submit" className="dock-send" aria-label="Send" data-tooltip="Send (Enter)">
-              <Icon name="arrow_upward" size={22} />
+              <Icon name="arrow_upward" size={17} />
             </button>
           )}
           {session ? (
@@ -242,10 +343,10 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
                 onClick={toggleMic}
                 disabled={connecting}
                 aria-label={v.micOn ? 'Mute the microphone' : 'Turn the microphone on'}
-                data-tooltip={v.micOn ? 'Mute' : 'Turn the microphone on (Space)'}
+                data-tooltip={v.micOn ? 'Mute' : 'Unmute (Space)'}
               >
                 {connecting ? <span className="dock-spinner" aria-hidden="true" />
-                  : <Icon name={v.micOn ? 'mic-fill' : 'mic_off'} size={22} />}
+                  : <Icon name={v.micOn ? 'mic-fill' : 'mic_off'} size={17} />}
               </button>
               <button
                 type="button"
@@ -254,8 +355,7 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
                 aria-label="End the voice session"
                 data-tooltip={v.micOn || connecting ? 'End (Space)' : 'End'}
               >
-                <Icon name="close" size={20} />
-                <span>End</span>
+                <Icon name="close" size={16} />
               </button>
             </>
           ) : (
@@ -264,12 +364,20 @@ export function VoiceDock({ focusRequest }: { focusRequest: number }) {
               className={`dock-talk${hasText ? ' quiet' : ''}`}
               onClick={toggleVoice}
               aria-label="Talk"
-              data-tooltip="Start a voice conversation (Space)"
+              data-tooltip="Talk (Space)"
             >
-              <Icon name="mic" size={20} />
-              <span>Talk</span>
+              <Icon name="mic" size={17} />
             </button>
           )}
+          <button
+            type="button"
+            className="dock-minimize"
+            onClick={() => setMinimized(true)}
+            aria-label="Minimize chat"
+            data-tooltip="Minimize to corner"
+          >
+            <Icon name="remove" size={15} />
+          </button>
         </div>
       </form>
     </div>

@@ -30,7 +30,7 @@ export function TopBar({
   dashboardResults?: Record<string, QueryExecutionResult | undefined>;
   onOpenExportMp4?: () => void;
 }) {
-  const { workspace, store, notify, openSettings } = useStudio();
+  const { workspace, store, notify, openSettings, openDataSources } = useStudio();
   useStoreRevision(store);
   useWorkspaceRevision(workspace);
   const scene = store.scene;
@@ -152,6 +152,7 @@ export function TopBar({
           onClick={() => workspace.showView(docOpen ? 'diagram' : 'doc')} />
         <IconButton icon="note_add" label="Add a chapter to the documentation" onClick={() => addChapter(workspace, store, 'text')} />
         <IconButton icon="table_chart" label="Add a table to the documentation" onClick={() => addChapter(workspace, store, 'table')} />
+        <IconButton icon="database" label="BigQuery Catalog & Data Sources" onClick={() => openDataSources('bigquery')} />
         <span className="divider" />
         <div className="menu-anchor" ref={menuRef}>
           <button type="button" className="tonal-btn" onClick={() => setMenu(!menu)} aria-haspopup="menu" aria-expanded={menu}>

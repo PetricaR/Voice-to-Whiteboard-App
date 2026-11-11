@@ -211,6 +211,11 @@ describe('token API', () => {
       const status = await fetch(`http://127.0.0.1:${prodPort}/api/live/status`);
       expect(status.status).toBe(200);
       expect(await status.json()).toEqual({ configured: true, auth: { required: false } });
+
+      // An API path that does not exist is a JSON 404, never the app's page
+      const unknown = await fetch(`http://127.0.0.1:${prodPort}/api/billing/status`);
+      expect(unknown.status).toBe(404);
+      expect(unknown.headers.get('content-type')).toMatch(/application\/json/);
     } finally {
       await new Promise<void>((r) => prod.close(() => r()));
     }
