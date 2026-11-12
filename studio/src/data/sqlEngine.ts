@@ -123,6 +123,19 @@ let initPromise: Promise<Database> | null = null;
 const customTables = new Map<string, DataTableMeta>();
 const dataListeners = new Set<() => void>();
 let remoteSourcesCache: DataSourceInfo[] | null = null;
+const REMOTE_QUERY_DEDUPE_TTL_MS = 1_500;
+const remoteInFlight = new Map<string, Promise<QueryExecutionResult>>();
+const remoteFreshCache = new Map<string, { expiresAt: number; result: QueryExecutionResult }>();
+
+function sessionGcpTokenHeader(): Record<string, string> {
+  if (typeof window === 'undefined') return {};
+  try {
+    const tok = window.sessionStorage?.getItem('studio.gcp.access_token')?.trim();
+    return tok ? { 'X-GCP-Access-Token': tok } : {};
+  } catch {
+    return {};
+  }
+}
 
 export function subscribeDataEngine(listener: () => void): () => void {
   dataListeners.add(listener);
@@ -135,6 +148,7 @@ function notifyDataChanged() {
 
 export function invalidateDataSourcesCache() {
   remoteSourcesCache = null;
+  remoteFreshCache.clear();
   notifyDataChanged();
 }
 
@@ -528,7 +542,7 @@ export async function inspectDataSchema(opts: { source?: string; table?: string;
   const source = opts.source && opts.source.trim() !== '' ? opts.source.trim() : 'local';
   if (source !== 'local' && typeof window !== 'undefined') {
     const url = `/api/data/schema?source=${encodeURIComponent(source)}${opts.table ? `&table=${encodeURIComponent(opts.table)}` : ''}`;
-    const res = await fetch(url, { headers: { Accept: 'application/json' } });
+    const res = await fetch(url, { headers: { Accept: 'application/json', ...sessionGcpTokenHeader() } });
     const data = await res.json();
     if (!res.ok) throw new Error(data?.message ?? `Failed to inspect schema for ${source}`);
     return data;
@@ -595,6 +609,7 @@ export async function executeSqlQuery(
     source?: string;
     params?: Record<string, SqlParamValue>;
     maxRows?: number;
+    bypassCache?: boolean;
   } = {},
 ): Promise<QueryExecutionResult> {
   const source = options.source && options.source.trim() !== '' ? options.source.trim() : 'local';
@@ -637,44 +652,62 @@ export async function executeSqlQuery(
         error: `Remote source "${source}" is only reachable through the studio server.`,
       };
     }
-    try {
-      const res = await fetch('/api/data/query', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ source, sql: rawSql, params: options.params, maxRows }),
-      });
-      const payload = await res.json();
-      if (!res.ok || !payload.ok) {
+    const authHeader = sessionGcpTokenHeader();
+    const cacheKey = `${source}\0${maxRows}\0${authHeader['X-GCP-Access-Token'] ?? ''}\0${check.sql}`;
+    if (!options.bypassCache) {
+      const fresh = remoteFreshCache.get(cacheKey);
+      if (fresh && fresh.expiresAt > Date.now()) return fresh.result;
+      const inflight = remoteInFlight.get(cacheKey);
+      if (inflight) return inflight;
+    }
+
+    const requestPromise = (async (): Promise<QueryExecutionResult> => {
+      try {
+        const res = await fetch('/api/data/query', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeader },
+          body: JSON.stringify({ source, sql: rawSql, params: options.params, maxRows }),
+        });
+        const payload = await res.json();
+        if (!res.ok || !payload.ok) {
+          return {
+            ok: false,
+            source,
+            sql: check.displaySql,
+            boundSql: payload?.boundSql ?? check.sql,
+            columns: [],
+            rows: [],
+            rowCount: 0,
+            truncated: false,
+            durationMs: Math.round((performance.now() - started) * 10) / 10,
+            executedAt,
+            error: payload?.message ?? payload?.error ?? `Query on ${source} failed (${res.status}).`,
+          };
+        }
+        const okResult = payload as QueryExecutionResult;
+        remoteFreshCache.set(cacheKey, { expiresAt: Date.now() + REMOTE_QUERY_DEDUPE_TTL_MS, result: okResult });
+        return okResult;
+      } catch (e) {
         return {
           ok: false,
           source,
           sql: check.displaySql,
-          boundSql: payload?.boundSql ?? check.sql,
+          boundSql: check.sql,
           columns: [],
           rows: [],
           rowCount: 0,
           truncated: false,
           durationMs: Math.round((performance.now() - started) * 10) / 10,
           executedAt,
-          error: payload?.message ?? payload?.error ?? `Query on ${source} failed (${res.status}).`,
+          error: e instanceof Error ? e.message : String(e),
         };
+      } finally {
+        remoteInFlight.delete(cacheKey);
       }
-      return payload as QueryExecutionResult;
-    } catch (e) {
-      return {
-        ok: false,
-        source,
-        sql: check.displaySql,
-        boundSql: check.sql,
-        columns: [],
-        rows: [],
-        rowCount: 0,
-        truncated: false,
-        durationMs: Math.round((performance.now() - started) * 10) / 10,
-        executedAt,
-        error: e instanceof Error ? e.message : String(e),
-      };
-    }
+    })();
+
+    remoteInFlight.set(cacheKey, requestPromise);
+    return requestPromise;
   }
 
   try {

@@ -155,6 +155,7 @@ const RANKED_OR_TRENDED = new Set<WidgetKind>([
   'funnel', 'waterfall',
 ]);
 const TREND_KINDS = new Set<WidgetKind>(['line', 'area']);
+const TIME_ORDERED_KINDS = new Set<WidgetKind>(['line', 'area', 'streamgraph', 'candlestick']);
 
 const snake = (k: string) => k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
 
@@ -464,14 +465,14 @@ export function reviewWidget(widget: DashboardWidget, result: QueryExecutionResu
   }
 
   // Trends must read left to right in time
-  if (TREND_KINDS.has(widget.kind) && x) {
+  if (TIME_ORDERED_KINDS.has(widget.kind) && x) {
     const labels = [...new Set(rows.map((r) => label(r[xIdx])))];
     if (labels.length >= 3 && labels.every((l) => SORTABLE_TIME.test(l))) {
       const sorted = [...labels].sort();
       if (labels.some((l, i) => l !== sorted[i])) {
         issues.push(`The ${widget.kind} is not in time order: add ORDER BY ${x.name} ASC so the trend reads left to right.`);
       }
-    } else if (!x.temporal && !x.numeric && labels.length >= 2) {
+    } else if (TREND_KINDS.has(widget.kind) && !x.temporal && !x.numeric && labels.length >= 2) {
       advice.push(`"${x.name}" is a category, not time: a ${widget.kind} suggests a trend between unrelated items. ${patchForModel(widget.id, { kind: labels.length > 8 ? 'horizontal_bar' : 'bar', chartConfig: { sortBy: 'value_desc' } })}`);
     }
   }

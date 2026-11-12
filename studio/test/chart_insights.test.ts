@@ -74,6 +74,19 @@ describe('Chart review: what the agent learns about a chart it built', () => {
     });
     expect(unordered.issues.join(' ')).toMatch(/not in time order.*ORDER BY month ASC/);
 
+    const unorderedCandles = await review({
+      title: 'CLDX Price Action',
+      kind: 'candlestick',
+      sql: 'SELECT trading_date, open_usd, high_usd, low_usd, close_usd FROM stock_ohlc ORDER BY trading_date DESC',
+      x_field: 'trading_date',
+      open_field: 'open_usd',
+      high_field: 'high_usd',
+      low_field: 'low_usd',
+      close_field: 'close_usd',
+    });
+    expect(unorderedCandles.issues.join(' ')).toMatch(/not in time order.*ORDER BY trading_date ASC/);
+    expect(unorderedCandles.facts).toEqual([]);
+
     const scatter = await review({ title: 'Seats', kind: 'scatter', sql: 'SELECT account_name, seats FROM enterprise_accounts' });
     expect(scatter.issues.join(' ')).toMatch(/needs 2/);
 

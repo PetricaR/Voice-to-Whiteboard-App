@@ -1048,6 +1048,19 @@ export class BqCatalogStore {
     const matchingSource = this.findSourceByProject(projectId);
     if (matchingSource) {
       this.sources.set(matchingSource.id, { ...matchingSource, last_synced_at: syncedAt });
+    } else {
+      // Every synced dataset belongs to an active source so its tables can be previewed, queried and removed
+      const id = randomUUID();
+      this.sources.set(id, {
+        id,
+        project_id: projectId,
+        display_name: null,
+        dataset_filter: opts.dataset_filter?.trim() || null,
+        secret_name: opts.secret_name?.trim() || null,
+        is_active: true,
+        last_synced_at: syncedAt,
+        created_at: syncedAt,
+      });
     }
     this.saveToDisk();
     return result;

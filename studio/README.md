@@ -18,7 +18,7 @@ Application workspace for **Voice Whiteboard Studio**, combining four synchroniz
 
 - `src/data/`
   - `sqlGuard.ts`: Enforces read-only single-statement `SELECT`/`WITH` SQL, blocks DDL/DML/PRAGMA/ATTACH, binds `:param` filters safely, and caps `LIMIT`.
-  - `sampleDatasets.ts`: 6 multi-table sample datasets (`monthly_revenue`, `enterprise_accounts`, `daily_orders`, `conversion_funnel`, `service_spend`, `deals_pipeline`).
+  - `sampleDatasets.ts`: 10 sample tables (`monthly_revenue`, `enterprise_accounts`, `daily_orders`, `conversion_funnel`, `service_spend`, `deals_pipeline`, `stock_ohlc`, `project_roadmap`, `org_directory`, `global_flows`).
   - `sqlEngine.ts`: In-browser/Node `sql.js` (SQLite-Wasm) engine + `.csv`/`.tsv`/`.json`/`.jsonl`/`.parquet` (`hyparquet`) table importer + `/api/data/*` remote connector client.
 - `src/engine/`
   - `dashboard.ts`: Pure TypeScript `DashboardSpec` model, incremental `applyDashboardEdit` ops, fuzzy widget ref resolution, metric formatting, and HTML / SQL / Vega-Lite / Grafana JSON exporters.

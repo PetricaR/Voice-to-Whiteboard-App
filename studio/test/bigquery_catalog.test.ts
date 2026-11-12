@@ -436,4 +436,60 @@ describe('BigQuery Data Catalog API, Sync, Preview & Local SQLite Import', () =>
     const hdrs = buildGcpAuthHeaders(adcCreds);
     expect(hdrs['x-goog-user-project']).toBe('billing-target-proj');
   });
+
+  it('registers an ad-hoc synced project as an active source so its tables are queryable and removable', async () => {
+    upstream.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          datasets: [{ datasetReference: { datasetId: 'ops', projectId: 'adhoc-proj-789' }, location: 'US' }],
+        }),
+        { status: 200 },
+      ),
+    );
+    upstream.mockResolvedValueOnce(
+      new Response(JSON.stringify({ location: 'US', description: 'Ops dataset' }), { status: 200 }),
+    );
+    upstream.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({ tables: [{ tableReference: { tableId: 'incidents' }, type: 'TABLE' }] }),
+        { status: 200 },
+      ),
+    );
+    upstream.mockResolvedValueOnce(
+      new Response(
+        JSON.stringify({
+          type: 'TABLE',
+          numRows: '12',
+          schema: { fields: [{ name: 'incident_id', type: 'STRING' }] },
+        }),
+        { status: 200 },
+      ),
+    );
+
+    const syncRes = await fetch(`http://127.0.0.1:${port}/api/data/bq/sync`, {
+      method: 'POST',
+      headers: jsonHeaders(),
+      body: JSON.stringify({ project_id: 'adhoc-proj-789' }),
+    });
+    expect(syncRes.status).toBe(200);
+
+    // Preview on the synced project succeeds instead of failing isQueryableProject
+    upstream.mockResolvedValueOnce(
+      new Response(JSON.stringify({ totalBytesProcessed: '1024' }), { status: 200 }),
+    );
+    const estRes = await fetch(
+      `http://127.0.0.1:${port}/api/data/bq/preview?project_id=adhoc-proj-789&dataset_id=ops&table_id=incidents`,
+    );
+    expect(estRes.status).toBe(200);
+
+    // And the project appears in /api/data/bq/sources so it can be removed cleanly
+    const srcs = (await (await fetch(`http://127.0.0.1:${port}/api/data/bq/sources`)).json()) as { id: string; project_id: string }[];
+    const adhocSrc = srcs.find((s) => s.project_id === 'adhoc-proj-789');
+    expect(adhocSrc).toBeDefined();
+    const del = await fetch(`http://127.0.0.1:${port}/api/data/bq/sources/${adhocSrc!.id}?purge=1`, {
+      method: 'DELETE',
+      headers: { Origin: `http://127.0.0.1:${port}` },
+    });
+    expect(del.status).toBe(200);
+  });
 });

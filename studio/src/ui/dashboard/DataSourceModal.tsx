@@ -67,7 +67,7 @@ export function DataSourceModal({
       d.removeAttribute('data-closing');
       if (!d.open) {
         setUploadErr(null);
-        void refreshSchema(activeSource);
+        if (initialTab === 'files') void refreshSchema(activeSource);
         d.showModal();
       }
       return;
@@ -110,6 +110,7 @@ export function DataSourceModal({
 
   const handleFile = async (file: File | undefined) => {
     if (!file) return;
+    const uploadReq = ++schemaRequest.current;
     setBusy(true);
     setUploadErr(null);
     try {
@@ -119,9 +120,11 @@ export function DataSourceModal({
       notify(`Loaded "${imported.name}" (${imported.rowCount} rows) into local SQLite.`);
       onTableImported?.(imported);
     } catch (e) {
-      setUploadErr(e instanceof Error ? e.message : String(e));
+      if (uploadReq === schemaRequest.current) {
+        setUploadErr(e instanceof Error ? e.message : String(e));
+      }
     } finally {
-      setBusy(false);
+      if (uploadReq === schemaRequest.current) setBusy(false);
     }
   };
 

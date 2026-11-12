@@ -323,9 +323,17 @@ export function validateReadOnlySql(
   }
 
   const cleaned = rawSql.trim().replace(/;+\s*$/, '').trim();
-  const hasLimit = words.some((w) => w.value === 'limit');
+  let parenDepth = 0;
+  let hasTopLevelLimit = false;
+  for (const t of tokens) {
+    if (t.kind === 'other' && t.value === '(') parenDepth++;
+    else if (t.kind === 'other' && t.value === ')') parenDepth = Math.max(0, parenDepth - 1);
+    else if (parenDepth === 0 && t.kind === 'word' && !t.qualified && (t.value === 'limit' || t.value === 'fetch')) {
+      hasTopLevelLimit = true;
+    }
+  }
   const isExplain = first === 'explain' || first === 'values';
-  const finalSql = !hasLimit && !isExplain ? `${cleaned}\nLIMIT ${maxRows}` : cleaned;
+  const finalSql = !hasTopLevelLimit && !isExplain ? `${cleaned}\nLIMIT ${maxRows}` : cleaned;
 
   return {
     ok: true,

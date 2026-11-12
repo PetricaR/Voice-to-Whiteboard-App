@@ -11,11 +11,12 @@ Every request is a **deterministic, incremental edit** of your active workspace�
 ## Key Capabilities
 
 1. **Live SQL Dashboards with Transparent Lineage (`Dashboard` surface)**
-   - **Zero-config in-browser SQLite-Wasm (`sql.js`)** preloaded with 4 multi-table enterprise datasets (`monthly_revenue`, `enterprise_accounts`, `daily_orders`, `conversion_funnel`, `service_spend`, `deals_pipeline`).
+   - **Zero-config in-browser SQLite-Wasm (`sql.js`)** preloaded with 10 enterprise sample tables (`monthly_revenue`, `enterprise_accounts`, `daily_orders`, `conversion_funnel`, `service_spend`, `deals_pipeline`, `stock_ohlc`, `project_roadmap`, `org_directory`, `global_flows`).
    - **Instant file upload** (`.csv`, `.tsv`, `.json`, `.jsonl`, `.parquet` via `hyparquet`) directly into live queryable SQL tables.
-   - **Read-only server connectors** (`/api/data/*`) for BigQuery, ClickHouse HTTP, PostgreSQL HTTP, and REST/CSV endpoints—enforced by a strict single-statement `SELECT`/`WITH` SQL guard.
-   - **12 responsive Bento-grid visualizations** (`kpi`, `area`, `line`, `bar`, `stacked_bar`, `horizontal_bar`, `donut`, `pie`, `scatter`, `funnel`, `heatmap`, and accessible sortable `table`) with `:param` filter bars and live auto-refresh intervals.
-   - **Query & Lineage Inspector Drawer**: click any KPI figure, chart bar/slice, or `SQL` badge to inspect the exact SQL query, execution latency, refresh timestamp, raw result rows, edit SQL live, or click **Ask Gemini Live** for an instant spoken explanation.
+   - **BigQuery Data Catalog & Read-Only Connectors** (`/api/data/*`): discover accessible GCP projects, sync dataset/table schemas, run dry-run byte & cost estimates before previewing, enforce `maximumBytesBilled` caps, materialize tables into local SQLite-Wasm, or map dataset schemas & foreign-key relationships straight onto the Whiteboard—alongside ClickHouse HTTP, PostgreSQL HTTP, and REST JSON feeds guarded by a dialect-aware read-only SQL tokenizer.
+   - **48 responsive Bento-grid chart & table types** (KPIs, line/area/streamgraph/candlestick trends, bar/grouped/stacked/marimekko/waterfall/bullet/gauge comparisons, histogram/density/box/violin distributions, scatter/bubble/heatmap/parallel coordinates, treemap/sunburst/sankey/chord/network/org hierarchies, choropleth/bubble/flow/connection maps, trellis small multiples, and accessible sortable tables) with `:param` filter bars, reference lines/bands, annotations, and live auto-refresh intervals.
+   - **Closed-Loop Chart Review for Gemini (`chartInsights.ts`)**: every `create_dashboard`, `edit_dashboard`, and `refresh_dashboard` call executes the widget SQL, validates result shape & ordering against the chart type, returns ready-to-apply `update_widgets` patches and 12-column layout checks, and extracts verified statistical facts so spoken insights never hallucinate numbers.
+   - **Query & Lineage Inspector Drawer**: click any KPI figure, chart mark, or `SQL` badge to inspect the exact SQL query, execution latency, refresh timestamp, raw result rows, edit SQL live, or click **Ask Gemini Live** for an instant spoken explanation.
    - **BI & Report Handoffs**: export standalone interactive `.html` reports, annotated `.sql` query bundles, Vega-Lite `.vg.json` specs, and 24-column Grafana `.grafana.json` models.
 
 2. **Programmatic Motion Studio (`Motion` surface)**

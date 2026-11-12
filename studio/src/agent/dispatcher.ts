@@ -147,13 +147,14 @@ async function withChartReview(
   response: ToolResponse,
   ok: boolean,
   only?: Set<string>,
+  precomputed?: Map<string, QueryExecutionResult>,
 ): Promise<ToolResponse> {
   const dash = storeOf(ctx).scene.dashboard;
   if (!ok || !dash) return response;
   const widgets = only ? dash.widgets.filter((w) => only.has(w.id)) : dash.widgets;
   // The state goes last: it is what the model reads before its next call
   const { diagram, ...rest } = response;
-  return { ...rest, chartReview: await reviewDashboardCharts(dash, widgets), diagram };
+  return { ...rest, chartReview: await reviewDashboardCharts(dash, widgets, { precomputed }), diagram };
 }
 
 const asInt = (v: unknown, def: number) => {
@@ -260,12 +261,14 @@ const REVIEW_TIMEOUT_MS = 12_000;
 export async function reviewDashboardCharts(
   d: DashboardSpec,
   widgets: DashboardWidget[] = d.widgets,
-  opts: { layout?: boolean } = {},
+  opts: { layout?: boolean; precomputed?: Map<string, QueryExecutionResult> } = {},
 ): Promise<Record<string, unknown>> {
   const params = filterParamsOf(d);
   const inBrowser = typeof window !== 'undefined';
   const unverified: string[] = [];
   const reviews = await Promise.all(widgets.map(async (w) => {
+    const cached = opts.precomputed?.get(`${w.source}\0${w.sql}`);
+    if (cached) return reviewWidget(w, cached);
     // Remote sources are reached through the studio server only
     if (w.source !== 'local' && !inBrowser) {
       unverified.push(w.id);
@@ -403,12 +406,13 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
       // Validate read-only SQL and pre-verify local SQLite queries so Gemini catches column typos immediately
       const sqlErrors: string[] = [];
+      const precomputed = new Map<string, QueryExecutionResult>();
       const filterParams: Record<string, string> = {};
       for (const f of req.filters ?? []) {
         if (f?.param) filterParams[f.param] = f.value ?? f.options?.[0] ?? 'ALL';
       }
       for (const w of req.widgets ?? []) {
-        const src = w?.source || defaultSrc;
+        const src = (w?.source || defaultSrc).trim();
         const check = validateReadOnlySql(w?.sql ?? '', { dialect: dialectOfSource(src) });
         if (!check.ok) {
           sqlErrors.push(`Widget "${w?.title ?? 'unnamed'}": ${check.error}`);
@@ -418,6 +422,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           const qr = await executeSqlQuery(w.sql, { source: 'local', params: filterParams });
           if (!qr.ok) {
             sqlErrors.push(`Widget "${w.title}" SQL error on local SQLite: ${qr.error ?? 'Unknown SQL error'}`);
+          } else {
+            precomputed.set(`local\0${w.sql.trim()}`, qr);
           }
         }
       }
@@ -437,7 +443,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             meta,
           });
         }
-        return withChartReview(ctx, editResponse(ctx, res), res.ok);
+        return withChartReview(ctx, editResponse(ctx, res), res.ok, undefined, precomputed);
       }
       if (hasDash && req.replace !== true) {
         return {
@@ -451,7 +457,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       }
       const res = store.createDashboard(req, meta);
       if (res.ok) ws?.showView('dashboard');
-      return withChartReview(ctx, editResponse(ctx, res), res.ok);
+      return withChartReview(ctx, editResponse(ctx, res), res.ok, undefined, precomputed);
     }
 
     case 'edit_dashboard': {
@@ -463,10 +469,11 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       }
       const params = filterParamsOf(curDash);
       const sqlErrors: string[] = [];
+      const precomputed = new Map<string, QueryExecutionResult>();
       for (const w of [...(req.add_widgets ?? []), ...(req.update_widgets ?? [])]) {
         if (w.sql !== undefined) {
           // An updated widget keeps its own source unless the edit names another
-          const src = w.source || curDash.widgets.find((x) => x.id === (w as { id?: string }).id)?.source || curDash.defaultSource;
+          const src = (w.source || curDash.widgets.find((x) => x.id === (w as { id?: string }).id)?.source || curDash.defaultSource).trim();
           const check = validateReadOnlySql(w.sql, { dialect: dialectOfSource(src) });
           if (!check.ok) {
             sqlErrors.push(check.error);
@@ -476,6 +483,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             const qr = await executeSqlQuery(w.sql, { source: 'local', params });
             if (!qr.ok) {
               sqlErrors.push(`SQL error: ${qr.error ?? 'Unknown SQL error'}`);
+            } else {
+              precomputed.set(`local\0${w.sql.trim()}`, qr);
             }
           }
         }
@@ -486,8 +495,17 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       if (res.ok) ws?.showView('dashboard');
       // Only what this edit touched is reviewed; a changed filter value changes every chart
       const touched = new Set([...res.changes.addedWidgets, ...res.changes.updatedWidgets]);
-      const refiltered = (req.update_filters ?? []).some((f) => f.value !== undefined);
-      return withChartReview(ctx, editResponse(ctx, res), res.ok, refiltered ? undefined : touched);
+      const filtersChanged =
+        (req.update_filters ?? []).some((f) => f.value !== undefined) ||
+        Boolean(req.add_filters?.length) ||
+        Boolean(req.remove_filters?.length);
+      return withChartReview(
+        ctx,
+        editResponse(ctx, res),
+        res.ok,
+        filtersChanged ? undefined : touched,
+        filtersChanged ? undefined : precomputed,
+      );
     }
 
     case 'refresh_dashboard': {

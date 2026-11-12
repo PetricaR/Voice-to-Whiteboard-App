@@ -275,8 +275,9 @@ export function BigQueryCatalogPanel({
   // Result of the last load (the app's own toasts sit behind this modal's backdrop)
   const [notice, setNotice] = useState<string | null>(null);
 
-  // Panels: 'none' | 'discover' | 'add' | 'adhoc' | 'token'
-  const [panel, setPanel] = useState<'none' | 'discover' | 'add' | 'adhoc' | 'token'>('none');
+  // Panels: 'none' | 'discover' | 'add' | 'token'
+  const [panel, setPanel] = useState<'none' | 'discover' | 'add' | 'token'>('none');
+  const canManageSources = !auth.required || (auth.configured && auth.account?.plan === 'owner');
 
   // Add/Ad-hoc form fields
   const [projectIdInput, setProjectIdInput] = useState('');
@@ -416,17 +417,6 @@ export function BigQueryCatalogPanel({
     } finally {
       setSubmitting(false);
     }
-  };
-
-  const handleAdHocSync = async (e: React.FormEvent) => {
-    e.preventDefault();
-    if (!projectIdInput.trim()) return;
-    setPanel('none');
-    await sync.syncAdHoc({
-      project_id: projectIdInput.trim(),
-      dataset_filter: datasetFilterInput.trim() || null,
-      secret_name: secretNameInput.trim() || null,
-    });
   };
 
   const handleToggleSourceActive = async (s: BqSourceRead) => {
@@ -803,15 +793,6 @@ export function BigQueryCatalogPanel({
         <div className="bq-toolbar-actions">
           <button
             type="button"
-            className={`text-btn small${panel === 'adhoc' ? ' active' : ''}`}
-            aria-expanded={panel === 'adhoc'}
-            title="Sync a project once without registering it"
-            onClick={() => togglePanel('adhoc')}
-          >
-            <Icon name="cloud_sync" size={16} /> Sync Once
-          </button>
-          <button
-            type="button"
             className={`text-btn small${panel === 'token' ? ' active' : ''}`}
             aria-expanded={panel === 'token'}
             title="Configure GCP OAuth access token or ADC"
@@ -819,31 +800,37 @@ export function BigQueryCatalogPanel({
           >
             <Icon name="vpn_key" size={16} /> Auth
           </button>
-          <button
-            type="button"
-            className={`tonal-btn small${panel === 'discover' ? ' active' : ''}`}
-            aria-expanded={panel === 'discover'}
-            onClick={() => togglePanel('discover')}
-          >
-            <Icon name="find_in_page" size={16} /> Discover Projects
-          </button>
-          <button
-            type="button"
-            className={`tonal-btn small${panel === 'add' ? ' active' : ''}`}
-            aria-expanded={panel === 'add'}
-            onClick={() => togglePanel('add')}
-          >
-            <Icon name="add" size={16} /> Add Project
-          </button>
-          {activeSources.length > 0 && (
-            <button
-              type="button"
-              className="filled-btn small"
-              disabled={sync.syncing}
-              onClick={() => sync.syncSources(activeSources)}
-            >
-              <Icon name="refresh" size={16} /> {sync.syncing ? 'Syncing…' : 'Sync All'}
-            </button>
+          {canManageSources ? (
+            <>
+              <button
+                type="button"
+                className={`tonal-btn small${panel === 'discover' ? ' active' : ''}`}
+                aria-expanded={panel === 'discover'}
+                onClick={() => togglePanel('discover')}
+              >
+                <Icon name="find_in_page" size={16} /> Discover Projects
+              </button>
+              <button
+                type="button"
+                className={`tonal-btn small${panel === 'add' ? ' active' : ''}`}
+                aria-expanded={panel === 'add'}
+                onClick={() => togglePanel('add')}
+              >
+                <Icon name="add" size={16} /> Add Project
+              </button>
+              {activeSources.length > 0 && (
+                <button
+                  type="button"
+                  className="filled-btn small"
+                  disabled={sync.syncing}
+                  onClick={() => sync.syncSources(activeSources)}
+                >
+                  <Icon name="refresh" size={16} /> {sync.syncing ? 'Syncing…' : 'Sync All'}
+                </button>
+              )}
+            </>
+          ) : (
+            <span className="muted-hint">Sources managed by studio owner</span>
           )}
         </div>
       </div>
@@ -883,10 +870,10 @@ export function BigQueryCatalogPanel({
         />
       )}
 
-      {(panel === 'add' || panel === 'adhoc') && (
-        <form className="bq-subpanel" onSubmit={panel === 'add' ? handleAddSource : handleAdHocSync}>
+      {panel === 'add' && canManageSources && (
+        <form className="bq-subpanel" onSubmit={handleAddSource}>
           <div className="bq-subpanel-head">
-            <strong>{panel === 'add' ? 'Register a GCP project' : 'Sync a project once'}</strong>
+            <strong>Register a GCP project</strong>
             <button type="button" className="text-btn small" onClick={() => setPanel('none')}>
               Close
             </button>
@@ -904,17 +891,15 @@ export function BigQueryCatalogPanel({
                 spellCheck={false}
               />
             </label>
-            {panel === 'add' && (
-              <label>
-                <span>Display name</span>
-                <input
-                  className="bq-input"
-                  value={displayNameInput}
-                  onChange={(e) => setDisplayNameInput(e.target.value)}
-                  placeholder="Production Analytics"
-                />
-              </label>
-            )}
+            <label>
+              <span>Display name</span>
+              <input
+                className="bq-input"
+                value={displayNameInput}
+                onChange={(e) => setDisplayNameInput(e.target.value)}
+                placeholder="Production Analytics"
+              />
+            </label>
             <label>
               <span>Dataset prefix filter</span>
               <input
@@ -944,7 +929,7 @@ export function BigQueryCatalogPanel({
               <code>BIGQUERY_ACCESS_TOKEN</code>, or the Secret Manager key.
             </span>
             <button type="submit" className="filled-btn small" disabled={submitting || sync.syncing}>
-              {panel === 'add' ? (submitting ? 'Adding…' : 'Add & Sync') : 'Run Sync'}
+              {submitting ? 'Adding…' : 'Add & Sync'}
             </button>
           </div>
         </form>
@@ -1007,6 +992,7 @@ export function BigQueryCatalogPanel({
                     type="checkbox"
                     role="switch"
                     aria-label={`${s.display_name || s.project_id} is active`}
+                    disabled={!canManageSources}
                     checked={s.is_active}
                     onChange={() => handleToggleSourceActive(s)}
                   />
@@ -1028,17 +1014,19 @@ export function BigQueryCatalogPanel({
                     )}
                   </div>
                 </div>
-                <div className="bq-source-btns">
-                  <button
-                    type="button"
-                    className="tonal-btn small"
-                    disabled={sync.syncing || !s.is_active}
-                    onClick={() => sync.syncSources([s])}
-                  >
-                    <Icon name="refresh" size={15} /> Sync
-                  </button>
-                  <IconButton icon="delete" label={`Remove ${s.project_id}`} onClick={() => handleRemoveSource(s)} />
-                </div>
+                {canManageSources && (
+                  <div className="bq-source-btns">
+                    <button
+                      type="button"
+                      className="tonal-btn small"
+                      disabled={sync.syncing || !s.is_active}
+                      onClick={() => sync.syncSources([s])}
+                    >
+                      <Icon name="refresh" size={15} /> Sync
+                    </button>
+                    <IconButton icon="delete" label={`Remove ${s.project_id}`} onClick={() => handleRemoveSource(s)} />
+                  </div>
+                )}
               </li>
             ))}
           </ul>
@@ -1103,12 +1091,16 @@ export function BigQueryCatalogPanel({
               </strong>
               <p className="muted-hint">
                 {sources.length === 0
-                  ? 'Connect a Google Cloud project, sync its datasets and schemas, then load tables into live dashboards, local SQLite or the whiteboard.'
+                  ? canManageSources
+                    ? 'Connect a Google Cloud project, sync its datasets and schemas, then load tables into live dashboards, local SQLite or the whiteboard.'
+                    : 'An owner of this studio has not connected any Google Cloud projects yet.'
                   : datasets.length === 0
-                    ? 'Run Sync All to pull the datasets, tables and schemas of the connected projects.'
+                    ? canManageSources
+                      ? 'Run Sync All to pull the datasets, tables and schemas of the connected projects.'
+                      : 'An owner of this studio has not synced the connected projects yet.'
                     : 'Try another search, or another project.'}
               </p>
-              {sources.length === 0 ? (
+              {sources.length === 0 && canManageSources ? (
                 <div className="bq-empty-actions">
                   <button type="button" className="filled-btn small" onClick={() => setPanel('discover')}>
                     <Icon name="find_in_page" size={16} /> Discover Projects

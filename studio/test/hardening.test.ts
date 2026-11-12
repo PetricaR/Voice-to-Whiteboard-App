@@ -104,6 +104,29 @@ describe('SQL guard reads a query the way the target database does', () => {
     expect(res.rows).toHaveLength(5);
     expect(res.truncated).toBe(true);
   });
+
+  it('adds an outer LIMIT even when a CTE or aggregate function has an inner LIMIT', () => {
+    const cte = validateReadOnlySql(
+      'WITH top_regions AS (SELECT region FROM monthly_revenue LIMIT 2) SELECT * FROM monthly_revenue',
+      { maxRows: 250, dialect: 'postgres' },
+    );
+    expect(cte.ok).toBe(true);
+    if (cte.ok) expect(cte.sql.endsWith('\nLIMIT 250')).toBe(true);
+
+    const agg = validateReadOnlySql(
+      'SELECT region, ARRAY_AGG(plan LIMIT 3) AS plans FROM `p.ds.t` GROUP BY region',
+      { maxRows: 100, dialect: 'bigquery' },
+    );
+    expect(agg.ok).toBe(true);
+    if (agg.ok) expect(agg.sql.endsWith('\nLIMIT 100')).toBe(true);
+
+    const outer = validateReadOnlySql(
+      'WITH top_regions AS (SELECT region FROM monthly_revenue LIMIT 2) SELECT * FROM monthly_revenue LIMIT 10',
+      { maxRows: 250, dialect: 'postgres' },
+    );
+    expect(outer.ok).toBe(true);
+    if (outer.ok) expect(outer.sql.endsWith('LIMIT 10')).toBe(true);
+  });
 });
 
 describe('schema answers for the model stay small', () => {
