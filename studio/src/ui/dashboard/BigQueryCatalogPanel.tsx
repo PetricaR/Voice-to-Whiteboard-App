@@ -175,6 +175,10 @@ function ProjectPickerPanel({
           Close
         </button>
       </div>
+      <p className="muted-hint" style={{ margin: '0 0 8px' }}>
+        Lists the projects the studio server's Google identity can see (on Cloud Run, its service account).
+        To list the projects of your own account, paste an access token under <em>Auth</em> first.
+      </p>
 
       {loading ? (
         <p className="muted-hint">Querying Cloud Resource Manager for active GCP projects…</p>
