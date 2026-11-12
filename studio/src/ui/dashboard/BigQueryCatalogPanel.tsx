@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   bqApi,
   compactNumber,
@@ -41,7 +41,7 @@ function SyncProgressList({
   return (
     <div className="bq-sync-progress" role="status" aria-live="polite">
       <div className="bq-sync-progress-head">
-        <span>BigQuery Sync Progress</span>
+        <span>Sync progress</span>
         {allFinished && onDismiss && (
           <button type="button" className="text-btn small" onClick={onDismiss}>
             Dismiss
@@ -78,18 +78,20 @@ function SyncProgressList({
                       {r.columns_synced} cols
                     </>
                   )}
-                  {item.error && (
+                  {item.status === 'error' && !r && 'Sync failed'}
+                  {item.error && item.status !== 'error' && (
                     <button
                       type="button"
                       className="bq-err-toggle"
+                      aria-expanded={openErr === item.key}
                       onClick={() => setOpenErr(openErr === item.key ? null : item.key)}
                     >
-                      {item.status === 'partial' ? `${r?.errors.length ?? 1} warning(s)` : 'Details'}
+                      {plural(r?.errors.length ?? 1, 'warning')}
                     </button>
                   )}
                 </span>
               </div>
-              {item.error && openErr === item.key && (
+              {item.error && (item.status === 'error' || openErr === item.key) && (
                 <div className="bq-sync-error-detail">{item.error}</div>
               )}
             </div>
@@ -105,7 +107,8 @@ function ProjectPickerPanel({
   onAdded,
   onCancel,
 }: {
-  onAdded: (added: BqSourceRead[]) => void;
+  /** `allAdded` is false when some of the chosen projects failed, so the picker stays open to say so. */
+  onAdded: (added: BqSourceRead[], allAdded: boolean) => void;
   onCancel: () => void;
 }) {
   const [projects, setProjects] = useState<BqProjectInfo[]>([]);
@@ -151,6 +154,7 @@ function ProjectPickerPanel({
     setAdding(true);
     setError('');
     const created: BqSourceRead[] = [];
+    const failed: string[] = [];
     for (const pid of selected) {
       const info = projects.find((p) => p.project_id === pid);
       try {
@@ -160,49 +164,59 @@ function ProjectPickerPanel({
         });
         created.push(src);
       } catch (e) {
-        setError(e instanceof Error ? e.message : `Failed to add ${pid}`);
+        failed.push(`${pid}: ${e instanceof Error ? e.message : 'could not be added'}`);
       }
     }
     setAdding(false);
-    if (created.length > 0) onAdded(created);
+    if (failed.length > 0) setError(failed.join(' · '));
+    if (created.length > 0) onAdded(created, failed.length === 0);
+    if (failed.length > 0) {
+      setSelected(new Set());
+      if (created.length > 0) fetchProjects();
+    }
   };
 
   return (
     <div className="bq-subpanel">
       <div className="bq-subpanel-head">
-        <strong>Discover Accessible GCP Projects</strong>
+        <strong>Discover accessible GCP projects</strong>
         <button type="button" className="text-btn small" onClick={onCancel}>
           Close
         </button>
       </div>
-      <p className="muted-hint" style={{ margin: '0 0 8px' }}>
+      <p className="muted-hint">
         Lists the projects the studio server's Google identity can see (on Cloud Run, its service account).
         To list the projects of your own account, paste an access token under <em>Auth</em> first.
       </p>
 
       {loading ? (
         <p className="muted-hint">Querying Cloud Resource Manager for active GCP projects…</p>
-      ) : error ? (
-        <div className="widget-error" role="alert">
-          <div>{error}</div>
-          <div className="bq-inline-actions">
-            <button type="button" className="tonal-btn small" onClick={fetchProjects}>
-              Retry
-            </button>
-          </div>
+      ) : error && projects.length === 0 ? (
+        <div className="widget-error bq-error-with-action" role="alert">
+          <span>{error}</span>
+          <button type="button" className="text-btn small" onClick={fetchProjects}>
+            Retry
+          </button>
         </div>
       ) : projects.length === 0 ? (
         <p className="muted-hint">No active GCP projects found for current credentials.</p>
       ) : (
         <>
+          {error && (
+            <div className="widget-error" role="alert">
+              {error}
+            </div>
+          )}
           <input
             type="search"
             className="bq-input"
+            aria-label="Filter projects"
             value={filter}
             onChange={(e) => setFilter(e.target.value)}
             placeholder={`Filter ${projects.length} accessible GCP projects…`}
           />
           <div className="bq-project-list">
+            {filtered.length === 0 && <p className="muted-hint">No projects match “{filter.trim()}”.</p>}
             {filtered.map((p) => (
               <label
                 key={p.project_id}
@@ -232,7 +246,11 @@ function ProjectPickerPanel({
               disabled={selected.size === 0 || adding}
               onClick={handleAddSelected}
             >
-              {adding ? 'Connecting…' : `Add & Sync ${selected.size || ''} ${selected.size === 1 ? 'Project' : 'Projects'}`}
+              {adding
+                ? 'Connecting…'
+                : selected.size > 0
+                  ? `Add & Sync ${plural(selected.size, 'Project')}`
+                  : 'Add & Sync Projects'}
             </button>
           </div>
         </>
@@ -254,6 +272,8 @@ export function BigQueryCatalogPanel({
   const [connectors, setConnectors] = useState<DataSourceInfo[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  // Result of the last load (the app's own toasts sit behind this modal's backdrop)
+  const [notice, setNotice] = useState<string | null>(null);
 
   // Panels: 'none' | 'discover' | 'add' | 'adhoc' | 'token'
   const [panel, setPanel] = useState<'none' | 'discover' | 'add' | 'adhoc' | 'token'>('none');
@@ -272,6 +292,9 @@ export function BigQueryCatalogPanel({
   const [projectFilter, setProjectFilter] = useState<string>('ALL');
   const [search, setSearch] = useState('');
   const [expandedDatasets, setExpandedDatasets] = useState<Set<string>>(new Set());
+  // While searching every match is open; these are the ones closed by hand
+  const [collapsedInSearch, setCollapsedInSearch] = useState<Set<string>>(new Set());
+  const [expandedColumns, setExpandedColumns] = useState<Set<string>>(new Set());
 
   // Per-table preview & import state
   const [activePreviewKey, setActivePreviewKey] = useState<string | null>(null);
@@ -280,6 +303,9 @@ export function BigQueryCatalogPanel({
   const [previewBusy, setPreviewBusy] = useState(false);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [importingKey, setImportingKey] = useState<string | null>(null);
+  const [importingDatasetId, setImportingDatasetId] = useState<string | null>(null);
+  // The preview that was asked for last: a slower, older answer must not replace it
+  const previewRequest = useRef(0);
 
   const loadCatalog = useCallback(async () => {
     setLoading(true);
@@ -313,10 +339,15 @@ export function BigQueryCatalogPanel({
   const sync = useSourceSync(loadCatalog);
   const activeSources = useMemo(() => sources.filter((s) => s.is_active), [sources]);
 
+  // A filter on a project that has since been removed would hide everything with no way back
+  const activeProjectFilter =
+    sources.length > 1 && sources.some((s) => s.project_id === projectFilter) ? projectFilter : 'ALL';
+  const searching = search.trim() !== '';
+
   const filteredDatasets = useMemo(() => {
     const q = search.trim().toLowerCase();
     return datasets
-      .filter((ds) => projectFilter === 'ALL' || ds.project_id === projectFilter)
+      .filter((ds) => activeProjectFilter === 'ALL' || ds.project_id === activeProjectFilter)
       .map((ds) => {
         if (!q) return ds;
         const dsHit =
@@ -336,7 +367,7 @@ export function BigQueryCatalogPanel({
         return { ...ds, tables: matchingTables };
       })
       .filter((d): d is BqDatasetRead => d !== null);
-  }, [datasets, projectFilter, search]);
+  }, [datasets, activeProjectFilter, search]);
 
   const stats = useMemo(() => {
     let tables = 0;
@@ -408,17 +439,21 @@ export function BigQueryCatalogPanel({
   };
 
   const handleRemoveSource = async (s: BqSourceRead) => {
+    const name = s.display_name || s.project_id;
+    if (!window.confirm(`Remove "${name}" and its synced datasets and tables from the catalog?`)) return;
     try {
       await bqApi.deleteSource(s.id, true);
       await loadCatalog();
-      notify(`Removed BigQuery source "${s.display_name || s.project_id}".`);
+      setNotice(`Removed "${name}" from the catalog.`);
+      notify(`Removed BigQuery source "${name}".`);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
     }
   };
 
   const toggleDatasetExpanded = (dsId: string) => {
-    setExpandedDatasets((prev) => {
+    const setter = searching ? setCollapsedInSearch : setExpandedDatasets;
+    setter((prev) => {
       const next = new Set(prev);
       if (next.has(dsId)) next.delete(dsId);
       else next.add(dsId);
@@ -427,8 +462,10 @@ export function BigQueryCatalogPanel({
   };
 
   const handleEstimatePreview = async (tbl: BqTableSummary) => {
+    const request = ++previewRequest.current;
     if (activePreviewKey === tbl.full_name) {
       setActivePreviewKey(null);
+      setPreviewBusy(false);
       return;
     }
     setActivePreviewKey(tbl.full_name);
@@ -443,15 +480,18 @@ export function BigQueryCatalogPanel({
         table_id: tbl.table_id,
         limit: 100,
       });
+      if (request !== previewRequest.current) return;
       setPreviewEstimate(est);
     } catch (err) {
+      if (request !== previewRequest.current) return;
       setPreviewError(err instanceof Error ? err.message : String(err));
     } finally {
-      setPreviewBusy(false);
+      if (request === previewRequest.current) setPreviewBusy(false);
     }
   };
 
   const handleRunPreview = async (tbl: BqTableSummary) => {
+    const request = ++previewRequest.current;
     setPreviewBusy(true);
     setPreviewError(null);
     try {
@@ -461,11 +501,13 @@ export function BigQueryCatalogPanel({
         table_id: tbl.table_id,
         limit: 100,
       });
+      if (request !== previewRequest.current) return;
       setPreviewData(res);
     } catch (err) {
+      if (request !== previewRequest.current) return;
       setPreviewError(err instanceof Error ? err.message : String(err));
     } finally {
-      setPreviewBusy(false);
+      if (request === previewRequest.current) setPreviewBusy(false);
     }
   };
 
@@ -497,12 +539,13 @@ export function BigQueryCatalogPanel({
       });
       onLocalTableLoaded?.(meta);
       if (!silent) {
+        setNotice(`Loaded "${meta.name}" (${plural(meta.rowCount ?? res.row_count, 'row')}) into local SQLite.`);
         notify(`Loaded "${meta.name}" (${meta.rowCount} rows) from BigQuery into local SQLite.`);
       }
       return meta;
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
-      setError(msg);
+      setError(`Could not load ${tbl.dataset_id}.${tbl.table_id}: ${msg}`);
       return null;
     } finally {
       setImportingKey(null);
@@ -512,17 +555,24 @@ export function BigQueryCatalogPanel({
   const handleImportDatasetToLocal = async (ds: BqDatasetRead) => {
     const targets = ds.tables.slice(0, 8);
     if (targets.length === 0) return;
-    setImportingKey(ds.id);
+    setImportingDatasetId(ds.id);
+    setError(null);
     let loadedCount = 0;
-    for (const tbl of targets) {
-      const meta = await handleImportTableToLocal(tbl, true);
-      if (meta) loadedCount += 1;
+    try {
+      for (const tbl of targets) {
+        const meta = await handleImportTableToLocal(tbl, true);
+        if (meta) loadedCount += 1;
+      }
+    } finally {
+      setImportingDatasetId(null);
     }
-    setImportingKey(null);
     if (loadedCount > 0) {
-      notify(
-        `Loaded ${plural(loadedCount, 'table')} from ${ds.project_id}.${ds.dataset_id} into local SQLite-Wasm.`,
-      );
+      const skipped = ds.tables.length - targets.length;
+      const msg =
+        `Loaded ${plural(loadedCount, 'table')} from ${ds.dataset_id} into local SQLite` +
+        (skipped > 0 ? ` (the first ${targets.length} of ${ds.tables.length}).` : '.');
+      setNotice(msg);
+      notify(msg);
     }
   };
 
@@ -736,49 +786,54 @@ export function BigQueryCatalogPanel({
     onCloseModal();
   };
 
+  const togglePanel = (next: Exclude<typeof panel, 'none'>) => setPanel(panel === next ? 'none' : next);
+  const COLUMN_PREVIEW_COUNT = 12;
+
   return (
     <div className="bq-catalog-panel">
-      {/* Summary & Action Bar */}
+      {/* Summary & actions */}
       <div className="bq-topbar">
-        <div className="bq-stats-strip">
-          <span><strong>{stats.projects}</strong> {stats.projects === 1 ? 'project' : 'projects'}</span>
-          <span>·</span>
-          <span><strong>{stats.datasets}</strong> {stats.datasets === 1 ? 'dataset' : 'datasets'}</span>
-          <span>·</span>
-          <span><strong>{stats.tables}</strong> {stats.tables === 1 ? 'table' : 'tables'}</span>
-          <span>·</span>
-          <span><strong>{stats.columns}</strong> cols</span>
-        </div>
+        <dl className="bq-stats-strip" aria-label="Catalog size">
+          <div><dt>{stats.projects === 1 ? 'Project' : 'Projects'}</dt><dd>{compactNumber(stats.projects)}</dd></div>
+          <div><dt>{stats.datasets === 1 ? 'Dataset' : 'Datasets'}</dt><dd>{compactNumber(stats.datasets)}</dd></div>
+          <div><dt>{stats.tables === 1 ? 'Table' : 'Tables'}</dt><dd>{compactNumber(stats.tables)}</dd></div>
+          <div><dt>{stats.columns === 1 ? 'Column' : 'Columns'}</dt><dd>{compactNumber(stats.columns)}</dd></div>
+        </dl>
 
         <div className="bq-toolbar-actions">
           <button
             type="button"
-            className="tonal-btn small"
-            onClick={() => setPanel(panel === 'discover' ? 'none' : 'discover')}
-          >
-            <Icon name="find_in_page" size={16} /> Discover Projects
-          </button>
-          <button
-            type="button"
-            className="tonal-btn small"
-            onClick={() => setPanel(panel === 'add' ? 'none' : 'add')}
-          >
-            <Icon name="add" size={16} /> Add Project
-          </button>
-          <button
-            type="button"
-            className="tonal-btn small"
-            onClick={() => setPanel(panel === 'adhoc' ? 'none' : 'adhoc')}
+            className={`text-btn small${panel === 'adhoc' ? ' active' : ''}`}
+            aria-expanded={panel === 'adhoc'}
+            title="Sync a project once without registering it"
+            onClick={() => togglePanel('adhoc')}
           >
             <Icon name="cloud_sync" size={16} /> Sync Once
           </button>
           <button
             type="button"
-            className="tonal-btn small"
+            className={`text-btn small${panel === 'token' ? ' active' : ''}`}
+            aria-expanded={panel === 'token'}
             title="Configure GCP OAuth access token or ADC"
-            onClick={() => setPanel(panel === 'token' ? 'none' : 'token')}
+            onClick={() => togglePanel('token')}
           >
             <Icon name="vpn_key" size={16} /> Auth
+          </button>
+          <button
+            type="button"
+            className={`tonal-btn small${panel === 'discover' ? ' active' : ''}`}
+            aria-expanded={panel === 'discover'}
+            onClick={() => togglePanel('discover')}
+          >
+            <Icon name="find_in_page" size={16} /> Discover Projects
+          </button>
+          <button
+            type="button"
+            className={`tonal-btn small${panel === 'add' ? ' active' : ''}`}
+            aria-expanded={panel === 'add'}
+            onClick={() => togglePanel('add')}
+          >
+            <Icon name="add" size={16} /> Add Project
           </button>
           {activeSources.length > 0 && (
             <button
@@ -793,18 +848,35 @@ export function BigQueryCatalogPanel({
         </div>
       </div>
 
-      {error && (
-        <div className="widget-error" role="alert">
-          {error}
+      {(error || notice) && (
+        <div className="bq-banners">
+          {error && (
+            <div className="widget-error bq-banner" role="alert">
+              <Icon name="error" size={16} />
+              <span>{error}</span>
+              <button type="button" className="text-btn small" onClick={() => setError(null)}>
+                Dismiss
+              </button>
+            </div>
+          )}
+          {notice && !error && (
+            <div className="bq-banner bq-banner-ok" role="status">
+              <Icon name="check_circle" size={16} />
+              <span>{notice}</span>
+              <button type="button" className="text-btn small" onClick={() => setNotice(null)}>
+                Dismiss
+              </button>
+            </div>
+          )}
         </div>
       )}
 
-      {/* Expandable Action Panels */}
+      {/* Expandable action panels */}
       {panel === 'discover' && (
         <ProjectPickerPanel
           onCancel={() => setPanel('none')}
-          onAdded={async (added) => {
-            setPanel('none');
+          onAdded={async (added, allAdded) => {
+            if (allAdded) setPanel('none');
             await loadCatalog();
             void sync.syncSources(added);
           }}
@@ -812,32 +884,29 @@ export function BigQueryCatalogPanel({
       )}
 
       {(panel === 'add' || panel === 'adhoc') && (
-        <form
-          className="bq-subpanel bq-form-grid"
-          onSubmit={panel === 'add' ? handleAddSource : handleAdHocSync}
-        >
+        <form className="bq-subpanel" onSubmit={panel === 'add' ? handleAddSource : handleAdHocSync}>
           <div className="bq-subpanel-head">
-            <strong>
-              {panel === 'add' ? 'Register GCP Project Source' : 'One-Off Project Sync'}
-            </strong>
+            <strong>{panel === 'add' ? 'Register a GCP project' : 'Sync a project once'}</strong>
             <button type="button" className="text-btn small" onClick={() => setPanel('none')}>
               Close
             </button>
           </div>
           <div className="bq-fields-row">
             <label>
-              <span>GCP Project ID *</span>
+              <span>GCP project ID *</span>
               <input
                 required
                 className="bq-input"
                 value={projectIdInput}
                 onChange={(e) => setProjectIdInput(e.target.value)}
                 placeholder="analytics-prod-123"
+                autoComplete="off"
+                spellCheck={false}
               />
             </label>
             {panel === 'add' && (
               <label>
-                <span>Display Name</span>
+                <span>Display name</span>
                 <input
                   className="bq-input"
                   value={displayNameInput}
@@ -847,27 +916,32 @@ export function BigQueryCatalogPanel({
               </label>
             )}
             <label>
-              <span>Dataset Prefix Filter</span>
+              <span>Dataset prefix filter</span>
               <input
                 className="bq-input"
                 value={datasetFilterInput}
                 onChange={(e) => setDatasetFilterInput(e.target.value)}
                 placeholder="mart_ (optional)"
+                autoComplete="off"
+                spellCheck={false}
               />
             </label>
             <label>
-              <span>Secret Manager SA Key</span>
+              <span>Secret Manager SA key</span>
               <input
                 className="bq-input"
                 value={secretNameInput}
                 onChange={(e) => setSecretNameInput(e.target.value)}
                 placeholder="bq-reader-sa (optional)"
+                autoComplete="off"
+                spellCheck={false}
               />
             </label>
           </div>
           <div className="bq-subpanel-foot">
             <span className="muted-hint">
-              Uses server ADC (`gcloud auth application-default login`), `BIGQUERY_ACCESS_TOKEN`, or Secret Manager SA key.
+              Uses the server's ADC (<code>gcloud auth application-default login</code>),{' '}
+              <code>BIGQUERY_ACCESS_TOKEN</code>, or the Secret Manager key.
             </span>
             <button type="submit" className="filled-btn small" disabled={submitting || sync.syncing}>
               {panel === 'add' ? (submitting ? 'Adding…' : 'Add & Sync') : 'Run Sync'}
@@ -879,20 +953,23 @@ export function BigQueryCatalogPanel({
       {panel === 'token' && (
         <div className="bq-subpanel">
           <div className="bq-subpanel-head">
-            <strong>Google Cloud Authentication</strong>
+            <strong>Google Cloud authentication</strong>
             <button type="button" className="text-btn small" onClick={() => setPanel('none')}>
               Close
             </button>
           </div>
-          <p className="muted-hint" style={{ margin: '0 0 8px' }}>
-            By default the Studio server authenticates automatically via Application Default Credentials
-            (<code>gcloud auth application-default login</code>), Cloud Run workload identity, or per-project Secret Manager keys.
-            You can also paste a short-lived OAuth token (<code>gcloud auth print-access-token</code>) for this browser session:
+          <p className="muted-hint">
+            By default the Studio server authenticates with Application Default Credentials
+            (<code>gcloud auth application-default login</code>), Cloud Run workload identity, or per-project Secret
+            Manager keys. You can also paste a short-lived OAuth token (<code>gcloud auth print-access-token</code>)
+            for this browser session:
           </p>
           <div className="bq-inline-actions">
             <input
               type="password"
               className="bq-input"
+              aria-label="GCP access token"
+              autoComplete="off"
               value={gcpToken}
               onChange={(e) => setGcpToken(e.target.value)}
               placeholder="ya29.a0AfH6SM… (optional session override)"
@@ -903,7 +980,11 @@ export function BigQueryCatalogPanel({
               onClick={() => {
                 setSessionGcpToken(gcpToken);
                 setPanel('none');
-                notify(gcpToken.trim() ? 'Saved GCP session token.' : 'Cleared GCP session token (using server ADC).');
+                const msg = gcpToken.trim()
+                  ? 'Saved GCP session token.'
+                  : 'Cleared GCP session token (using server ADC).';
+                setNotice(msg);
+                notify(msg);
               }}
             >
               Save
@@ -914,293 +995,359 @@ export function BigQueryCatalogPanel({
 
       <SyncProgressList items={sync.items} onDismiss={sync.clear} />
 
-      {/* Registered GCP Sources */}
+      {/* Registered GCP projects */}
       {sources.length > 0 && (
-        <div className="bq-sources-strip">
-          {sources.map((s) => (
-            <div key={s.id} className={`bq-source-card${s.is_active ? '' : ' is-paused'}`}>
-              <label className="bq-source-toggle" title={s.is_active ? 'Active source' : 'Paused'}>
-                <input
-                  type="checkbox"
-                  checked={s.is_active}
-                  onChange={() => handleToggleSourceActive(s)}
-                />
-              </label>
-              <div className="bq-source-meta">
-                <div className="bq-source-title">
-                  <strong>{s.display_name || s.project_id}</strong>
-                  {s.display_name && <code>{s.project_id}</code>}
-                  {s.dataset_filter && <span className="row-badge">{s.dataset_filter}*</span>}
-                  {s.secret_name && <span className="row-badge">SM: {s.secret_name}</span>}
-                </div>
-                <small className="muted-hint">Synced: {formatDateTime(s.last_synced_at)}</small>
-              </div>
-              <div className="bq-source-btns">
-                <button
-                  type="button"
-                  className="tonal-btn small"
-                  disabled={sync.syncing || !s.is_active}
-                  onClick={() => sync.syncSources([s])}
-                >
-                  <Icon name="refresh" size={15} /> Sync
-                </button>
-                <IconButton
-                  icon="delete"
-                  label={`Remove ${s.project_id}`}
-                  onClick={() => handleRemoveSource(s)}
-                />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* Search & Project Filter */}
-      <div className="bq-browser-controls">
-        <input
-          type="search"
-          className="bq-input"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-          placeholder="Search BigQuery datasets, tables, descriptions, or column names…"
-        />
-        {sources.length > 1 && (
-          <div className="source-tabs" style={{ marginBottom: 0 }}>
-            <button
-              type="button"
-              className={`source-chip ${projectFilter === 'ALL' ? 'active' : ''}`}
-              onClick={() => setProjectFilter('ALL')}
-            >
-              All projects
-            </button>
+        <section className="bq-section" aria-label="Connected projects">
+          <h3 className="bq-section-title">Connected projects</h3>
+          <ul className="bq-source-list">
             {sources.map((s) => (
-              <button
-                key={s.id}
-                type="button"
-                className={`source-chip ${projectFilter === s.project_id ? 'active' : ''}`}
-                onClick={() => setProjectFilter(s.project_id)}
-              >
-                {s.display_name || s.project_id}
-              </button>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Dataset & Table Tree */}
-      <div className="bq-dataset-list">
-        {loading ? (
-          <p className="muted-hint">Loading BigQuery catalog…</p>
-        ) : filteredDatasets.length === 0 ? (
-          <div className="bq-empty-box">
-            <Icon name="cloud_sync" size={28} />
-            <div>
-              <strong>
-                {sources.length === 0
-                  ? 'No GCP BigQuery projects connected yet'
-                  : datasets.length === 0
-                    ? 'Projects connected — click Sync All to pull datasets & tables'
-                    : 'No datasets or tables match your filter'}
-              </strong>
-              <p className="muted-hint">
-                Connect a Google Cloud project via <em>Discover Projects</em> or <em>Add Project</em>, sync its datasets
-                and schemas, then load tables into Live Dashboards, local SQLite-Wasm, or the Whiteboard.
-              </p>
-            </div>
-          </div>
-        ) : (
-          filteredDatasets.map((ds) => {
-            const expanded = expandedDatasets.has(ds.id) || Boolean(search.trim());
-            const dsImporting = importingKey === ds.id;
-            return (
-              <div key={ds.id} className="bq-dataset-card">
-                <div className="bq-dataset-head">
-                  <button
-                    type="button"
-                    className="bq-dataset-toggle"
-                    onClick={() => toggleDatasetExpanded(ds.id)}
-                    aria-expanded={expanded}
-                  >
-                    <Icon
-                      name="chevron_right"
-                      size={18}
-                      className={expanded ? 'bq-chevron open' : 'bq-chevron'}
-                    />
-                    <Icon name="dataset" size={18} />
-                    <span className="bq-dataset-name">
-                      <code>{ds.project_id}</code>
-                      <span>/</span>
-                      <strong>{ds.dataset_id}</strong>
-                    </span>
-                    {ds.location && <span className="row-badge">{ds.location}</span>}
-                    <span className="row-badge">{plural(ds.tables.length, 'table')}</span>
-                  </button>
-
-                  <div className="bq-dataset-actions">
-                    <button
-                      type="button"
-                      className="tonal-btn small"
-                      disabled={dsImporting || ds.tables.length === 0}
-                      title="Import dataset tables into local in-browser SQLite-Wasm"
-                      onClick={() => handleImportDatasetToLocal(ds)}
-                    >
-                      <Icon name="download" size={15} />{' '}
-                      {dsImporting ? 'Loading…' : 'Load Dataset to SQLite'}
-                    </button>
-                    <button
-                      type="button"
-                      className="tonal-btn small"
-                      disabled={ds.tables.length === 0}
-                      title="Draw dataset schema & table relationships on the Whiteboard"
-                      onClick={() => handleDrawDatasetOnWhiteboard(ds)}
-                    >
-                      <Icon name="account_tree" size={15} /> Whiteboard
-                    </button>
+              <li key={s.id} className={`bq-source-row${s.is_active ? '' : ' is-paused'}`}>
+                <label className="bq-switch" title={s.is_active ? 'Included in Sync All' : 'Paused'}>
+                  <input
+                    type="checkbox"
+                    role="switch"
+                    aria-label={`${s.display_name || s.project_id} is active`}
+                    checked={s.is_active}
+                    onChange={() => handleToggleSourceActive(s)}
+                  />
+                </label>
+                <div className="bq-source-meta">
+                  <div className="bq-source-title">
+                    <strong>{s.display_name || s.project_id}</strong>
+                    {s.display_name && <code>{s.project_id}</code>}
                   </div>
-                </div>
-
-                {ds.description && <p className="bq-dataset-desc">{ds.description}</p>}
-
-                {expanded && (
-                  <div className="bq-tables-container">
-                    {ds.tables.length === 0 ? (
-                      <p className="muted-hint">No tables synced in this dataset.</p>
-                    ) : (
-                      ds.tables.map((tbl) => {
-                        const isPreviewOpen = activePreviewKey === tbl.full_name;
-                        const isImporting = importingKey === tbl.full_name;
-                        return (
-                          <div key={tbl.full_name} className="schema-table-card bq-table-card">
-                            <div className="schema-table-head">
-                              <div>
-                                <strong>
-                                  <code>{tbl.table_id}</code>
-                                </strong>
-                                <span className="row-badge">{tbl.table_type}</span>
-                                {tbl.row_count != null && (
-                                  <span className="row-badge">{compactNumber(tbl.row_count)} rows</span>
-                                )}
-                                {tbl.size_bytes != null && (
-                                  <span className="row-badge">{formatBytes(tbl.size_bytes)}</span>
-                                )}
-                                <span className="row-badge">{tbl.columns.length} cols</span>
-                                {tbl.description && <p>{tbl.description}</p>}
-                              </div>
-
-                              <div className="bq-table-actions">
-                                <button
-                                  type="button"
-                                  className={`tonal-btn small${isPreviewOpen ? ' active' : ''}`}
-                                  onClick={() => handleEstimatePreview(tbl)}
-                                >
-                                  <Icon name="visibility" size={15} /> Preview
-                                </button>
-                                <button
-                                  type="button"
-                                  className="tonal-btn small"
-                                  disabled={isImporting}
-                                  title="Pull rows from BigQuery into local SQLite-Wasm"
-                                  onClick={() => handleImportTableToLocal(tbl)}
-                                >
-                                  <Icon name="download" size={15} /> {isImporting ? 'Loading…' : 'Load to SQLite'}
-                                </button>
-                                <button
-                                  type="button"
-                                  className="filled-btn small"
-                                  onClick={() => handleBuildLiveBqDashboard(tbl)}
-                                >
-                                  <Icon name="bar_chart" size={15} /> Live Dashboard
-                                </button>
-                              </div>
-                            </div>
-
-                            {tbl.columns.length > 0 && (
-                              <div className="schema-cols">
-                                {tbl.columns.slice(0, 24).map((c) => (
-                                  <span key={c.name} className="col-pill" title={c.description ?? undefined}>
-                                    <code>{c.name}</code> <small>{c.data_type}</small>
-                                  </span>
-                                ))}
-                                {tbl.columns.length > 24 && (
-                                  <span className="col-pill">
-                                    <small>+{tbl.columns.length - 24} more</small>
-                                  </span>
-                                )}
-                              </div>
-                            )}
-
-                            {isPreviewOpen && (
-                              <div className="bq-preview-drawer">
-                                {previewBusy && !previewEstimate && (
-                                  <p className="muted-hint">Running dry-run byte &amp; cost estimate…</p>
-                                )}
-                                {previewError && (
-                                  <div className="widget-error" role="alert">
-                                    {previewError}
-                                  </div>
-                                )}
-                                {previewEstimate && (
-                                  <div className="bq-preview-meta">
-                                    <div>
-                                      <span className="muted-hint">
-                                        Dry-run scan: <strong>{formatBytes(previewEstimate.estimated_bytes)}</strong> ·
-                                        Est. cost:{' '}
-                                        <strong>
-                                          ${previewEstimate.estimated_cost_usd < 0.0001 && previewEstimate.estimated_bytes > 0
-                                            ? '<0.0001'
-                                            : previewEstimate.estimated_cost_usd.toFixed(4)}
-                                        </strong>
-                                      </span>
-                                      <code className="bq-preview-sql">{previewEstimate.query}</code>
-                                    </div>
-                                    {!previewData && (
-                                      <button
-                                        type="button"
-                                        className="tonal-btn small"
-                                        disabled={previewBusy}
-                                        onClick={() => handleRunPreview(tbl)}
-                                      >
-                                        <Icon name="play_arrow" size={15} />{' '}
-                                        {previewBusy ? 'Querying…' : 'Fetch 100 Rows'}
-                                      </button>
-                                    )}
-                                  </div>
-                                )}
-                                {previewData && (
-                                  <div className="bq-preview-table-wrap">
-                                    <table className="bq-preview-table">
-                                      <thead>
-                                        <tr>
-                                          {previewData.columns.map((col) => (
-                                            <th key={col}>{col}</th>
-                                          ))}
-                                        </tr>
-                                      </thead>
-                                      <tbody>
-                                        {previewData.rows.slice(0, 25).map((r, rIdx) => (
-                                          <tr key={rIdx}>
-                                            {r.map((cell, cIdx) => (
-                                              <td key={cIdx}>{cell === null ? 'NULL' : String(cell)}</td>
-                                            ))}
-                                          </tr>
-                                        ))}
-                                      </tbody>
-                                    </table>
-                                  </div>
-                                )}
-                              </div>
-                            )}
-                          </div>
-                        );
-                      })
+                  <div className="bq-source-sub">
+                    <span>{s.is_active ? `Synced ${formatDateTime(s.last_synced_at)}` : 'Paused'}</span>
+                    {s.dataset_filter && (
+                      <span className="row-badge" title="Dataset prefix filter">{s.dataset_filter}*</span>
+                    )}
+                    {s.secret_name && (
+                      <span className="row-badge" title="Secret Manager service-account key">
+                        Key: {s.secret_name}
+                      </span>
                     )}
                   </div>
-                )}
+                </div>
+                <div className="bq-source-btns">
+                  <button
+                    type="button"
+                    className="tonal-btn small"
+                    disabled={sync.syncing || !s.is_active}
+                    onClick={() => sync.syncSources([s])}
+                  >
+                    <Icon name="refresh" size={15} /> Sync
+                  </button>
+                  <IconButton icon="delete" label={`Remove ${s.project_id}`} onClick={() => handleRemoveSource(s)} />
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {/* Search & project filter */}
+      <section className="bq-section" aria-label="Datasets and tables">
+        {(datasets.length > 0 || searching) && (
+          <div className="bq-browser-controls">
+            <h3 className="bq-section-title">Datasets &amp; tables</h3>
+            <input
+              type="search"
+              className="bq-input"
+              aria-label="Search the catalog"
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setCollapsedInSearch(new Set());
+              }}
+              placeholder="Search datasets, tables, descriptions or columns…"
+            />
+            {sources.length > 1 && (
+              <div className="source-tabs" role="group" aria-label="Filter by project">
+                <button
+                  type="button"
+                  className={`source-chip ${activeProjectFilter === 'ALL' ? 'active' : ''}`}
+                  aria-pressed={activeProjectFilter === 'ALL'}
+                  onClick={() => setProjectFilter('ALL')}
+                >
+                  <span>All projects</span>
+                </button>
+                {sources.map((s) => (
+                  <button
+                    key={s.id}
+                    type="button"
+                    className={`source-chip ${activeProjectFilter === s.project_id ? 'active' : ''}`}
+                    aria-pressed={activeProjectFilter === s.project_id}
+                    onClick={() => setProjectFilter(s.project_id)}
+                  >
+                    <span>{s.display_name || s.project_id}</span>
+                  </button>
+                ))}
               </div>
-            );
-          })
+            )}
+          </div>
         )}
-      </div>
+
+        {/* Dataset & table tree */}
+        <div className="bq-dataset-list">
+          {loading && datasets.length === 0 ? (
+            <p className="muted-hint">Loading BigQuery catalog…</p>
+          ) : filteredDatasets.length === 0 ? (
+            <div className="bq-empty-box">
+              <Icon name="cloud_sync" size={28} />
+              <strong>
+                {sources.length === 0
+                  ? 'No BigQuery projects connected yet'
+                  : datasets.length === 0
+                    ? 'Projects connected — nothing synced yet'
+                    : 'No datasets or tables match'}
+              </strong>
+              <p className="muted-hint">
+                {sources.length === 0
+                  ? 'Connect a Google Cloud project, sync its datasets and schemas, then load tables into live dashboards, local SQLite or the whiteboard.'
+                  : datasets.length === 0
+                    ? 'Run Sync All to pull the datasets, tables and schemas of the connected projects.'
+                    : 'Try another search, or another project.'}
+              </p>
+              {sources.length === 0 ? (
+                <div className="bq-empty-actions">
+                  <button type="button" className="filled-btn small" onClick={() => setPanel('discover')}>
+                    <Icon name="find_in_page" size={16} /> Discover Projects
+                  </button>
+                  <button type="button" className="tonal-btn small" onClick={() => setPanel('add')}>
+                    <Icon name="add" size={16} /> Add Project
+                  </button>
+                </div>
+              ) : datasets.length > 0 ? (
+                <div className="bq-empty-actions">
+                  <button
+                    type="button"
+                    className="tonal-btn small"
+                    onClick={() => {
+                      setSearch('');
+                      setProjectFilter('ALL');
+                    }}
+                  >
+                    Clear filters
+                  </button>
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            filteredDatasets.map((ds) => {
+              const expanded = searching ? !collapsedInSearch.has(ds.id) : expandedDatasets.has(ds.id);
+              const dsImporting = importingDatasetId === ds.id;
+              return (
+                <div key={ds.id} className={`bq-dataset-card${expanded ? ' is-open' : ''}`}>
+                  <div className="bq-dataset-head">
+                    <button
+                      type="button"
+                      className="bq-dataset-toggle"
+                      onClick={() => toggleDatasetExpanded(ds.id)}
+                      aria-expanded={expanded}
+                    >
+                      <Icon name="chevron_right" size={18} className={expanded ? 'bq-chevron open' : 'bq-chevron'} />
+                      <span className="bq-dataset-name">
+                        <strong>{ds.dataset_id}</strong>
+                        <code>{ds.project_id}</code>
+                      </span>
+                      <span className="bq-dataset-badges">
+                        {ds.location && <span className="row-badge">{ds.location}</span>}
+                        <span className="row-badge">{plural(ds.tables.length, 'table')}</span>
+                      </span>
+                    </button>
+
+                    <div className="bq-dataset-actions">
+                      <button
+                        type="button"
+                        className="text-btn small"
+                        disabled={importingDatasetId !== null || importingKey !== null || ds.tables.length === 0}
+                        title="Import this dataset's tables (up to 8) into local in-browser SQLite-Wasm"
+                        onClick={() => handleImportDatasetToLocal(ds)}
+                      >
+                        <Icon name="download" size={15} /> {dsImporting ? 'Loading…' : 'Load to SQLite'}
+                      </button>
+                      <button
+                        type="button"
+                        className="text-btn small"
+                        disabled={ds.tables.length === 0}
+                        title="Draw dataset schema & table relationships on the Whiteboard"
+                        onClick={() => handleDrawDatasetOnWhiteboard(ds)}
+                      >
+                        <Icon name="account_tree" size={15} /> Whiteboard
+                      </button>
+                    </div>
+                  </div>
+
+                  {ds.description && <p className="bq-dataset-desc">{ds.description}</p>}
+
+                  {expanded && (
+                    <div className="bq-tables-container">
+                      {ds.tables.length === 0 ? (
+                        <p className="muted-hint">No tables synced in this dataset.</p>
+                      ) : (
+                        ds.tables.map((tbl) => {
+                          const isPreviewOpen = activePreviewKey === tbl.full_name;
+                          const isImporting = importingKey === tbl.full_name;
+                          const allColumns = expandedColumns.has(tbl.full_name);
+                          const shownColumns = allColumns ? tbl.columns : tbl.columns.slice(0, COLUMN_PREVIEW_COUNT);
+                          const hiddenColumns = tbl.columns.length - COLUMN_PREVIEW_COUNT;
+                          return (
+                            <div key={tbl.full_name} className="bq-table-card">
+                              <div className="bq-table-head">
+                                <div className="bq-table-info">
+                                  <code className="bq-table-name">{tbl.table_id}</code>
+                                  <div className="bq-table-meta">
+                                    <span className="row-badge">{tbl.table_type.replace(/_/g, ' ')}</span>
+                                    {tbl.row_count != null && <span>{compactNumber(tbl.row_count)} rows</span>}
+                                    {tbl.size_bytes != null && <span>{formatBytes(tbl.size_bytes)}</span>}
+                                    <span>{plural(tbl.columns.length, 'column')}</span>
+                                  </div>
+                                  {tbl.description && <p className="bq-table-desc">{tbl.description}</p>}
+                                </div>
+
+                                <div className="bq-table-actions">
+                                  <button
+                                    type="button"
+                                    className={`text-btn small${isPreviewOpen ? ' active' : ''}`}
+                                    aria-expanded={isPreviewOpen}
+                                    onClick={() => handleEstimatePreview(tbl)}
+                                  >
+                                    <Icon name={isPreviewOpen ? 'visibility_off' : 'visibility'} size={15} /> Preview
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="tonal-btn small"
+                                    disabled={importingKey !== null || importingDatasetId !== null}
+                                    title="Pull up to 1,000 rows from BigQuery into local SQLite-Wasm"
+                                    onClick={() => handleImportTableToLocal(tbl)}
+                                  >
+                                    <Icon name="download" size={15} /> {isImporting ? 'Loading…' : 'Load to SQLite'}
+                                  </button>
+                                  <button
+                                    type="button"
+                                    className="filled-btn small"
+                                    onClick={() => handleBuildLiveBqDashboard(tbl)}
+                                  >
+                                    <Icon name="bar_chart" size={15} /> Live Dashboard
+                                  </button>
+                                </div>
+                              </div>
+
+                              {tbl.columns.length > 0 && (
+                                <div className="schema-cols">
+                                  {shownColumns.map((c) => (
+                                    <span key={c.name} className="col-pill" title={c.description ?? undefined}>
+                                      <code>{c.name}</code> <small>{c.data_type}</small>
+                                    </span>
+                                  ))}
+                                  {hiddenColumns > 0 && (
+                                    <button
+                                      type="button"
+                                      className="col-pill col-pill-more"
+                                      aria-expanded={allColumns}
+                                      onClick={() =>
+                                        setExpandedColumns((prev) => {
+                                          const next = new Set(prev);
+                                          if (next.has(tbl.full_name)) next.delete(tbl.full_name);
+                                          else next.add(tbl.full_name);
+                                          return next;
+                                        })
+                                      }
+                                    >
+                                      {allColumns ? 'Show fewer' : `+${hiddenColumns} more`}
+                                    </button>
+                                  )}
+                                </div>
+                              )}
+
+                              {isPreviewOpen && (
+                                <div className="bq-preview-drawer">
+                                  {previewBusy && !previewEstimate && (
+                                    <p className="muted-hint">Running dry-run byte &amp; cost estimate…</p>
+                                  )}
+                                  {previewError && (
+                                    <div className="widget-error" role="alert">
+                                      {previewError}
+                                    </div>
+                                  )}
+                                  {previewEstimate && (
+                                    <div className="bq-preview-meta">
+                                      <div className="bq-preview-estimate">
+                                        <span className="muted-hint">
+                                          Dry-run scan: <strong>{formatBytes(previewEstimate.estimated_bytes)}</strong> ·
+                                          Est. cost:{' '}
+                                          <strong>
+                                            ${previewEstimate.estimated_cost_usd < 0.0001 && previewEstimate.estimated_bytes > 0
+                                              ? '<0.0001'
+                                              : previewEstimate.estimated_cost_usd.toFixed(4)}
+                                          </strong>
+                                        </span>
+                                        <code className="bq-preview-sql">{previewEstimate.query}</code>
+                                      </div>
+                                      {!previewData && (
+                                        <button
+                                          type="button"
+                                          className="tonal-btn small"
+                                          disabled={previewBusy}
+                                          onClick={() => handleRunPreview(tbl)}
+                                        >
+                                          <Icon name="play_arrow" size={15} />{' '}
+                                          {previewBusy ? 'Querying…' : 'Fetch 100 Rows'}
+                                        </button>
+                                      )}
+                                    </div>
+                                  )}
+                                  {previewData && previewData.rows.length === 0 && (
+                                    <p className="muted-hint">The query returned no rows.</p>
+                                  )}
+                                  {previewData && previewData.rows.length > 0 && (
+                                    <>
+                                      <div className="bq-preview-table-wrap" tabIndex={0}>
+                                        <table className="bq-preview-table">
+                                          <thead>
+                                            <tr>
+                                              {previewData.columns.map((col) => (
+                                                <th key={col}>{col}</th>
+                                              ))}
+                                            </tr>
+                                          </thead>
+                                          <tbody>
+                                            {previewData.rows.map((r, rIdx) => (
+                                              <tr key={rIdx}>
+                                                {r.map((cell, cIdx) =>
+                                                  cell === null ? (
+                                                    <td key={cIdx} className="is-null">NULL</td>
+                                                  ) : (
+                                                    <td key={cIdx} className={typeof cell === 'number' ? 'is-num' : undefined}>
+                                                      {String(cell)}
+                                                    </td>
+                                                  ),
+                                                )}
+                                              </tr>
+                                            ))}
+                                          </tbody>
+                                        </table>
+                                      </div>
+                                      <span className="muted-hint">
+                                        {plural(previewData.rows.length, 'row')}
+                                        {previewData.truncated ? ' (truncated)' : ''} · scroll to see more
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              )}
+                            </div>
+                          );
+                        })
+                      )}
+                    </div>
+                  )}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </section>
     </div>
   );
 }

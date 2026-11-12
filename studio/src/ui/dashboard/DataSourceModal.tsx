@@ -32,24 +32,31 @@ export function DataSourceModal({
   const [tables, setTables] = useState<TableSchemaInfo[]>([]);
   const [busy, setBusy] = useState(false);
   const [uploadErr, setUploadErr] = useState<string | null>(null);
+  const [dragOver, setDragOver] = useState(false);
+  // The schema that was asked for last: a slower answer for another engine must not replace it
+  const schemaRequest = useRef(0);
 
   useEffect(() => {
     if (open) setTab(initialTab);
   }, [open, initialTab]);
 
   const refreshSchema = async (sourceId = activeSource) => {
+    const request = ++schemaRequest.current;
     setBusy(true);
     try {
       const [srcs, schema] = await Promise.all([
         listAllDataSources(true),
         inspectDataSchema({ source: sourceId }),
       ]);
+      if (request !== schemaRequest.current) return;
       setSources(srcs);
       setTables(schema.tables);
     } catch (e) {
+      if (request !== schemaRequest.current) return;
+      setTables([]);
       setUploadErr(e instanceof Error ? e.message : String(e));
     } finally {
-      setBusy(false);
+      if (request === schemaRequest.current) setBusy(false);
     }
   };
 
@@ -107,8 +114,8 @@ export function DataSourceModal({
     setUploadErr(null);
     try {
       const imported = await importDataFile(file);
-      await refreshSchema('local');
       setActiveSource('local');
+      await refreshSchema('local');
       notify(`Loaded "${imported.name}" (${imported.rowCount} rows) into local SQLite.`);
       onTableImported?.(imported);
     } catch (e) {
@@ -201,6 +208,8 @@ export function DataSourceModal({
     onClose();
   };
 
+  const isBigQuerySource = activeSource === 'bigquery' || activeSource.startsWith('bigquery:');
+
   return (
     <dialog
       ref={dialogRef}
@@ -209,40 +218,49 @@ export function DataSourceModal({
       onClose={onClose}
       aria-labelledby="datasource-modal-title"
     >
-      <header className="dialog-header">
-        <div className="datasource-header-left">
+      <header className="datasource-header">
+        <div className="datasource-title-row">
           <h2 id="datasource-modal-title">Data Sources &amp; BigQuery Catalog</h2>
-          <div className="datasource-mode-tabs" role="tablist" aria-label="Data source sections">
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'bigquery'}
-              className={`source-chip ${tab === 'bigquery' ? 'active' : ''}`}
-              onClick={() => setTab('bigquery')}
-            >
-              <Icon name="cloud_sync" size={16} />
-              <span>BigQuery Catalog</span>
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={tab === 'files'}
-              className={`source-chip ${tab === 'files' ? 'active' : ''}`}
-              onClick={() => {
-                setTab('files');
-                void refreshSchema(activeSource);
-              }}
-            >
-              <Icon name="database" size={16} />
-              <span>Files &amp; SQL Engines</span>
-            </button>
-          </div>
+          <IconButton icon="close" label="Close" onClick={onClose} />
         </div>
-        <IconButton icon="close" label="Close" onClick={onClose} />
+        <div className="datasource-tabs" role="tablist" aria-label="Data source sections">
+          <button
+            type="button"
+            role="tab"
+            id="datasource-tab-bigquery"
+            aria-selected={tab === 'bigquery'}
+            aria-controls="datasource-panel"
+            className={`datasource-tab${tab === 'bigquery' ? ' active' : ''}`}
+            onClick={() => setTab('bigquery')}
+          >
+            <Icon name="cloud_sync" size={18} />
+            <span>BigQuery Catalog</span>
+          </button>
+          <button
+            type="button"
+            role="tab"
+            id="datasource-tab-files"
+            aria-selected={tab === 'files'}
+            aria-controls="datasource-panel"
+            className={`datasource-tab${tab === 'files' ? ' active' : ''}`}
+            onClick={() => {
+              setTab('files');
+              void refreshSchema(activeSource);
+            }}
+          >
+            <Icon name="database" size={18} />
+            <span>Files &amp; SQL Engines</span>
+          </button>
+        </div>
       </header>
 
-      {tab === 'bigquery' ? (
-        <section className="dialog-section">
+      <div
+        className="datasource-body"
+        id="datasource-panel"
+        role="tabpanel"
+        aria-labelledby={tab === 'bigquery' ? 'datasource-tab-bigquery' : 'datasource-tab-files'}
+      >
+        {tab === 'bigquery' ? (
           <BigQueryCatalogPanel
             onCloseModal={onClose}
             onLocalTableLoaded={(tbl) => {
@@ -250,15 +268,18 @@ export function DataSourceModal({
               void refreshSchema('local');
             }}
           />
-        </section>
-      ) : (
-        <>
-          <section className="dialog-section">
+        ) : (
+          <div className="datasource-files">
             <div
-              className="file-dropzone"
-              onDragOver={(e) => e.preventDefault()}
+              className={`file-dropzone${dragOver ? ' is-over' : ''}`}
+              onDragOver={(e) => {
+                e.preventDefault();
+                setDragOver(true);
+              }}
+              onDragLeave={() => setDragOver(false)}
               onDrop={(e) => {
                 e.preventDefault();
+                setDragOver(false);
                 void handleFile(e.dataTransfer.files?.[0]);
               }}
             >
@@ -267,7 +288,7 @@ export function DataSourceModal({
                 <strong>Drop a CSV, TSV, JSON, or Parquet file</strong>
                 <p>Loaded directly into in-browser SQLite-Wasm — private, zero-config, and queryable via SQL or voice.</p>
               </div>
-              <button type="button" className="tonal-btn" disabled={busy} onClick={() => fileRef.current?.click()}>
+              <button type="button" className="tonal-btn small" disabled={busy} onClick={() => fileRef.current?.click()}>
                 Choose file…
               </button>
               <input
@@ -283,73 +304,78 @@ export function DataSourceModal({
               />
             </div>
             {uploadErr && <div className="widget-error" role="alert">{uploadErr}</div>}
-          </section>
 
-          <section className="dialog-section">
-            <h3>Connected Engines</h3>
-            <div className="source-tabs" role="tablist" aria-label="Data sources">
-              {sources.map((s) => {
-                const connected = s.status === 'connected';
-                return (
-                  <button
-                    key={s.id}
-                    type="button"
-                    role="tab"
-                    aria-selected={activeSource === s.id}
-                    className={`source-chip ${activeSource === s.id ? 'active' : ''}`}
-                    disabled={!connected}
-                    onClick={() => {
-                      setActiveSource(s.id);
-                      void refreshSchema(s.id);
-                    }}
-                  >
-                    <Icon name="database" size={16} />
-                    <span>{s.label}</span>
-                    <small>{connected ? (s.tableCount ? `${s.tableCount} tbl` : 'Ready') : 'Env not set'}</small>
-                  </button>
-                );
-              })}
-            </div>
+            <section className="bq-section" aria-label="Connected engines">
+              <h3 className="bq-section-title">Connected engines</h3>
+              <div className="source-tabs" role="group" aria-label="Data sources">
+                {sources.map((s) => {
+                  const connected = s.status === 'connected';
+                  return (
+                    <button
+                      key={s.id}
+                      type="button"
+                      aria-pressed={activeSource === s.id}
+                      className={`source-chip ${activeSource === s.id ? 'active' : ''}`}
+                      disabled={!connected}
+                      title={s.label}
+                      onClick={() => {
+                        setActiveSource(s.id);
+                        setUploadErr(null);
+                        void refreshSchema(s.id);
+                      }}
+                    >
+                      <Icon name="database" size={16} />
+                      <span>{s.label}</span>
+                      <small>{connected ? (s.tableCount ? `${s.tableCount} tbl` : 'Ready') : 'Env not set'}</small>
+                    </button>
+                  );
+                })}
+              </div>
 
-            <div className="schema-browser">
-              {busy ? (
-                <p className="muted-hint">Inspecting schema…</p>
-              ) : tables.length === 0 ? (
-                <p className="muted-hint">
-                  No tables reported by {activeSource}.
-                  {(activeSource === 'bigquery' || activeSource.startsWith('bigquery:')) && (
-                    <> Switch to the <strong>BigQuery Catalog</strong> tab above to sync GCP datasets and tables.</>
-                  )}
-                </p>
-              ) : (
-                tables.map((t) => (
-                  <div key={t.fullName || t.name} className="schema-table-card">
-                    <div className="schema-table-head">
-                      <div>
-                        <strong><code>{t.name}</code></strong>
-                        {typeof t.rowCount === 'number' && <span className="row-badge">{t.rowCount} rows</span>}
-                        {t.description && <p>{t.description}</p>}
+              <div className="schema-browser">
+                {busy && tables.length === 0 ? (
+                  <p className="muted-hint">Inspecting schema…</p>
+                ) : tables.length === 0 ? (
+                  <p className="muted-hint">
+                    No tables reported by {activeSource}.
+                    {isBigQuerySource && (
+                      <> Switch to the <strong>BigQuery Catalog</strong> tab above to sync GCP datasets and tables.</>
+                    )}
+                  </p>
+                ) : (
+                  tables.map((t) => (
+                    <div key={t.fullName || t.name} className="schema-table-card">
+                      <div className="schema-table-head">
+                        <div className="schema-table-info">
+                          <div className="schema-table-title">
+                            <code>{t.name}</code>
+                            {typeof t.rowCount === 'number' && (
+                              <span className="row-badge">{t.rowCount.toLocaleString()} rows</span>
+                            )}
+                          </div>
+                          {t.description && <p>{t.description}</p>}
+                        </div>
+                        <button type="button" className="tonal-btn small" onClick={() => quickBuildFromTable(t)}>
+                          <Icon name="bar_chart" size={16} /> Build Dashboard
+                        </button>
                       </div>
-                      <button type="button" className="tonal-btn small" onClick={() => quickBuildFromTable(t)}>
-                        <Icon name="bar_chart" size={16} /> Build Dashboard
-                      </button>
+                      <div className="schema-cols">
+                        {t.columns.map((c) => (
+                          <span key={c.name} className="col-pill">
+                            <code>{c.name}</code> <small>{c.type}</small>
+                          </span>
+                        ))}
+                      </div>
                     </div>
-                    <div className="schema-cols">
-                      {t.columns.map((c) => (
-                        <span key={c.name} className="col-pill">
-                          <code>{c.name}</code> <small>{c.type}</small>
-                        </span>
-                      ))}
-                    </div>
-                  </div>
-                ))
-              )}
-            </div>
-          </section>
-        </>
-      )}
+                  ))
+                )}
+              </div>
+            </section>
+          </div>
+        )}
+      </div>
 
-      <footer className="dialog-actions">
+      <footer className="datasource-footer">
         <button type="button" className="filled-btn" onClick={onClose}>Done</button>
       </footer>
     </dialog>
