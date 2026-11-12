@@ -32,6 +32,8 @@ const apiKey = readApiKey(fileURLToPath(new URL('..', import.meta.url)));
 const model = arg('model') ?? process.env.STUDIO_MODEL ?? 'gemini-3.8-live';
 const only = arg('only');
 const QUIET_MS = 2500;
+/** Silence that ends a step even when the model never closed its turn after the last tool result. */
+const STALLED_MS = 20_000;
 const STEP_TIMEOUT_MS = 90_000;
 
 interface StepResult {
@@ -80,13 +82,17 @@ async function runScenario(sc: Scenario): Promise<StepResult[]> {
   let request = '';
   const moved = new Set<string>();
   let firstChangeAt: number | null = null;
+  // A model that got a tool result and is silently writing its next (large) call is not done:
+  // a step with tool calls ends when the model has spoken about the last result
+  let lastToolResponseAt = 0;
+  let replyAt = 0;
   let onReady = () => {};
 
   const client: LiveClient = new LiveClient({
     apiKey, model, systemInstruction: SYSTEM_INSTRUCTION, tools: TOOL_DECLARATIONS, thinkingLevel: 'LOW',
   }, {
     onReady: () => onReady(),
-    onOutputTranscript: (t) => { reply += t; lastActivity = Date.now(); },
+    onOutputTranscript: (t) => { reply += t; lastActivity = Date.now(); replyAt = lastActivity; },
     onAudio: () => { lastActivity = Date.now(); },
     onTurnComplete: () => { lastActivity = Date.now(); },
     onToolCall: (call: FunctionCall) => {
@@ -104,6 +110,7 @@ async function runScenario(sc: Scenario): Promise<StepResult[]> {
         client.sendToolResponse(call, response);
         pending--;
         lastActivity = Date.now();
+        lastToolResponseAt = lastActivity;
       });
     },
     onError: (e) => { failure = e; },
@@ -129,7 +136,9 @@ async function runScenario(sc: Scenario): Promise<StepResult[]> {
     // Done when the model is quiet, no tool call is running and it did something
     await new Promise<void>((resolve) => {
       const timer = setInterval(() => {
-        const quiet = Date.now() - lastActivity > QUIET_MS && pending === 0;
+        const silence = Date.now() - lastActivity;
+        const answered = calls.length === 0 || replyAt > lastToolResponseAt || silence > STALLED_MS;
+        const quiet = silence > QUIET_MS && pending === 0 && answered;
         if ((quiet && (calls.length > 0 || reply !== '')) || Date.now() - started > STEP_TIMEOUT_MS || failure) {
           clearInterval(timer);
           resolve();

@@ -2,7 +2,20 @@
  * Function declarations of the voice agent (Gemini API schema). Edits are
  * typed lists of operations on ids, so the model changes only what it names.
  */
-import { FILTER_KINDS, VALUE_FORMATS, WIDGET_KINDS } from '../engine/dashboard';
+import {
+  AXIS_SCALES,
+  CHART_ORIENTATIONS,
+  CHART_PALETTES,
+  CURVE_TYPES,
+  DATA_LABEL_CONTENTS,
+  FILTER_KINDS,
+  LEGEND_POSITIONS,
+  MAP_SCOPES,
+  SORT_MODES,
+  STACK_MODES,
+  VALUE_FORMATS,
+  WIDGET_KINDS,
+} from '../engine/dashboard';
 import { ASPECT_RATIOS, EASING_PRESETS, MOTION_LAYER_KINDS, TRANSITION_KINDS } from '../engine/motion';
 import { ARROWS, COLORS, DIAGRAM_TYPES, EDGE_STYLES, GROUP_KINDS, NODE_KINDS, PROVIDERS } from '../engine/types';
 
@@ -42,22 +55,109 @@ const groupFields = {
   color: enumOf(COLORS, 'Only when the user asks for a color.'),
 };
 
+const num = (description: string): Schema => ({ type: 'NUMBER', description });
+const bool = (description: string): Schema => ({ type: 'BOOLEAN', description });
+
+/**
+ * The chart settings that change what a viewer understands (ordering, focus,
+ * context lines, labels). Purely cosmetic settings stay in the chart panel.
+ */
+export const chartConfigFields = {
+  // Shape the data
+  sort_by: enumOf(SORT_MODES, 'Order of the categories: value_desc for rankings; none keeps the SQL order (time series, funnels).'),
+  limit_items: { type: 'INTEGER', description: 'Show only the first N categories after sorting (top N).' },
+  group_tail_as_other: bool('With limit_items: sum the remaining categories into one "Other" item (pie, donut, bars).'),
+  orientation: enumOf(CHART_ORIENTATIONS, 'horizontal for long category labels.'),
+  stack_mode: enumOf(STACK_MODES, 'stacked for totals, percent_100 to compare the mix (shares) instead of the volume.'),
+  // Context that turns a chart into an insight
+  target_value: num('Goal or quota: the target marker of kpi, gauge and bullet.'),
+  reference_lines: arrayOf(obj({
+    axis: enumOf(['x', 'y'], 'y for a horizontal line at a value (target, budget, SLA); x for a vertical line at a category or date.'),
+    value: str('Value on that axis, e.g. "180000" or "2026-07".'),
+    label: str('Short label, e.g. "Target $180K".'),
+  }, ['axis', 'value']), 'Target, budget, threshold or event lines.'),
+  reference_bands: arrayOf(obj({
+    axis: enumOf(['x', 'y'], 'Axis of the band.'),
+    from: num('Start value.'),
+    to: num('End value.'),
+    label: str('Short label, e.g. "Healthy range".'),
+  }, ['axis', 'from', 'to']), 'Shaded ranges, e.g. the healthy range of a metric.'),
+  annotations: arrayOf(obj({
+    target_label: str('Exact x value (category or period) the note points at, e.g. "2026-07" or "EMEA".'),
+    text: str('The note, at most 6 words, e.g. "Pricing change" or "+42% after launch".'),
+  }, ['text']), 'Notes on the data points that explain the story (at most 2 per chart). Use numbers from the chartReview facts.'),
+  show_trendline: bool('Linear trend line (scatter, bubble, line).'),
+  show_average_line: bool('Dashed line at the average.'),
+  highlight_max_min: bool('Marks the highest and lowest point.'),
+  // Labels and legend
+  show_data_labels: bool('Values on the marks: for charts with at most 12 marks.'),
+  data_label_content: enumOf(DATA_LABEL_CONTENTS, 'What the label shows; percent or label_percent for shares.'),
+  direct_line_labels: bool('Labels at the line ends instead of a legend (2–4 series).'),
+  show_legend: bool('Show or hide the legend.'),
+  legend_position: enumOf(LEGEND_POSITIONS, 'Where the legend sits.'),
+  donut_center_label: str('Big text in the middle of a donut, e.g. the total "$674K".'),
+  donut_center_subtext: str('Small text under it, e.g. "Total MRR".'),
+  footnote: str('One line under the chart: scope, caveat or data source.'),
+  // Axes
+  x_axis_title: str('Title of the x axis, when the column name is not clear.'),
+  y_axis_title: str('Title of the y axis, with the unit.'),
+  y_axis_format: enumOf(VALUE_FORMATS, 'Format of the axis ticks when it differs from the widget format.'),
+  y_axis_scale: enumOf(AXIS_SCALES, 'log when values span several orders of magnitude.'),
+  start_from_zero: bool('Bars always start at zero. For lines, false zooms in on the variation.'),
+  y_min: num('Lower bound of the y axis.'),
+  y_max: num('Upper bound of the y axis, e.g. 100 for percentages.'),
+  // Color
+  palette: enumOf(CHART_PALETTES, 'Color palette; diverging for values around a midpoint, viridis/ocean for sequential intensity.'),
+  color_by: enumOf(['series', 'category', 'value'], 'value shades by magnitude; category gives each bar its own color (only when the categories are the story).'),
+  // Per kind
+  curve_type: enumOf(CURVE_TYPES, 'monotone for smooth trends, step for values that change at discrete moments.'),
+  show_markers: bool('Dots on the points of a line (at most ~24 points).'),
+  bin_count: { type: 'INTEGER', description: 'Number of bins of a histogram (3–50).' },
+  trellis_columns: { type: 'INTEGER', description: 'Panels per row of a trellis (1–6).' },
+  trellis_sub_kind: enumOf(['line', 'area', 'bar', 'column'], 'Chart drawn in every trellis panel.'),
+  map_scope: enumOf(MAP_SCOPES, 'Region shown by the maps.'),
+  decimals: { type: 'INTEGER', description: 'Decimal places of the values (0–6).' },
+  cross_filter_on_click: bool('Clicking a mark sets the dashboard filter of that dimension.'),
+};
+
 const dashboardWidgetFields = {
   id: str('Short lowercase snake_case id, e.g. "mrr_trend" or "arr_by_region".'),
-  title: str('Clear human-readable widget title.'),
-  subtitle: str('Optional subtitle or timeframe, e.g. "H1 2026 · USD".'),
-  kind: enumOf(WIDGET_KINDS, 'Visualization type: kpi for single headline metric, bar/line/area/donut/funnel/heatmap/scatter for charts, table for sortable detail rows.'),
+  title: str('Title that says what the chart shows or, better, what it reveals: "MRR by Region", "EMEA Drives 31% of MRR". Never "Chart" or the chart kind.'),
+  subtitle: str('Scope of the numbers: period, unit, filter, e.g. "Nov 2025 – Oct 2026 · USD".'),
+  kind: enumOf(WIDGET_KINDS,
+    'Chart kind, chosen by the question the widget answers: one number → kpi; trend over time → line or area; ' +
+    'ranking of categories → horizontal_bar (bar or column for at most 8 short labels); share of a whole → donut ' +
+    '(at most 6 slices), treemap or stacked_bar with percent_100; composition over time → stacked_bar or area with ' +
+    'series_field; relationship of two metrics → scatter or bubble; spread → histogram or box_plot; two dimensions ' +
+    '→ heatmap; stages → funnel; contributions to a change → waterfall; actual vs target → bullet or gauge; ' +
+    'geography → choropleth_map or bubble_map; flows → sankey; exact detail rows → table.'),
   source: str('Data source id ("local" by default, or "bigquery", "clickhouse", "postgres", "rest:<name>").'),
-  sql: str('Exact read-only SQL SELECT/WITH query. May reference dashboard filter params as :param_name (e.g. WHERE (:region = \'ALL\' OR region = :region)).'),
-  x_field: str('Optional dimension/category column name.'),
-  y_fields: arrayOf(str('Metric column name.'), 'Optional numeric metric column names.'),
-  series_field: str('Optional series grouping column.'),
-  format: enumOf(VALUE_FORMATS, 'Display formatting for values (currency_usd, percent, number, compact, ms).'),
-  comparison_field: str('Optional secondary KPI delta column (e.g. mom_pct).'),
+  sql: str('Exact read-only SQL SELECT/WITH query that returns the columns this chart kind expects, aggregated and ' +
+    'ordered for the chart (time ascending for trends, metric descending for rankings), with clear column aliases. ' +
+    'May reference dashboard filter params as :param_name (e.g. WHERE (:region = \'ALL\' OR region = :region)).'),
+  x_field: str('Result column of the dimension (x axis, category, slice label). The first column when omitted.'),
+  y_fields: arrayOf(str('Result column name.'), 'Result columns of the metrics. All numeric columns when omitted; always set it when the query returns numeric columns that must not be drawn.'),
+  series_field: str('Result column that splits the rows into series (one line, bar segment, heatmap row or trellis panel per value). Required when the query returns one row per x and series.'),
+  size_field: str('Result column of the bubble or node size (bubble, bubble_map, marimekko, circle_packing).'),
+  parent_field: str('Result column of the parent of each row (org_chart, sunburst, treemap, circle_packing).'),
+  open_field: str('candlestick: open column.'),
+  high_field: str('candlestick: high column.'),
+  low_field: str('candlestick: low column.'),
+  close_field: str('candlestick: close column.'),
+  start_field: str('gantt: start column.'),
+  end_field: str('gantt: end column.'),
+  progress_field: str('gantt: progress % column.'),
+  lat_field: str('Maps: latitude column (origin latitude for flow_map and connection_map).'),
+  lon_field: str('Maps: longitude column (origin longitude for flow_map and connection_map).'),
+  dest_lat_field: str('flow_map, connection_map: destination latitude column.'),
+  dest_lon_field: str('flow_map, connection_map: destination longitude column.'),
+  format: enumOf(VALUE_FORMATS, 'Display format of the values: currency_usd for money, percent for values already in percent (42.5 → 42.5%), compact for large counts, ms, bytes.'),
+  comparison_field: str('kpi: result column with the change vs the previous period or target, in percent (e.g. mom_pct), shown as ▲/▼ under the number.'),
   unit: str('Optional unit suffix, e.g. "seats" or "ms".'),
-  col_span: { type: 'INTEGER', description: 'Width in the 12-column Bento grid: 3 (4 per row, ideal for kpi), 4, 6 (half width), 8, or 12 (full width, ideal for table).' },
+  col_span: { type: 'INTEGER', description: 'Width in the 12-column grid; the widgets of a row must sum to 12: 3 or 4 for kpi, 6 or 8 for charts (8 for the main trend next to a 4), 12 for tables, trellis and wide time series.' },
   explanation: str('One-sentence plain-English explanation of how this SQL computes the metric (shown in the SQL Lineage Inspector).'),
   color: enumOf(COLORS, 'Optional accent color.'),
+  chart_config: obj(chartConfigFields, [], 'Settings that make the chart readable and its message obvious: ordering and top N, target and reference lines, annotations, data labels, axis. Only the fields given change.'),
 };
 
 const dashboardFilterFields = {
@@ -128,7 +228,9 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'inspect_schema',
-    description: 'Inspects table names, column types, and sample rows of a data source so you can write accurate, schema-grounded SQL queries. A large source answers with a list of its tables only: call again with "table" or "search" to get the columns of the ones you need.',
+    description: 'Inspects table names, column types, and sample rows of a data source so you can write accurate, schema-grounded SQL queries. ' +
+      'For local tables every column also comes with "values" (all its distinct values, when there are few: use them as SQL literals, filter options and series) or "range" (smallest and largest value: the first and latest period, the scale of a metric). ' +
+      'A large source answers with a list of its tables only: call again with "table" or "search" to get the columns of the ones you need.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
       source: str('Data source id ("local" by default, or "bigquery", "bigquery:<project_id>", "clickhouse", "postgres", "rest:<name>").'),
@@ -148,7 +250,8 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'run_query',
-    description: 'Executes a read-only SELECT/WITH SQL query against a data source and returns columns and rows. Use to verify SQL or answer analytical questions with exact numbers.',
+    description: 'Executes a read-only SELECT/WITH SQL query against a data source and returns columns and rows. Use to verify SQL, to answer analytical questions with exact numbers, ' +
+      'and to explore before charting: the distinct values of a dimension (for filters and series), the date range, the latest period.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
       source: str('Data source id ("local" by default).'),
@@ -157,7 +260,9 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'create_dashboard',
-    description: 'Creates an interactive live SQL dashboard on the active page (or a new page with new_page: true) and switches to the Dashboard view. Every widget is backed by an auditable SQL query.',
+    description: 'Creates an interactive live SQL dashboard on the active page (or a new page with new_page: true) and switches to the Dashboard view. Every widget is backed by an auditable SQL query. ' +
+      'The result contains "chartReview": for every widget the rows and columns its query returned, "issues" (the chart is empty, broken or misleading: fix them with edit_dashboard), ' +
+      '"advice" (improvements with the exact patch) and "facts" (the numbers the chart shows, for the spoken insight, titles and annotations), plus "layout" notes.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
       title: str('Dashboard title, e.g. "Executive SaaS Revenue & Retention".'),
@@ -172,7 +277,8 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'edit_dashboard',
-    description: 'Incrementally edits the live dashboard on the active page: add, update, remove, or reorder widgets and filters without disturbing untouched widgets.',
+    description: 'Incrementally edits the live dashboard on the active page: add, update, remove, or reorder widgets and filters without disturbing untouched widgets. ' +
+      'The result contains "chartReview" (issues, advice and facts) for the widgets it added or changed.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
       summary: str('Short summary of what changed (at most 8 words).'),
@@ -184,22 +290,11 @@ export const TOOL_DECLARATIONS = [
         after: str('Optional widget id to insert after, or "start".'),
       }, ['title', 'kind', 'sql']), 'New widgets to add.'),
       update_widgets: arrayOf(obj({
+        ...dashboardWidgetFields,
         id: str('Widget id or "@selected".'),
-        title: dashboardWidgetFields.title,
-        subtitle: dashboardWidgetFields.subtitle,
-        kind: dashboardWidgetFields.kind,
-        source: dashboardWidgetFields.source,
-        sql: dashboardWidgetFields.sql,
-        x_field: dashboardWidgetFields.x_field,
-        y_fields: dashboardWidgetFields.y_fields,
-        series_field: dashboardWidgetFields.series_field,
-        format: dashboardWidgetFields.format,
-        comparison_field: dashboardWidgetFields.comparison_field,
-        unit: dashboardWidgetFields.unit,
-        col_span: dashboardWidgetFields.col_span,
-        explanation: dashboardWidgetFields.explanation,
         color: enumOf([...COLORS, 'none'], 'Color or "none".'),
-      }, ['id']), 'Updates to existing widgets.'),
+        reset_chart_config: bool('True to drop every chart_config setting of the widget before applying chart_config.'),
+      }, ['id']), 'Updates to existing widgets: only the given fields change (chart_config is merged field by field).'),
       remove_widgets: arrayOf(str('Widget id or "@selected".'), 'Widgets to remove.'),
       reorder_widgets: arrayOf(str('Widget id.'), 'Ordered list of widget ids.'),
       add_filters: arrayOf(obj(dashboardFilterFields, ['label', 'param']), 'Filters to add.'),
@@ -214,7 +309,8 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'refresh_dashboard',
-    description: 'Re-runs all SQL queries on the active dashboard and returns fresh live results.',
+    description: 'Re-runs all SQL queries on the active dashboard and returns "chartReview": the facts every chart shows right now (leaders, shares, trends, drop-offs) and any issues. ' +
+      'Use it to answer "what does this dashboard tell us?", "what are the insights?" or "summarize this".',
     behavior: 'NON_BLOCKING',
   },
   {

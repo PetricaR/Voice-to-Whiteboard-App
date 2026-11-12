@@ -22,6 +22,7 @@ Application workspace for **Voice Whiteboard Studio**, combining four synchroniz
   - `sqlEngine.ts`: In-browser/Node `sql.js` (SQLite-Wasm) engine + `.csv`/`.tsv`/`.json`/`.jsonl`/`.parquet` (`hyparquet`) table importer + `/api/data/*` remote connector client.
 - `src/engine/`
   - `dashboard.ts`: Pure TypeScript `DashboardSpec` model, incremental `applyDashboardEdit` ops, fuzzy widget ref resolution, metric formatting, and HTML / SQL / Vega-Lite / Grafana JSON exporters.
+  - `chartInsights.ts`: The chart review the voice agent gets back from `create_dashboard`, `edit_dashboard` and `refresh_dashboard`: every widget query is run and checked against its chart kind (`issues` to fix, `advice` with the exact patch, `facts` for the spoken insight), plus 12-column layout notes.
   - `motion.ts` & `timeline.ts`: Deterministic `MotionSpec` model, cross-surface `generateMotionFromPage` storyboard synthesizer, spring/smooth/snappy/linear timeline evaluator (`evaluateMotionAt`), and 60fps Canvas2D renderer (`renderMotionFrame`).
   - `ops.ts`, `placement.ts`, `layout.ts`, `book.ts`, `store.ts`, `workspace.ts`: Atomic Undo/Redo store and multi-page, multi-surface workspace (`'dashboard' | 'motion' | 'diagram' | 'doc'`).
 - `src/motion-export/mp4Exporter.ts`: Deterministic offline frame-by-frame WebCodecs `VideoEncoder` + `mp4-muxer` `.mp4` encoder with `MediaRecorder` `.webm` fallback.

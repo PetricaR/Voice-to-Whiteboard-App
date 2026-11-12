@@ -85,6 +85,37 @@ export const widgetsBetween = (min: number, max: number): Check => ({
   name: `${min}–${max} dashboard widgets`,
   test: (s) => (s.dashboard?.widgets.length ?? 0) >= min && (s.dashboard?.widgets.length ?? 0) <= max,
 });
+const widgetsMatching = (s: Scene, re: RegExp) =>
+  (s.dashboard?.widgets ?? []).filter((w) => re.test(w.id) || re.test(w.title) || re.test(w.sql));
+/** The chart that answers a question has a kind that fits the question. */
+export const widgetKind = (re: RegExp, kinds: string[]): Check => ({
+  name: `widget ${re} is ${kinds.join(' / ')}`,
+  test: (s) => widgetsMatching(s, re).some((w) => kinds.includes(w.kind)),
+});
+export const widgetWhere = (name: string, re: RegExp, test: (w: NonNullable<Scene['dashboard']>['widgets'][number]) => boolean): Check => ({
+  name,
+  test: (s) => widgetsMatching(s, re).some(test),
+});
+/** Rows of the 12-column grid are full, apart from the last one. */
+export const fullRows: Check = {
+  name: 'every grid row but the last sums to 12',
+  test: (s) => {
+    let used = 0;
+    for (const w of s.dashboard?.widgets ?? []) {
+      if (used + w.colSpan > 12) return false;
+      used = (used + w.colSpan) % 12;
+    }
+    return true;
+  },
+};
+export const kpisFirst: Check = {
+  name: 'KPI cards come before the charts',
+  test: (s) => {
+    const kinds = (s.dashboard?.widgets ?? []).map((w) => w.kind);
+    const firstChart = kinds.findIndex((k) => k !== 'kpi');
+    return kinds.includes('kpi') && (firstChart < 0 || !kinds.slice(firstChart).includes('kpi'));
+  },
+};
 export const hasMotionScenes = (min: number): Check => ({
   name: `at least ${min} motion scenes`,
   test: (s) => (s.motion?.scenes.length ?? 0) >= min,
@@ -210,6 +241,41 @@ export const SCENARIOS: Scenario[] = [
         say: 'Fă Lambda-ul roșu.',
         checks: [color(/lambda/i, 'red')],
         mayChange: [/lambda/i],
+      },
+    ],
+  },
+  {
+    name: 'Dashboard charts fit the question',
+    steps: [
+      {
+        say: 'Build a dashboard from the local tables that answers: how is our recurring revenue doing? I want the headline numbers, how MRR developed over the months for each region, and which pricing plan brings in what share.',
+        checks: [
+          widgetsBetween(4, 9),
+          kpisFirst,
+          fullRows,
+          widgetKind(/month/i, ['line', 'area', 'trellis', 'stacked_bar', 'streamgraph']),
+          widgetWhere('the trend is split by region', /month/i, (w) => w.seriesField === 'region' || (w.yFields?.length ?? 0) > 1),
+          widgetKind(/plan/i, ['donut', 'pie', 'treemap', 'stacked_bar', 'square_area', 'bar', 'horizontal_bar']),
+          widgetWhere('every chart has a value format', /./, (w) => w.format != null),
+        ],
+      },
+      {
+        say: 'Add a chart that ranks our cloud services by total cost, most expensive first.',
+        checks: [
+          widgetKind(/service_spend/i, ['horizontal_bar', 'bar', 'column']),
+          widgetWhere('the ranking is ordered by cost', /service_spend/i, (w) => /order by[^)]*desc/i.test(w.sql) || w.chartConfig?.sortBy === 'value_desc'),
+        ],
+      },
+      {
+        say: 'Put a target line at 300 thousand dollars on the MRR trend.',
+        checks: [
+          widgetWhere('the trend has a reference line at 300000', /month/i, (w) => (w.chartConfig?.referenceLines ?? []).some((r) => Number(r.value) === 300000)),
+          widgetsBetween(5, 10),
+        ],
+      },
+      {
+        say: 'Is there a relationship between the number of seats and the ARR of our enterprise accounts? Add a chart for that.',
+        checks: [widgetKind(/seats/i, ['scatter', 'bubble'])],
       },
     ],
   },

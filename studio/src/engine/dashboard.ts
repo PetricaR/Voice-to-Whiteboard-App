@@ -1132,10 +1132,27 @@ function summarizeChartConfig(cfg: ChartElementConfig | undefined): string {
   if (cfg.legendPosition) tags.push(`legend=${cfg.legendPosition}`);
   if (cfg.showTrendline) tags.push('trendline');
   if (cfg.showAverageLine) tags.push('avgLine');
-  if (cfg.referenceLines?.length) tags.push(`refLines=${cfg.referenceLines.length}`);
-  if (cfg.annotations?.length) tags.push(`notes=${cfg.annotations.length}`);
+  if (cfg.limitItems) tags.push(`top=${cfg.limitItems}${cfg.groupTailAsOther ? '+other' : ''}`);
+  if (typeof cfg.targetValue === 'number') tags.push(`target=${cfg.targetValue}`);
+  if (cfg.referenceLines?.length) tags.push(`refLines=${cfg.referenceLines.map((r) => r.label ?? r.value).join('|')}`);
+  if (cfg.annotations?.length) tags.push(`notes=${cfg.annotations.map((a) => a.text).join('|')}`);
   return tags.length > 0 ? ` {${tags.join(', ')}}` : '';
 }
+
+/** How the result columns are mapped onto the chart, e.g. " (x=month, y=mrr_usd, series=region, currency_usd)". */
+function summarizeFields(w: DashboardWidget): string {
+  const parts: string[] = [];
+  if (w.xField) parts.push(`x=${w.xField}`);
+  if (w.yFields?.length) parts.push(`y=${w.yFields.join('+')}`);
+  if (w.seriesField) parts.push(`series=${w.seriesField}`);
+  if (w.sizeField) parts.push(`size=${w.sizeField}`);
+  if (w.comparisonField) parts.push(`delta=${w.comparisonField}`);
+  if (w.format) parts.push(w.format);
+  return parts.length > 0 ? ` (${parts.join(', ')})` : '';
+}
+
+/** Long enough for the model to rewrite a query precisely without asking for it again. */
+const STATE_SQL_CHARS = 420;
 
 /** Compact summary of the active dashboard returned to Gemini Live on every tool call. */
 export function describeDashboard(d: DashboardSpec): string {
@@ -1152,8 +1169,8 @@ export function describeDashboard(d: DashboardSpec): string {
   for (const w of d.widgets) {
     const sqlOneLine = w.sql.replace(/\s+/g, ' ').trim();
     lines.push(
-      `  - ${w.id} [${w.kind}, span ${w.colSpan}/12, src=${w.source}]${summarizeChartConfig(w.chartConfig)} ${JSON.stringify(w.title)}: ` +
-      `${sqlOneLine.length > 140 ? sqlOneLine.slice(0, 140) + '…' : sqlOneLine}`,
+      `  - ${w.id} [${w.kind}, span ${w.colSpan}/12, src=${w.source}]${summarizeFields(w)}${summarizeChartConfig(w.chartConfig)} ${JSON.stringify(w.title)}: ` +
+      `${sqlOneLine.length > STATE_SQL_CHARS ? sqlOneLine.slice(0, STATE_SQL_CHARS) + '…' : sqlOneLine}`,
     );
   }
   return lines.join('\n');

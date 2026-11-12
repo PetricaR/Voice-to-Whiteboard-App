@@ -16,10 +16,12 @@ import {
 import { dialectOfSource, validateReadOnlySql } from '../data/sqlGuard';
 import { resolveBlock } from '../engine/blocks';
 import { loadAllBlueprints, retrieveCatalogContext } from '../engine/catalog';
+import { reviewDashboardLayout, reviewForModel, reviewWidget } from '../engine/chartInsights';
 import {
   filterParamsOf,
   type CreateDashboardRequest,
   type DashboardSpec,
+  type DashboardWidget,
   type EditDashboardRequest,
 } from '../engine/dashboard';
 import type { CreateMotionRequest, EditMotionRequest } from '../engine/motion';
@@ -139,6 +141,21 @@ function editResponse(ctx: ToolContext, result: EditResult, staleNote?: string):
   return response;
 }
 
+/** Adds the review of the charts an edit created or changed to its response. */
+async function withChartReview(
+  ctx: ToolContext,
+  response: ToolResponse,
+  ok: boolean,
+  only?: Set<string>,
+): Promise<ToolResponse> {
+  const dash = storeOf(ctx).scene.dashboard;
+  if (!ok || !dash) return response;
+  const widgets = only ? dash.widgets.filter((w) => only.has(w.id)) : dash.widgets;
+  // The state goes last: it is what the model reads before its next call
+  const { diagram, ...rest } = response;
+  return { ...rest, chartReview: await reviewDashboardCharts(dash, widgets), diagram };
+}
+
 const asInt = (v: unknown, def: number) => {
   const n = typeof v === 'number' ? v : typeof v === 'string' ? parseInt(v, 10) : NaN;
   return Number.isFinite(n) && n > 0 ? Math.min(Math.floor(n), 50) : def;
@@ -187,11 +204,17 @@ export function schemaForModel(all: TableSchemaInfo[], search?: string): Record<
         dataset: t.dataset,
         description: clip(t.description, 240),
         rowCount: t.rowCount,
-        columns: t.columns.slice(0, SCHEMA_COLUMNS).map((c) => ({
-          name: c.name,
-          type: c.type,
-          ...(c.description ? { description: clip(c.description, 120) } : {}),
-        })),
+        columns: t.columns.slice(0, SCHEMA_COLUMNS).map((c) => {
+          const p = t.columnProfiles?.[c.name];
+          return {
+            name: c.name,
+            type: c.type,
+            ...(c.description ? { description: clip(c.description, 120) } : {}),
+            // Literals that exist in the data: every value of a small dimension, the range of the rest
+            ...(p?.values ? { values: p.values } : {}),
+            ...(p && !p.values && p.min !== undefined && p.max !== undefined ? { range: [p.min, p.max], distinct: p.distinct } : {}),
+          };
+        }),
         ...(t.columns.length > SCHEMA_COLUMNS ? { moreColumns: t.columns.length - SCHEMA_COLUMNS } : {}),
         ...(t.sampleRows?.length ? { sampleRows: t.sampleRows } : {}),
       })),
@@ -226,6 +249,59 @@ async function computeDashboardResults(d: DashboardSpec): Promise<Record<string,
   return out;
 }
 
+/** A warehouse query that takes longer than this is reviewed by the user's eyes, not by the model. */
+const REVIEW_TIMEOUT_MS = 12_000;
+
+/**
+ * Runs the queries of the given widgets and checks every result against its
+ * chart kind, so the model learns what the dashboard really shows: empty or
+ * mis-shaped charts to fix, improvements to apply, and the facts to tell.
+ */
+export async function reviewDashboardCharts(
+  d: DashboardSpec,
+  widgets: DashboardWidget[] = d.widgets,
+  opts: { layout?: boolean } = {},
+): Promise<Record<string, unknown>> {
+  const params = filterParamsOf(d);
+  const inBrowser = typeof window !== 'undefined';
+  const unverified: string[] = [];
+  const reviews = await Promise.all(widgets.map(async (w) => {
+    // Remote sources are reached through the studio server only
+    if (w.source !== 'local' && !inBrowser) {
+      unverified.push(w.id);
+      return reviewWidget(w, undefined);
+    }
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    try {
+      const res = await Promise.race([
+        executeSqlQuery(w.sql, { source: w.source, params }),
+        new Promise<undefined>((resolve) => { timer = setTimeout(() => resolve(undefined), REVIEW_TIMEOUT_MS); }),
+      ]);
+      if (res === undefined) unverified.push(w.id);
+      return reviewWidget(w, res);
+    } catch {
+      unverified.push(w.id);
+      return reviewWidget(w, undefined);
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }));
+  const layout = opts.layout === false ? [] : reviewDashboardLayout(d);
+  const issues = reviews.reduce((n, r) => n + r.issues.length, 0);
+  const advice = reviews.reduce((n, r) => n + r.advice.length, 0) + layout.length;
+  const next = issues > 0
+    ? `${issues} ${issues === 1 ? 'issue' : 'issues'}: fix all of them now with one edit_dashboard call (update_widgets), before you speak. ` +
+      'Then tell the user what you built and the most important insight from the facts.'
+    : (advice > 0 ? 'No issues. Apply the advice that serves what the user asked for in one edit_dashboard call (it is optional; never change a chart kind the user named). ' : 'No issues. ') +
+      'Tell the user in one or two sentences what you built and the most important insight, with the numbers exactly as in the facts.';
+  return {
+    widgets: reviews.map(reviewForModel),
+    ...(layout.length > 0 ? { layout } : {}),
+    ...(unverified.length > 0 ? { notVerified: `The queries of ${unverified.join(', ')} were not checked (remote source still running or unreachable).` } : {}),
+    next,
+  };
+}
+
 export async function handleToolCall(name: string, args: Record<string, unknown> | undefined, ctx: ToolContext): Promise<ToolResponse> {
   const a = args ?? {};
   const ws = ctx.workspace;
@@ -244,7 +320,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const source = str(a.source) ?? 'local';
       const table = str(a.table);
       try {
-        const schema = await inspectDataSchema({ source, table });
+        const schema = await inspectDataSchema({ source, table, profile: true });
         return { ok: true, source: schema.source, ...schemaForModel(schema.tables, str(a.search)), diagram: stateOf(ctx) };
       } catch (e) {
         return { ok: false, errors: [e instanceof Error ? e.message : String(e)], diagram: stateOf(ctx) };
@@ -361,7 +437,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
             meta,
           });
         }
-        return editResponse(ctx, res);
+        return withChartReview(ctx, editResponse(ctx, res), res.ok);
       }
       if (hasDash && req.replace !== true) {
         return {
@@ -375,7 +451,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       }
       const res = store.createDashboard(req, meta);
       if (res.ok) ws?.showView('dashboard');
-      return editResponse(ctx, res);
+      return withChartReview(ctx, editResponse(ctx, res), res.ok);
     }
 
     case 'edit_dashboard': {
@@ -408,21 +484,21 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
       const res = store.editDashboard(req, { ...meta, label: str(req.summary) });
       if (res.ok) ws?.showView('dashboard');
-      return editResponse(ctx, res);
+      // Only what this edit touched is reviewed; a changed filter value changes every chart
+      const touched = new Set([...res.changes.addedWidgets, ...res.changes.updatedWidgets]);
+      const refiltered = (req.update_filters ?? []).some((f) => f.value !== undefined);
+      return withChartReview(ctx, editResponse(ctx, res), res.ok, refiltered ? undefined : touched);
     }
 
     case 'refresh_dashboard': {
       const dash = storeOf(ctx).scene.dashboard;
       if (!dash) return { ok: false, errors: ['No dashboard on the current page.'], diagram: stateOf(ctx) };
       ws?.showView('dashboard');
-      const liveResults = await computeDashboardResults(dash);
-      const summary = dash.widgets.map((w) => ({
-        id: w.id,
-        title: w.title,
-        rowCount: liveResults[w.id]?.rowCount ?? 0,
-        firstRow: liveResults[w.id]?.rows?.[0] ?? null,
-      }));
-      return { ok: true, result: 'Refreshed all dashboard SQL queries.', widgets: summary, diagram: stateOf(ctx) };
+      const chartReview = await reviewDashboardCharts(dash);
+      const titles = new Map(dash.widgets.map((w) => [w.id, w.title]));
+      chartReview.widgets = (chartReview.widgets as Record<string, unknown>[]).map((r) => ({ title: titles.get(r.id as string), ...r }));
+      chartReview.next = 'Answer from the facts (numbers exactly as given), the most important insight first. Fix issues only if the user asks to improve the dashboard.';
+      return { ok: true, result: 'Refreshed all dashboard SQL queries.', chartReview, diagram: stateOf(ctx) };
     }
 
     case 'inspect_widget': {
@@ -447,12 +523,15 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         if (!res.ok) {
           return { ok: false, errors: [res.error ?? 'SQL query failed.'], diagram: stateOf(ctx) };
         }
+        const review = reviewWidget(w, res);
         return {
           ok: true,
-          widget: { id: w.id, title: w.title, source: w.source, sql: w.sql, explanation: w.explanation },
+          widget: { id: w.id, title: w.title, kind: w.kind, source: w.source, sql: w.sql, explanation: w.explanation },
           columns: res.columns,
           rows: res.rows.slice(0, 25),
           rowCount: res.rowCount,
+          ...(review.facts.length > 0 ? { facts: review.facts } : {}),
+          ...(review.issues.length > 0 ? { issues: review.issues } : {}),
           diagram: stateOf(ctx),
         };
       } catch (e) {

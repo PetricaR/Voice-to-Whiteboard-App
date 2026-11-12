@@ -37,9 +37,60 @@ export interface DataTableMeta {
   uploaded?: boolean;
 }
 
+/** What a column holds: its few distinct values, or its smallest and largest value. */
+export interface ColumnProfile {
+  distinct: number;
+  values?: (string | number)[];
+  min?: string | number;
+  max?: string | number;
+}
+
 export type TableSchemaInfo = DataTableMeta & {
   sampleRows?: (string | number | boolean | null)[][];
+  /** By column name; only for local tables inspected with `profile: true`. */
+  columnProfiles?: Record<string, ColumnProfile>;
 };
+
+/** Columns with at most this many distinct values are listed value by value. */
+const PROFILE_MAX_VALUES = 12;
+/** Tables beyond these sizes are not profiled: the scan would be felt in the UI. */
+const PROFILE_MAX_ROWS = 250_000;
+const PROFILE_MAX_TABLES = 12;
+
+/**
+ * Distinct values of low-cardinality columns and the range of the others, so
+ * SQL written against the table uses literals that exist ('North America',
+ * '2026-10') instead of guessed ones.
+ */
+function profileLocalTable(db: Database, table: DataTableMeta): Record<string, ColumnProfile> {
+  const out: Record<string, ColumnProfile> = {};
+  const quote = (id: string) => `"${id.replace(/"/g, '""')}"`;
+  const scalar = (v: unknown): string | number | undefined =>
+    (typeof v === 'number' ? v : typeof v === 'string' ? (v.length > 40 ? `${v.slice(0, 39)}…` : v) : undefined);
+  for (const col of table.columns) {
+    try {
+      const c = quote(col.name);
+      const stats = db.exec(`SELECT COUNT(DISTINCT ${c}), MIN(${c}), MAX(${c}) FROM ${quote(table.name)};`)[0]?.values[0];
+      if (!stats) continue;
+      const distinct = Number(stats[0]) || 0;
+      const profile: ColumnProfile = { distinct };
+      const isText = typeof stats[1] === 'string';
+      if (isText && distinct > 0 && distinct <= PROFILE_MAX_VALUES) {
+        const rows = db.exec(`SELECT DISTINCT ${c} FROM ${quote(table.name)} WHERE ${c} IS NOT NULL ORDER BY 1 LIMIT ${PROFILE_MAX_VALUES};`)[0]?.values ?? [];
+        profile.values = rows.map((r) => scalar(r[0])).filter((v): v is string | number => v !== undefined);
+      } else {
+        const min = scalar(stats[1]);
+        const max = scalar(stats[2]);
+        if (min !== undefined) profile.min = min;
+        if (max !== undefined) profile.max = max;
+      }
+      out[col.name] = profile;
+    } catch {
+      // A column that cannot be profiled is described by its type only
+    }
+  }
+  return out;
+}
 
 export interface DataSourceInfo {
   id: string;
@@ -470,9 +521,9 @@ export async function listAllDataSources(forceRefresh = false): Promise<DataSour
 }
 
 /** Inspects schema + sample rows for a data source (used by Gemini Live `inspect_schema` and UI). */
-export async function inspectDataSchema(opts: { source?: string; table?: string } = {}): Promise<{
+export async function inspectDataSchema(opts: { source?: string; table?: string; profile?: boolean } = {}): Promise<{
   source: string;
-  tables: (DataTableMeta & { sampleRows?: (string | number | boolean | null)[][] })[];
+  tables: TableSchemaInfo[];
 }> {
   const source = opts.source && opts.source.trim() !== '' ? opts.source.trim() : 'local';
   if (source !== 'local' && typeof window !== 'undefined') {
@@ -497,7 +548,8 @@ export async function inspectDataSchema(opts: { source?: string; table?: string 
     } catch {
       // ignore
     }
-    return { ...t, sampleRows };
+    const profiled = opts.profile === true && filtered.length <= PROFILE_MAX_TABLES && t.rowCount <= PROFILE_MAX_ROWS;
+    return { ...t, sampleRows, ...(profiled ? { columnProfiles: profileLocalTable(db, t) } : {}) };
   });
 
   return { source: 'local', tables };
