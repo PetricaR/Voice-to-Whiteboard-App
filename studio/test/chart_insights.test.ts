@@ -221,6 +221,10 @@ describe('Dashboard tools give the agent what it needs to build good charts', ()
       reference_lines: [{ axis: 'y', value: '180000', label: 'Target' }],
       reference_bands: [{ axis: 'y', from: 100, to: 120, label: 'Healthy' }],
       annotations: [{ target_label: '2026-07', text: 'Pricing change' }],
+      custom_colors: ['#1a73e8'],
+      x_tick_rotation: -45,
+      fill_opacity: 0.65,
+      inner_radius_ratio: 0.5,
     };
     for (const [key, schema] of Object.entries(chartConfigFields) as [string, any][]) {
       const value = samples[key] ??
@@ -290,9 +294,56 @@ describe('Dashboard tools give the agent what it needs to build good charts', ()
     });
     const state = describeDashboard(dashboard);
     expect(state).toContain('(x=month, y=mrr_usd, series=region, currency_usd)');
-    expect(state).toContain('top=5');
-    expect(state).toContain('refLines=Target $200K');
+    // Every setting, with the names and shapes edit_dashboard takes back
+    expect(state).toContain('chart_config {"limit_items":5,"reference_lines":[{"axis":"y","value":200000,"label":"Target $200K"}]}');
     expect(state).toContain(sql);
+  });
+
+  it('edits single charts: copy, move, drop settings, and reports what had no effect', async () => {
+    const ws = new Workspace();
+    const ctx: ToolContext = { workspace: ws, source: 'voice' };
+    const trendSql = 'SELECT month, SUM(mrr_usd) AS mrr_usd FROM monthly_revenue GROUP BY month ORDER BY month';
+    await handleToolCall('create_dashboard', {
+      title: 'Edits',
+      widgets: [
+        { id: 'table', title: 'Accounts', kind: 'table', col_span: 12, sql: 'SELECT account_name, arr_usd FROM enterprise_accounts ORDER BY arr_usd DESC LIMIT 20' },
+        {
+          id: 'trend', title: 'MRR Trend', kind: 'line', format: 'currency_usd', col_span: 6, sql: trendSql,
+          chart_config: { reference_lines: [{ axis: 'y', value: '700000', label: 'Target' }], show_average_line: true },
+        },
+      ],
+    }, ctx);
+
+    const edited = await handleToolCall('edit_dashboard', {
+      summary: 'Copy, move, restyle',
+      update_widgets: [{ id: 'trend', remove_chart_settings: ['reference_lines'], chart_config: { stroke_width: 4, sparkle: true, palette: 'glitter' } }],
+      add_widgets: [{ copy_of: 'trend', id: 'trend_emea', title: 'EMEA MRR Trend', sql: trendSql.replace('GROUP BY', "WHERE region = 'EMEA' GROUP BY") }],
+      move_widgets: [{ id: 'table', after: 'end' }],
+    }, ctx) as any;
+    expect(edited.ok).toBe(true);
+    const widgets = ws.store.scene.dashboard!.widgets;
+    expect(widgets.map((w) => w.id)).toEqual(['trend', 'trend_emea', 'table']);
+    const trend = widgets[0];
+    expect(trend.chartConfig).toEqual({ showAverageLine: true, strokeWidth: 4 });
+    // The copy keeps the kind, format, width and settings of its source
+    expect(widgets[1]).toMatchObject({ kind: 'line', format: 'currency_usd', colSpan: 6, chartConfig: { showAverageLine: true, strokeWidth: 4 } });
+    expect(widgets[1].sql).toContain("'EMEA'");
+    expect(edited.warnings.join(' ')).toMatch(/sparkle=true, palette="glitter" had no effect/);
+
+    const noop = await handleToolCall('edit_dashboard', { summary: 'Same', update_widgets: [{ id: 'trend', kind: 'line' }] }, ctx) as any;
+    expect(noop.warnings.join(' ')).toMatch(/nothing changed/);
+  });
+
+  it('advises against design choices that hide the message', async () => {
+    const crowded = await review({
+      title: 'Top Accounts by ARR',
+      kind: 'horizontal_bar',
+      format: 'currency_usd',
+      sql: 'SELECT account_name, arr_usd FROM enterprise_accounts ORDER BY arr_usd DESC LIMIT 14',
+      chart_config: { show_data_labels: true, color_by: 'category' },
+    });
+    expect(crowded.advice.join(' ')).toMatch(/Data labels on \d+ marks/);
+    expect(crowded.advice.join(' ')).toMatch(/colors for \d+ bars/);
   });
 
   it('create_dashboard, edit_dashboard and refresh_dashboard return the chart review', async () => {

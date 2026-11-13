@@ -280,6 +280,37 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    name: 'Dashboard chart edits',
+    steps: [
+      {
+        say: 'Build a small revenue dashboard from the local monthly_revenue table: total MRR as a headline number, the MRR trend by month, MRR by region and MRR by plan.',
+        checks: [widgetsBetween(3, 8), kpisFirst, widgetKind(/month/i, ['line', 'area'])],
+      },
+      {
+        say: 'Add a target line at 700 thousand dollars on the MRR trend and make its line thicker.',
+        checks: [
+          widgetWhere('the trend has a reference line at 700000', /month/i, (w) => (w.chartConfig?.referenceLines ?? []).some((r) => Number(r.value) === 700000)),
+          widgetWhere('the trend line is thicker', /month/i, (w) => (w.chartConfig?.strokeWidth ?? 0) > 2.5),
+        ],
+      },
+      {
+        say: 'Actually remove the target line from the trend again, but keep the thicker line.',
+        checks: [
+          widgetWhere('the trend has no reference line', /month/i, (w) => (w.chartConfig?.referenceLines ?? []).length === 0 && /month/i.test(w.sql) && w.kind !== 'kpi'),
+          widgetWhere('the thicker line stays', /month/i, (w) => (w.chartConfig?.strokeWidth ?? 0) > 2.5),
+        ],
+      },
+      {
+        say: 'Add the same trend chart, but only for EMEA.',
+        checks: [widgetWhere('an EMEA copy of the trend', /emea/i, (w) => /'EMEA'/.test(w.sql) && (w.kind === 'line' || w.kind === 'area'))],
+      },
+      {
+        say: 'Turn the MRR by plan chart into a horizontal bar chart sorted from largest to smallest.',
+        checks: [widgetWhere('plan is a sorted horizontal bar', /plan/i, (w) => w.kind === 'horizontal_bar' && (w.chartConfig?.sortBy === 'value_desc' || /order by[^)]*desc/i.test(w.sql)))],
+      },
+    ],
+  },
+  {
     name: 'Live SaaS SQL Dashboard to Programmatic Motion Explainer',
     steps: [
       {

@@ -493,6 +493,22 @@ export function reviewWidget(widget: DashboardWidget, result: QueryExecutionResu
     }
   }
 
+  // Design: ink that does not help the reader
+  const cfg = widget.chartConfig ?? {};
+  const marks = Math.min(rows.length, cfg.limitItems ?? rows.length) * Math.max(1, seriesIdx >= 0 ? 1 : yIndices.length);
+  if (cfg.showDataLabels && marks > 12 && !SINGLE_ROW_OK.has(widget.kind)) {
+    advice.push(`Data labels on ${marks} marks overlap and hide the shape: keep them for at most 12 marks, or show the top N. ${patchForModel(widget.id, { chartConfig: { showDataLabels: false } })}`);
+  }
+  if (cfg.showLegend === true && seriesIdx < 0 && yIndices.length <= 1 && SPLITTABLE.has(widget.kind)) {
+    advice.push(`A legend for a single series repeats the title. ${patchForModel(widget.id, { chartConfig: { showLegend: false } })}`);
+  }
+  if (cfg.colorBy === 'category' && BAR_FAMILY.has(widget.kind) && rows.length > 6) {
+    advice.push(`${rows.length} colors for ${rows.length} bars make the reader look for a meaning that is not there: one color, and an accent only for the bar the story is about. ${patchForModel(widget.id, { chartConfig: { colorBy: 'series' } })}`);
+  }
+  if (cfg.yAxisScale === 'log' && BAR_FAMILY.has(widget.kind)) {
+    advice.push(`Bar lengths on a log scale do not compare: use a linear scale, or a dot plot / line for values across orders of magnitude. ${patchForModel(widget.id, { chartConfig: { yAxisScale: 'linear' } })}`);
+  }
+
   if (widget.kind === 'table' && rows.length > 50) {
     advice.push(`${rows.length} rows are a data dump, not a detail table: ORDER BY the key metric DESC and LIMIT 20–50.`);
   }

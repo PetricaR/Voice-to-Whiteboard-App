@@ -452,10 +452,14 @@ export interface EditDashboardRequest {
   title?: string;
   subtitle?: string;
   refresh_seconds?: number;
-  add_widgets?: (DashboardWidgetInput & { after?: string })[];
-  update_widgets?: (Partial<DashboardWidgetInput> & { id: string })[];
+  /** A new widget; with copy_of it starts as a copy of that widget and the given fields override it. */
+  add_widgets?: (Partial<DashboardWidgetInput> & { after?: string; copy_of?: string })[];
+  /** remove_chart_settings: chart_config settings (snake_case) to drop, e.g. ["reference_lines"]. */
+  update_widgets?: (Partial<DashboardWidgetInput> & { id: string; remove_chart_settings?: string[] })[];
   remove_widgets?: string[];
   reorder_widgets?: string[];
+  /** Moves single widgets without listing the others: after or before another widget, or "start" / "end". */
+  move_widgets?: { id: string; after?: string; before?: string }[];
   add_filters?: DashboardFilterInput[];
   update_filters?: { id: string; label?: string; value?: string; options?: string[] }[];
   remove_filters?: string[];
@@ -926,6 +930,49 @@ export function buildDashboard(req: CreateDashboardRequest): DashboardOpResult {
   };
 }
 
+const camelToSnake = (k: string) => k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+
+/** A widget as create input (snake_case fields), the base of a copy. */
+function widgetToInput(w: DashboardWidget): DashboardWidgetInput {
+  const input: DashboardWidgetInput = {
+    title: w.title,
+    kind: w.kind,
+    source: w.source,
+    sql: w.sql,
+    col_span: w.colSpan,
+    ...(w.subtitle ? { subtitle: w.subtitle } : {}),
+    ...(w.xField ? { x_field: w.xField } : {}),
+    ...(w.yFields ? { y_fields: [...w.yFields] } : {}),
+    ...(w.seriesField ? { series_field: w.seriesField } : {}),
+    ...(w.format ? { format: w.format } : {}),
+    ...(w.comparisonField ? { comparison_field: w.comparisonField } : {}),
+    ...(w.unit ? { unit: w.unit } : {}),
+    ...(w.explanation ? { explanation: w.explanation } : {}),
+    ...(w.color ? { color: w.color } : {}),
+    ...(w.chartConfig ? { chart_config: cloneChartConfig(w.chartConfig) as ChartElementConfigInput } : {}),
+  };
+  for (const [targetKey, , snakeKey] of EXTRA_FIELD_PAIRS) {
+    const v = (w as unknown as Record<string, unknown>)[targetKey];
+    if (typeof v === 'string') (input as unknown as Record<string, unknown>)[snakeKey] = v;
+  }
+  return input;
+}
+
+/**
+ * Settings of a chart_config patch that did not take effect (unknown name or
+ * invalid value), so the model hears about them instead of assuming they did.
+ */
+function ignoredChartSettings(patch: unknown, merged: ChartElementConfig | undefined): string[] {
+  if (!patch || typeof patch !== 'object') return [];
+  const out: string[] = [];
+  for (const [k, v] of Object.entries(patch as Record<string, unknown>)) {
+    if (v === null || v === undefined || v === '') continue;
+    const key = snakeToCamelKey(k) as keyof ChartElementConfig;
+    if (merged?.[key] === undefined) out.push(`${camelToSnake(key)}=${JSON.stringify(v)}`);
+  }
+  return out;
+}
+
 function resolveWidgetRef(ref: string, widgets: DashboardWidget[], selection: string[]): Resolution<DashboardWidget> {
   if (ref === '@selected' && selection.length > 0) {
     const found = widgets.find((w) => selection.includes(w.id));
@@ -983,6 +1030,13 @@ export function applyDashboardEdit(
       continue;
     }
     if (r.note) notes.push(r.note);
+    const before = JSON.stringify(target);
+    if (patch.kind !== undefined && !WIDGET_KINDS.includes(patch.kind)) {
+      warnings.push(`${target.id}: kind "${patch.kind}" does not exist; it stays "${target.kind}".`);
+    }
+    if (patch.format !== undefined && !VALUE_FORMATS.includes(patch.format)) {
+      warnings.push(`${target.id}: format "${patch.format}" does not exist (${VALUE_FORMATS.join(', ')}).`);
+    }
     if (patch.title !== undefined && patch.title.trim()) target.title = patch.title.trim();
     if (patch.subtitle !== undefined) {
       if (patch.subtitle.trim() === '') delete target.subtitle;
@@ -1033,20 +1087,59 @@ export function applyDashboardEdit(
     if (patch.resetChartConfig || patch.reset_chart_config) {
       delete target.chartConfig;
     }
+    if (Array.isArray(patch.remove_chart_settings) && patch.remove_chart_settings.length > 0) {
+      const drop: Record<string, null> = {};
+      for (const k of patch.remove_chart_settings) drop[String(k)] = null;
+      const kept = normalizeChartConfig(drop, target.chartConfig);
+      if (kept) target.chartConfig = kept;
+      else delete target.chartConfig;
+    }
     const cfgPatch = patch.chartConfig ?? patch.chart_config;
     if (cfgPatch !== undefined) {
       const merged = normalizeChartConfig(cfgPatch, target.chartConfig);
       if (merged) target.chartConfig = merged;
       else delete target.chartConfig;
+      const ignored = ignoredChartSettings(cfgPatch, merged);
+      if (ignored.length > 0) {
+        warnings.push(`${target.id}: chart_config ${ignored.join(', ')} had no effect (unknown setting or invalid value).`);
+      }
+    }
+    if (JSON.stringify(target) === before) {
+      warnings.push(`${target.id}: nothing changed (the values given are the current ones).`);
     }
     if (!updatedWidgets.includes(target.id)) updatedWidgets.push(target.id);
   }
 
   // Add widgets
   const usedIds = new Set(next.widgets.map((w) => w.id));
-  for (const add of req.add_widgets ?? []) {
+  for (const raw of req.add_widgets ?? []) {
+    let add = raw as DashboardWidgetInput & { after?: string; copy_of?: string };
+    if (raw.copy_of) {
+      const r = resolveWidgetRef(raw.copy_of, next.widgets, selection);
+      if (!r.item) {
+        errors.push(r.error ?? `copy_of: no widget matching "${raw.copy_of}".`);
+        continue;
+      }
+      const base = widgetToInput(r.item);
+      const own = Object.fromEntries(Object.entries(raw).filter(([, v]) => v !== undefined && v !== ''));
+      const cfgPatch = raw.chart_config ?? raw.chartConfig;
+      add = {
+        ...base,
+        ...own,
+        id: raw.id ?? '',
+        title: raw.title?.trim() || `${r.item.title} (copy)`,
+        chart_config: (cfgPatch !== undefined ? normalizeChartConfig(cfgPatch, r.item.chartConfig) : base.chart_config) as ChartElementConfigInput,
+        chartConfig: undefined,
+        after: raw.after ?? r.item.id,
+      } as typeof add;
+    }
     if (!add.sql || !add.sql.trim()) {
-      errors.push(`New widget "${add.title || 'unnamed'}" requires a non-empty SQL query.`);
+      errors.push(`New widget "${add.title || 'unnamed'}" requires a non-empty SQL query (or copy_of an existing widget).`);
+      continue;
+    }
+    if (!add.title?.trim()) add = { ...add, title: 'Untitled Metric' };
+    if (!add.kind) {
+      errors.push(`New widget "${add.title}" requires a kind.`);
       continue;
     }
     const w = normalizeWidget(add, next.defaultSource, usedIds, next.widgets.length);
@@ -1075,6 +1168,32 @@ export function applyDashboardEdit(
     }
     for (const rest of byId.values()) ordered.push(rest);
     next.widgets = ordered;
+  }
+
+  // Move single widgets relative to others
+  for (const mv of req.move_widgets ?? []) {
+    const r = resolveWidgetRef(mv.id, next.widgets, selection);
+    if (!r.item) {
+      errors.push(r.error ?? `move_widgets: no widget matching "${mv.id}".`);
+      continue;
+    }
+    const moving = r.item;
+    const rest = next.widgets.filter((w) => w.id !== moving.id);
+    const anchorRef = mv.after ?? mv.before;
+    let at = rest.length;
+    if (anchorRef === 'start') at = 0;
+    else if (anchorRef && anchorRef !== 'end') {
+      const a = resolveWidgetRef(anchorRef, rest, []);
+      if (!a.item) {
+        errors.push(a.error ?? `move_widgets: no widget matching "${anchorRef}".`);
+        continue;
+      }
+      const idx = rest.findIndex((w) => w.id === a.item!.id);
+      at = mv.after !== undefined ? idx + 1 : idx;
+    }
+    rest.splice(at, 0, moving);
+    next.widgets = rest;
+    if (!updatedWidgets.includes(moving.id)) updatedWidgets.push(moving.id);
   }
 
   // Filters: remove, update, add
@@ -1121,22 +1240,26 @@ export function applyDashboardEdit(
   };
 }
 
+/**
+ * Every chart_config setting of a widget, with the names and shapes the model
+ * passes to edit_dashboard, so an edit can keep, change or drop each one
+ * (e.g. ` chart_config {"sort_by":"value_desc","reference_lines":[{"axis":"y","value":200000,"label":"Target"}]}`).
+ */
 function summarizeChartConfig(cfg: ChartElementConfig | undefined): string {
   if (!cfg) return '';
-  const tags: string[] = [];
-  if (cfg.palette) tags.push(`palette=${cfg.palette}`);
-  if (cfg.orientation && cfg.orientation !== 'auto') tags.push(`orient=${cfg.orientation}`);
-  if (cfg.stackMode && cfg.stackMode !== 'none') tags.push(`stack=${cfg.stackMode}`);
-  if (cfg.sortBy && cfg.sortBy !== 'none') tags.push(`sort=${cfg.sortBy}`);
-  if (cfg.showDataLabels) tags.push('labels=on');
-  if (cfg.legendPosition) tags.push(`legend=${cfg.legendPosition}`);
-  if (cfg.showTrendline) tags.push('trendline');
-  if (cfg.showAverageLine) tags.push('avgLine');
-  if (cfg.limitItems) tags.push(`top=${cfg.limitItems}${cfg.groupTailAsOther ? '+other' : ''}`);
-  if (typeof cfg.targetValue === 'number') tags.push(`target=${cfg.targetValue}`);
-  if (cfg.referenceLines?.length) tags.push(`refLines=${cfg.referenceLines.map((r) => r.label ?? r.value).join('|')}`);
-  if (cfg.annotations?.length) tags.push(`notes=${cfg.annotations.map((a) => a.text).join('|')}`);
-  return tags.length > 0 ? ` {${tags.join(', ')}}` : '';
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(cfg)) {
+    if (v === undefined) continue;
+    if (Array.isArray(v) && v.length > 0 && typeof v[0] === 'object') {
+      // Generated ids are noise; the model identifies these by their content
+      out[camelToSnake(k)] = v.map((item) => Object.fromEntries(Object.entries(item as Record<string, unknown>)
+        .filter(([ik]) => ik !== 'id')
+        .map(([ik, iv]) => [camelToSnake(ik), iv])));
+    } else {
+      out[camelToSnake(k)] = v;
+    }
+  }
+  return Object.keys(out).length > 0 ? ` chart_config ${JSON.stringify(out)}` : '';
 }
 
 /** How the result columns are mapped onto the chart, e.g. " (x=month, y=mrr_usd, series=region, currency_usd)". */
@@ -1148,6 +1271,8 @@ function summarizeFields(w: DashboardWidget): string {
   if (w.sizeField) parts.push(`size=${w.sizeField}`);
   if (w.comparisonField) parts.push(`delta=${w.comparisonField}`);
   if (w.format) parts.push(w.format);
+  if (w.unit) parts.push(`unit ${JSON.stringify(w.unit)}`);
+  if (w.color) parts.push(`color ${w.color}`);
   return parts.length > 0 ? ` (${parts.join(', ')})` : '';
 }
 
@@ -1169,7 +1294,9 @@ export function describeDashboard(d: DashboardSpec): string {
   for (const w of d.widgets) {
     const sqlOneLine = w.sql.replace(/\s+/g, ' ').trim();
     lines.push(
-      `  - ${w.id} [${w.kind}, span ${w.colSpan}/12, src=${w.source}]${summarizeFields(w)}${summarizeChartConfig(w.chartConfig)} ${JSON.stringify(w.title)}: ` +
+      `  - ${w.id} [${w.kind}, span ${w.colSpan}/12, src=${w.source}]${summarizeFields(w)} ${JSON.stringify(w.title)}` +
+      (w.subtitle ? ` · ${JSON.stringify(w.subtitle)}` : '') +
+      `${summarizeChartConfig(w.chartConfig)}: ` +
       `${sqlOneLine.length > STATE_SQL_CHARS ? sqlOneLine.slice(0, STATE_SQL_CHARS) + '…' : sqlOneLine}`,
     );
   }

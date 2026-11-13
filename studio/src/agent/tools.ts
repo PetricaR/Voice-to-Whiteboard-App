@@ -8,8 +8,10 @@ import {
   CHART_PALETTES,
   CURVE_TYPES,
   DATA_LABEL_CONTENTS,
+  DATA_LABEL_POSITIONS,
   FILTER_KINDS,
   LEGEND_POSITIONS,
+  LINE_STYLES,
   MAP_SCOPES,
   SORT_MODES,
   STACK_MODES,
@@ -118,6 +120,28 @@ export const chartConfigFields = {
   map_scope: enumOf(MAP_SCOPES, 'Region shown by the maps.'),
   decimals: { type: 'INTEGER', description: 'Decimal places of the values (0–6).' },
   cross_filter_on_click: bool('Clicking a mark sets the dashboard filter of that dimension.'),
+  // Visual design: change only when the user asks ("thicker line", "no gridlines", "taller", "brand colors")
+  custom_colors: arrayOf(str('CSS color, e.g. "#1a73e8".'), 'Explicit series or slice colors in order; only when the user names colors or a brand.'),
+  fill_opacity: num('Opacity of areas, bars and bubbles (0.05–1); about 0.65 for overlapping marks.'),
+  gradient_fill: bool('Soft gradient under a line or area.'),
+  stroke_width: num('Line thickness in px (0.5–10, default 2.5).'),
+  line_style: enumOf(LINE_STYLES, 'Line dash: dashed or dotted for forecasts, targets or secondary series.'),
+  marker_size: num('Size of the line markers (1–18).'),
+  bar_radius: num('Corner radius of bars in px (0–24).'),
+  inner_radius_ratio: num('Hole of a donut as a share of the radius (0–0.9, default 0.58).'),
+  chart_height: num('Height of the plot in px (120–680, default 216).'),
+  show_horizontal_grid: bool('Horizontal gridlines (keep them light; hide for sparse charts).'),
+  show_vertical_grid: bool('Vertical gridlines (rarely useful).'),
+  show_x_axis: bool('Show the x axis.'),
+  show_y_axis: bool('Show the y axis (hide it when every mark has a data label).'),
+  x_tick_rotation: { type: 'INTEGER', description: 'Rotation of the x labels: 0, -30, -45 or -90 (prefer horizontal_bar to rotated labels).' },
+  y_axis_position: enumOf(['left', 'right'], 'Side of the y axis.'),
+  data_label_position: enumOf(DATA_LABEL_POSITIONS, 'Where the data labels sit.'),
+  prefix: str('Text before every value, e.g. "€".'),
+  suffix: str('Text after every value, e.g. " seats".'),
+  legend_show_values: bool('Values next to the legend entries.'),
+  show_outliers: bool('box_plot: draw the outlier points.'),
+  show_mean: bool('box_plot, violin: mark the mean.'),
 };
 
 const dashboardWidgetFields = {
@@ -277,8 +301,9 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'edit_dashboard',
-    description: 'Incrementally edits the live dashboard on the active page: add, update, remove, or reorder widgets and filters without disturbing untouched widgets. ' +
-      'The result contains "chartReview" (issues, advice and facts) for the widgets it added or changed.',
+    description: 'Incrementally edits the live dashboard on the active page: add, copy, update, remove, move or reorder widgets and filters without disturbing untouched widgets. ' +
+      'Everything not named stays exactly as it is. The result contains "chartReview" (issues, advice and facts) for the widgets it added or changed, ' +
+      'and "warnings" for anything that had no effect.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
       summary: str('Short summary of what changed (at most 8 words).'),
@@ -288,15 +313,24 @@ export const TOOL_DECLARATIONS = [
       add_widgets: arrayOf(obj({
         ...dashboardWidgetFields,
         after: str('Optional widget id to insert after, or "start".'),
-      }, ['title', 'kind', 'sql']), 'New widgets to add.'),
+        copy_of: str('Id of an existing widget (or "@selected") to start from: its SQL, fields and settings are copied, the fields given here override them, and it is placed right after it. ' +
+          'Use it for "the same chart as …", "duplicate this as a …", "the same for EMEA"; kind and sql are then optional.'),
+      }, ['title']), 'New widgets to add (kind and sql are required unless copy_of is set).'),
       update_widgets: arrayOf(obj({
         ...dashboardWidgetFields,
         id: str('Widget id or "@selected".'),
         color: enumOf([...COLORS, 'none'], 'Color or "none".'),
+        remove_chart_settings: arrayOf(str('chart_config setting name, e.g. "reference_lines".'),
+          'chart_config settings to drop and return to their default, e.g. ["reference_lines"] for "remove the target line", ["annotations"], ["custom_colors"].'),
         reset_chart_config: bool('True to drop every chart_config setting of the widget before applying chart_config.'),
-      }, ['id']), 'Updates to existing widgets: only the given fields change (chart_config is merged field by field).'),
+      }, ['id']), 'Updates to existing widgets: only the given fields change (chart_config is merged field by field; a list such as reference_lines or annotations is replaced as a whole, so repeat the items to keep).'),
       remove_widgets: arrayOf(str('Widget id or "@selected".'), 'Widgets to remove.'),
-      reorder_widgets: arrayOf(str('Widget id.'), 'Ordered list of widget ids.'),
+      move_widgets: arrayOf(obj({
+        id: str('Widget id or "@selected".'),
+        after: str('Widget id it goes after, or "start" / "end".'),
+        before: str('Widget id it goes before.'),
+      }, ['id']), 'Moves single widgets ("put the table at the bottom", "move this next to the trend") without listing the others.'),
+      reorder_widgets: arrayOf(str('Widget id.'), 'New order: the listed widgets first, in this order, then the rest.'),
       add_filters: arrayOf(obj(dashboardFilterFields, ['label', 'param']), 'Filters to add.'),
       update_filters: arrayOf(obj({
         id: str('Filter id or param name.'),
