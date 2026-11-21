@@ -18,14 +18,16 @@ function ThumbnailView({ scene }: { scene: Scene }) {
         </svg>
       );
     }
-    if (scene.motion && scene.motion.scenes.length > 0) {
+    if (scene.deck && scene.deck.slides.length > 0) {
       return (
         <svg className="thumbnail" viewBox="0 0 120 80" preserveAspectRatio="xMidYMid meet" aria-hidden="true">
-          <rect className="th-group color-purple" x="8" y="8" width="104" height="50" rx="7" />
-          <polygon points="54,24 54,42 70,33" fill="var(--primary)" opacity="0.85" />
-          <rect className="th-node color-blue" x="8" y="64" width="32" height="8" rx="4" />
-          <rect className="th-node color-teal" x="44" y="64" width="36" height="8" rx="4" />
-          <rect className="th-node color-orange" x="84" y="64" width="28" height="8" rx="4" />
+          <rect className="th-group color-blue" x="8" y="8" width="104" height="58" rx="5" />
+          <rect className="th-node color-blue" x="16" y="16" width="56" height="8" rx="3" />
+          <rect className="th-node color-teal" x="16" y="32" width="12" height="26" rx="2" />
+          <rect className="th-node color-teal" x="32" y="40" width="12" height="18" rx="2" />
+          <rect className="th-node color-orange" x="48" y="28" width="12" height="30" rx="2" />
+          <circle className="th-node color-purple" cx="92" cy="44" r="12" />
+          <rect className="th-node color-gray" x="40" y="70" width="40" height="4" rx="2" />
         </svg>
       );
     }

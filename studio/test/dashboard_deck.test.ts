@@ -12,15 +12,8 @@ import {
   normalizeDashboard,
   normalizeRefreshSeconds,
 } from '../src/engine/dashboard';
-import {
-  applyMotionEdit,
-  aspectDimensions,
-  buildMotion,
-  generateMotionFromPage,
-  totalMotionDurationMs,
-} from '../src/engine/motion';
+import { applyDeckEdit, buildDeck, generateDeckFromPage } from '../src/engine/deck';
 import { DiagramStore } from '../src/engine/store';
-import { evaluateMotionAt } from '../src/engine/timeline';
 import { Workspace } from '../src/engine/workspace';
 import { pagesFromJson, pagesToJson } from '../src/ui/export';
 import { STARTER_SAAS_DASHBOARD } from '../src/ui/dashboard/DashboardView';
@@ -188,71 +181,47 @@ describe('Live SQL Dashboard Engine & Exporters', () => {
   });
 });
 
-describe('Programmatic Motion Engine & Deterministic Timeline', () => {
-  it('evaluates scenes, spring easings, metric counters, and aspect ratios deterministically', () => {
-    expect(aspectDimensions('16:9')).toEqual({ width: 1920, height: 1080 });
-    expect(aspectDimensions('9:16')).toEqual({ width: 1080, height: 1920 });
-    expect(aspectDimensions('1:1')).toEqual({ width: 1080, height: 1080 });
-
-    const { ok, motion } = buildMotion({
-      title: 'Quarterly Explainer',
-      aspect_ratio: '16:9',
-      fps: 60,
-      scenes: [
-        {
-          id: 's1',
-          title: 'Hook',
-          duration_ms: 3000,
-          narration: 'Revenue grew rapidly across every region.',
-          layers: [
-            { id: 'h1', kind: 'kinetic_text', text: 'Q2 Growth', enter_at_ms: 0 },
-            { id: 'c1', kind: 'metric_counter', text: 'ARR', start_value: 0, value: 1000, enter_at_ms: 200 },
-          ],
-        },
+describe('Slide Deck Engine', () => {
+  it('builds a deck from slides and edits it incrementally', () => {
+    const { ok, deck, warnings } = buildDeck({
+      title: 'Quarterly Review',
+      theme: 'ocean',
+      slides: [
+        { id: 's1', layout: 'title', title: 'Quarterly Review' },
         {
           id: 's2',
-          title: 'Breakdown',
-          duration_ms: 3500,
-          transition: 'slide_left',
-          layers: [
-            {
-              id: 'ch1',
-              kind: 'motion_chart',
-              chart_type: 'bar',
-              series: [
-                { label: 'NA', value: 600 },
-                { label: 'EMEA', value: 400 },
-              ],
-            },
-          ],
+          layout: 'chart',
+          title: 'NA leads revenue at $600K',
+          chart: { type: 'column', categories: ['NA', 'EMEA'], series: [{ name: 'Revenue', values: [600, 400] }], highlight_index: 0 },
+          takeaways: ['EMEA follows at $400K'],
         },
+        { id: 's3', layout: 'closing', title: 'What this means', takeaways: ['Invest in EMEA'] },
       ],
-    });
-
+    }, { date: 'November 2026' });
     expect(ok).toBe(true);
-    expect(totalMotionDurationMs(motion)).toBe(6500);
+    expect(warnings).toEqual([]);
+    expect(deck.theme).toBe('ocean');
+    expect(deck.slides.map((x) => x.layout)).toEqual(['title', 'chart', 'closing']);
+    expect(deck.slides[1].chart?.highlight).toBe(0);
 
-    const frameMidS1 = evaluateMotionAt(motion, 1800);
-    expect(frameMidS1.scene.id).toBe('s1');
-    const counterLayer = frameMidS1.layers.find((l) => l.layer.id === 'c1');
-    expect(counterLayer?.currentNumber).toBeCloseTo(1000, 0);
-
-    const frameS2 = evaluateMotionAt(motion, 4200);
-    expect(frameS2.scene.id).toBe('s2');
-    expect(frameS2.layers[0].layer.kind).toBe('motion_chart');
-
-    const edited = applyMotionEdit(motion, {
-      aspect_ratio: '9:16',
-      update_scenes: [{ id: 's1', duration_ms: 4000 }],
-      update_layers: [{ scene_id: 's1', id: 'h1', text: 'Updated Hook Title' }],
+    const edited = applyDeckEdit(deck, {
+      theme: 'forest',
+      update_slides: [{ id: '2', title: 'NA leads revenue at $650K', chart: { type: 'bar', categories: ['NA', 'EMEA'], series: [{ name: 'Revenue', values: [650, 400] }] } }],
+      add_slides: [{ layout: 'statement', title: 'Fund EMEA now' }],
     });
     expect(edited.ok).toBe(true);
-    expect(edited.motion.aspectRatio).toBe('9:16');
-    expect(totalMotionDurationMs(edited.motion)).toBe(7500);
-    expect(edited.motion.scenes[0].layers[0].text).toBe('Updated Hook Title');
+    expect(edited.deck.theme).toBe('forest');
+    expect(edited.deck.slides[1].chart?.type).toBe('bar');
+    expect(edited.updatedSlides).toEqual(['s2']);
+    // A new slide goes before the closing slide
+    expect(edited.deck.slides.map((x) => x.layout)).toEqual(['title', 'chart', 'statement', 'closing']);
+
+    const bad = applyDeckEdit(deck, { remove_slides: ['slide 9'] });
+    expect(bad.ok).toBe(false);
+    expect(bad.deck).toBe(deck);
   });
 
-  it('synthesizes a data-grounded MotionSpec from a page with a live dashboard and diagram', async () => {
+  it('builds a data-grounded deck from a page with a live dashboard and diagram', async () => {
     const store = new DiagramStore();
     await store.create(
       {
@@ -281,7 +250,8 @@ describe('Programmatic Motion Engine & Deterministic Timeline', () => {
             id: 'reg_bar',
             title: 'MRR by Region',
             kind: 'bar',
-            sql: `SELECT region, SUM(mrr_usd) AS mrr_usd FROM monthly_revenue WHERE month = '2026-06' GROUP BY region`,
+            sql: `SELECT region, SUM(mrr_usd) AS mrr_usd FROM monthly_revenue WHERE month = '2026-06' GROUP BY region ORDER BY 2 DESC`,
+            format: 'currency_usd',
           },
         ],
       },
@@ -290,18 +260,29 @@ describe('Programmatic Motion Engine & Deterministic Timeline', () => {
 
     const r1 = await executeSqlQuery(store.scene.dashboard!.widgets[0].sql);
     const r2 = await executeSqlQuery(store.scene.dashboard!.widgets[1].sql);
-    const synth = generateMotionFromPage(store.scene, { mrr_kpi: r1, reg_bar: r2 });
+    const deck = generateDeckFromPage(store.scene, { mrr_kpi: r1, reg_bar: r2 }, { date: 'November 2026' })!;
 
-    expect(synth.scenes.length).toBeGreaterThanOrEqual(3);
-    const hasCounter = synth.scenes.some((s) => s.layers.some((l) => l.kind === 'metric_counter' && (l.value ?? 0) > 0));
-    const hasFlow = synth.scenes.some((s) => s.layers.some((l) => l.kind === 'flow_diagram'));
-    expect(hasCounter).toBe(true);
-    expect(hasFlow).toBe(true);
+    const layouts = deck.slides.map((x) => x.layout);
+    expect(layouts[0]).toBe('title');
+    expect(layouts.at(-1)).toBe('closing');
+    expect(layouts).toContain('kpis');
+    expect(layouts).toContain('chart');
+    expect(layouts).toContain('flow');
+    const kpi = deck.slides.find((x) => x.layout === 'kpis')!;
+    expect(kpi.metrics?.[0].value).toMatch(/^\$\d/);
+    const chart = deck.slides.find((x) => x.layout === 'chart')!;
+    expect(chart.widgetId).toBe('reg_bar');
+    // The title states what the chart shows, with the real leader and figure
+    const top = String(r2.rows[0][0]);
+    expect(chart.title).toContain(`${top} leads MRR by Region`);
+    expect(chart.chart?.highlight).toBe(0);
+    expect(chart.notes).toBeTruthy();
+    expect(deck.slides.every((x) => x.notes)).toBe(true);
   });
 });
 
 describe('Workspace Persistence & Gemini Live Tool Dispatcher', () => {
-  it('supports undo/redo and JSON round-trip for dashboards and motion explainers', () => {
+  it('supports undo/redo and JSON round-trip for dashboards and decks', () => {
     const ws = new Workspace();
     ws.store.createDashboard(
       {
@@ -313,49 +294,49 @@ describe('Workspace Persistence & Gemini Live Tool Dispatcher', () => {
     ws.showView('dashboard');
     expect(ws.view).toBe('dashboard');
 
-    ws.store.createMotion(
+    ws.store.createDeck(
       {
-        title: 'FinOps Reel',
-        scenes: [{ id: 's1', title: 'Intro', duration_ms: 3000, layers: [{ kind: 'kinetic_text', text: 'Cloud Spend' }] }],
+        title: 'FinOps Review',
+        slides: [{ id: 's1', layout: 'title', title: 'FinOps Review' }, { layout: 'statement', title: 'Cloud spend is under control' }],
       },
       { source: 'text' },
     );
-    ws.showView('motion');
-    expect(ws.view).toBe('motion');
+    ws.showView('deck');
+    expect(ws.view).toBe('deck');
 
     // Workspace serialize & restore
     const saved = ws.serialize();
     const restored = new Workspace(saved);
-    expect(restored.view).toBe('motion');
+    expect(restored.view).toBe('deck');
     expect(restored.store.scene.dashboard?.title).toBe('FinOps Board');
-    expect(restored.store.scene.motion?.title).toBe('FinOps Reel');
+    expect(restored.store.scene.deck?.title).toBe('FinOps Review');
 
     // Studio JSON export/import round-trip
     const json = pagesToJson(ws.pages.map((p) => p.store.scene));
     const imported = pagesFromJson(json);
     expect(imported).not.toBeNull();
     expect(imported![0].dashboard?.widgets[0].id).toBe('w1');
-    expect(imported![0].motion?.scenes[0].id).toBe('s1');
+    expect(imported![0].deck?.slides[0].id).toBe('s1');
 
     // Undo / Redo
     ws.store.undo();
-    expect(ws.store.scene.motion).toBeUndefined();
+    expect(ws.store.scene.deck).toBeUndefined();
     expect(ws.store.scene.dashboard?.title).toBe('FinOps Board');
     ws.store.redo();
-    expect(ws.store.scene.motion?.title).toBe('FinOps Reel');
+    expect(ws.store.scene.deck?.title).toBe('FinOps Review');
   });
 
-  it('dispatches Gemini Live data, dashboard, inspector, and motion tools end-to-end', async () => {
+  it('dispatches Gemini Live data, dashboard, inspector, and deck tools end-to-end', async () => {
     const ws = new Workspace();
     const inspectedIds: string[] = [];
-    const motionActions: string[] = [];
+    const deckActions: string[] = [];
 
     const ctx = {
       workspace: ws,
       source: 'voice' as const,
       studio: {
         inspectWidget: (id: string) => inspectedIds.push(id),
-        controlMotion: (action: string) => motionActions.push(action),
+        controlDeck: (action: string, slide?: number) => deckActions.push(`${action}:${slide ?? ''}`),
       },
     };
 
@@ -436,20 +417,30 @@ describe('Workspace Persistence & Gemini Live Tool Dispatcher', () => {
     expect(editDash.ok).toBe(true);
     expect(ws.store.scene.dashboard?.widgets).toHaveLength(3);
 
-    // Cross-surface motion synthesis from the live dashboard!
-    const createMotion = await handleToolCall(
-      'create_motion',
-      { title: 'Executive Revenue Reel', from_current_page: true, aspect_ratio: '16:9' },
-      ctx,
-    );
-    expect(createMotion.ok).toBe(true);
-    expect(ws.view).toBe('motion');
-    expect((ws.store.scene.motion?.scenes.length ?? 0)).toBeGreaterThanOrEqual(3);
+    // A deck built from the live dashboard
+    const createDeck = await handleToolCall('create_deck', { title: 'Executive Revenue Review', from_current_page: true }, ctx);
+    expect(createDeck.ok).toBe(true);
+    expect(ws.view).toBe('deck');
+    const deck = ws.store.scene.deck!;
+    expect(deck.slides.length).toBeGreaterThanOrEqual(4);
+    expect(deck.slides.some((x) => x.layout === 'chart' && x.widgetId === 'reg_mrr')).toBe(true);
+    expect(deck.slides.some((x) => x.layout === 'table')).toBe(true);
+    expect(String(createDeck.diagram)).toContain('deck: "Executive Revenue Review"');
 
-    // Control motion playback (create_motion auto-triggers 'restart', then control_motion triggers 'play')
-    const ctrlRes = await handleToolCall('control_motion', { action: 'play' }, ctx);
-    expect(ctrlRes.ok).toBe(true);
-    expect(motionActions).toEqual(['restart', 'play']);
+    // A second create_deck without replace is refused; edit_deck changes only what it names
+    const again = await handleToolCall('create_deck', { slides: [{ layout: 'title', title: 'Other' }] }, ctx);
+    expect(again.ok).toBe(false);
+    const edit = await handleToolCall('edit_deck', { summary: 'Retitled slide 2', theme: 'graphite', update_slides: [{ id: '2', title: 'Revenue grew in every region' }] }, ctx);
+    expect(edit.ok).toBe(true);
+    expect(ws.store.scene.deck!.slides[1].title).toBe('Revenue grew in every region');
+    expect(ws.store.scene.deck!.theme).toBe('graphite');
+
+    // Presenting and moving through the slides
+    expect((await handleToolCall('control_deck', { action: 'present' }, ctx)).ok).toBe(true);
+    expect((await handleToolCall('control_deck', { action: 'go_to', slide: '3' }, ctx)).ok).toBe(true);
+    expect((await handleToolCall('control_deck', { action: 'go_to', slide: '99' }, ctx)).ok).toBe(false);
+    expect((await handleToolCall('control_deck', { action: 'sync_data' }, ctx)).ok).toBe(true);
+    expect(deckActions).toEqual(['go_to:0', 'go_to:1', 'present:', 'go_to:2']);
 
     // Switch back to dashboard view via switch_page
     const switchRes = await handleToolCall('switch_page', { view: 'dashboard' }, ctx);

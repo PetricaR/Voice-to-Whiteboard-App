@@ -124,16 +124,16 @@ function DiagramHistory() {
         const nodes = e.scene.nodes.length;
         const blocks = e.scene.blocks.length;
         const widgets = e.scene.dashboard?.widgets.length ?? 0;
-        const motionScenes = e.scene.motion?.scenes.length ?? 0;
+        const slides = e.scene.deck?.slides.length ?? 0;
         const kindBadge = widgets > 0 && nodes === 0
           ? 'Dashboard'
-          : motionScenes > 0 && nodes === 0
-            ? 'Motion'
+          : slides > 0 && nodes === 0
+            ? 'Deck'
             : (TYPE_LABEL[e.type] ?? 'Diagram');
         const counts = [
           widgets > 0 ? `${widgets} ${widgets === 1 ? 'widget' : 'widgets'}` : '',
-          motionScenes > 0 ? `${motionScenes} ${motionScenes === 1 ? 'scene' : 'scenes'}` : '',
-          nodes > 0 || (widgets === 0 && motionScenes === 0) ? `${nodes} ${nodes === 1 ? 'node' : 'nodes'}` : '',
+          slides > 0 ? `${slides} ${slides === 1 ? 'slide' : 'slides'}` : '',
+          nodes > 0 || (widgets === 0 && slides === 0) ? `${nodes} ${nodes === 1 ? 'node' : 'nodes'}` : '',
           blocks > 0 ? `${blocks} ${blocks === 1 ? 'chapter' : 'chapters'}` : '',
         ].filter(Boolean).join(' · ');
         return (

@@ -33,6 +33,7 @@ async function middleware(root: string, logger: Logger, loadConfig: () => Promis
     allowedHosts: list(process.env.STUDIO_ALLOWED_HOSTS),
     bqPersistPath: join(root, '.bq-catalog.local'),
     docsRoot: root,
+    googleClientId: list(process.env.GOOGLE_CLIENT_ID)?.[0],
     log: warn,
   });
 }

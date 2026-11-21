@@ -2,7 +2,7 @@
  * The studio API & token server: the only place that holds the Gemini API key
  * and the credentials of the data connectors.
  *
- *   GET  /api/live/status        → { configured, auth }          (never the key itself)
+ *   GET  /api/live/status        → { configured, auth, googleClientId? } (never the key itself)
  *   POST /api/live/token         { model, voice?, thinkingLevel? } → { token, expireTime, account? }
  *   POST /api/auth/google        { credential } → { account }    (see server/auth.ts)
  *   POST /api/auth/logout
@@ -129,6 +129,11 @@ export interface LiveTokenOptions {
   rateLimit?: number;
   /** Only signed-in users get tokens (deployments). Without `auth` and `usage`, no one does. */
   requireSignIn?: boolean;
+  /**
+   * OAuth web client id the page may use to ask the user for Google Drive access
+   * (deck export to Google Slides). Public by design; never a secret.
+   */
+  googleClientId?: string;
   auth?: Auth;
   usage?: Usage;
   connectorEnv?: DataConnectorEnv;
@@ -601,7 +606,8 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
 
     if (path === '/api/live/status') {
       if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method', message: 'Use GET.' }, { Allow: 'GET, HEAD' });
-      return send(res, 200, { configured: o.getApiKey() !== '', auth: await authStatus(req) });
+      const googleClientId = o.googleClientId ?? o.auth?.clientId;
+      return send(res, 200, { configured: o.getApiKey() !== '', auth: await authStatus(req), ...(googleClientId ? { googleClientId } : {}) });
     }
     if (path === '/api/auth/google') return signIn(req, res);
     if (path === '/api/auth/logout') {

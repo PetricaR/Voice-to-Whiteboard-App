@@ -7,7 +7,7 @@
  * (agent/tools.ts).
  */
 import { Fragment, useEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent } from 'react';
-import { hasDashboard, hasDiagram, hasMotion, isBlankScene, type Scene } from '../engine/types';
+import { hasDashboard, hasDeck, hasDiagram, isBlankScene, type Scene } from '../engine/types';
 import type { Page, PageView } from '../engine/workspace';
 import { Icon, IconButton, useStudio, useWorkspaceRevision } from './context';
 import { usePopoverMenu } from './domTransitions';
@@ -19,14 +19,14 @@ const TYPE_ICON: Record<string, IconName> = {
 
 function primaryViewOf(scene: Scene): PageView {
   if (hasDashboard(scene) && !hasDiagram(scene)) return 'dashboard';
-  if (hasMotion(scene) && !hasDiagram(scene) && !hasDashboard(scene)) return 'motion';
+  if (hasDeck(scene) && !hasDiagram(scene) && !hasDashboard(scene)) return 'deck';
   return 'diagram';
 }
 
 function pageIconOf(scene: Scene): IconName {
   if (isBlankScene(scene)) return 'grid_view';
   if (hasDashboard(scene) && !hasDiagram(scene)) return 'dashboard';
-  if (hasMotion(scene) && !hasDiagram(scene) && !hasDashboard(scene)) return 'movie';
+  if (hasDeck(scene) && !hasDiagram(scene) && !hasDashboard(scene)) return 'slideshow';
   return TYPE_ICON[scene.type] ?? 'account_tree';
 }
 
@@ -223,8 +223,8 @@ export function PageTabs() {
             <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.showView('board', { page: menuPage.id }); }}>
               <Icon name="query_stats" size={20} /><span>{menuPage.store.scene.board ? 'Open the Board' : 'Explore on a Board'}</span>
             </button>
-            <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.showView('motion', { page: menuPage.id }); }}>
-              <Icon name="movie" size={20} /><span>{menuPage.store.scene.motion ? 'Open motion explainer' : 'Animate motion explainer'}</span>
+            <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.showView('deck', { page: menuPage.id }); }}>
+              <Icon name="slideshow" size={20} /><span>{menuPage.store.scene.deck ? 'Open the deck' : 'Make a deck'}</span>
             </button>
             <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.showView('doc', { page: menuPage.id }); }}>
               <Icon name="menu_book" size={20} /><span>{menuPage.store.scene.blocks.length > 0 ? 'Open the documentation' : 'Write documentation'}</span>
@@ -274,15 +274,15 @@ export function PageTabs() {
         </button>
         <button
           type="button"
-          className={`surface-pill${view === 'motion' ? ' active' : ''}`}
-          aria-pressed={view === 'motion'}
-          onClick={() => workspace.showView('motion')}
-          title="Programmatic Motion Studio"
+          className={`surface-pill${view === 'deck' ? ' active' : ''}`}
+          aria-pressed={view === 'deck'}
+          onClick={() => workspace.showView('deck')}
+          title="Deck: a presentation of this page, for PowerPoint and Google Slides"
         >
-          <Icon name="movie" size={15} />
-          <span>Motion</span>
-          {(activeScene.motion?.scenes.length ?? 0) > 0 && (
-            <span className="surface-badge">{activeScene.motion!.scenes.length}</span>
+          <Icon name="slideshow" size={15} />
+          <span>Deck</span>
+          {(activeScene.deck?.slides.length ?? 0) > 0 && (
+            <span className="surface-badge">{activeScene.deck!.slides.length}</span>
           )}
         </button>
         <button

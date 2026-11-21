@@ -33,7 +33,7 @@ import {
   type DashboardWidget,
   type EditDashboardRequest,
 } from '../engine/dashboard';
-import type { CreateMotionRequest, EditMotionRequest } from '../engine/motion';
+import type { CreateDeckRequest, EditDeckRequest } from '../engine/deck';
 import type { BlockInput, CreateRequest, EditRequest, EditResult } from '../engine/ops';
 import { resolveRef } from '../engine/resolve';
 import { DiagramStore, type ChangeSource, type DashboardSurface } from '../engine/store';
@@ -54,10 +54,14 @@ export interface ViewController {
   focus(ids: string[]): boolean;
 }
 
-/** Optional UI hooks for Dashboard SQL Inspector & Motion playback/export controls. */
+export const DECK_ACTIONS = ['present', 'next', 'previous', 'go_to', 'exit', 'export_pptx', 'export_google_slides'] as const;
+export type DeckAction = (typeof DECK_ACTIONS)[number];
+
+/** Optional UI hooks for the Dashboard SQL Inspector and the Deck (presenting, exports). */
 export interface StudioController {
   inspectWidget?(widgetId: string): void;
-  controlMotion?(action: 'play' | 'pause' | 'restart' | 'seek' | 'export_mp4', timeMs?: number): void;
+  /** `slide` is 0-based. */
+  controlDeck?(action: DeckAction, slide?: number): void;
   getDashboardResults?(): Record<string, QueryExecutionResult | undefined>;
 }
 
@@ -92,7 +96,7 @@ function pagesLine(ws: Workspace): string {
     const chapters = p.store.scene.blocks.length;
     const widgets = p.store.scene.dashboard?.widgets.length ?? 0;
     const boardCharts = p.store.scene.board?.widgets.length ?? 0;
-    const motionScenes = p.store.scene.motion?.scenes.length ?? 0;
+    const slides = p.store.scene.deck?.slides.length ?? 0;
     const currentViewSuffix = p.id === ws.activeId
       ? p.view === 'doc'
         ? ' (current, its documentation tab is shown)'
@@ -100,41 +104,41 @@ function pagesLine(ws: Workspace): string {
           ? ' (current, its dashboard tab is shown)'
           : p.view === 'board'
             ? ' (current, its board tab is shown)'
-          : p.view === 'motion'
-            ? ' (current, its motion tab is shown)'
+          : p.view === 'deck'
+            ? ' (current, its deck tab is shown)'
             : ' (current)'
       : '';
     return `${p.id} ${JSON.stringify(ws.pageTitle(p))}` +
       currentViewSuffix +
       (widgets > 0 ? ` + dashboard (${widgets} ${widgets === 1 ? 'widget' : 'widgets'})` : '') +
       (boardCharts > 0 ? ` + board (${boardCharts} ${boardCharts === 1 ? 'chart' : 'charts'})` : '') +
-      (motionScenes > 0 ? ` + motion (${motionScenes} ${motionScenes === 1 ? 'scene' : 'scenes'})` : '') +
+      (slides > 0 ? ` + deck (${slides} ${slides === 1 ? 'slide' : 'slides'})` : '') +
       (chapters > 0 ? ` + documentation (${chapters} ${chapters === 1 ? 'chapter' : 'chapters'})` : '') +
       (i === 0 && ws.pages.length === 1 ? ' (only page)' : '');
   }).join(' · ');
 }
 
 /**
- * Shows what an agent change touched: dashboard, motion, diagram, or documentation.
+ * Shows what an agent change touched: dashboard, deck, diagram, or documentation.
  */
 function follow(ws: Workspace | undefined, c: ChangeSet | undefined) {
   if (ws == null || c == null) return;
   const dashChanged = c.addedWidgets.length + c.updatedWidgets.length + c.removedWidgets.length > 0;
-  const motionChanged = c.addedMotionScenes.length + c.updatedMotionScenes.length + c.removedMotionScenes.length > 0;
+  const deckChanged = c.addedSlides.length + c.updatedSlides.length + c.removedSlides.length > 0;
   const diagram = c.addedNodes.length + c.updatedNodes.length + c.removedNodes.length + c.movedNodes.length +
     c.addedEdges.length + c.updatedEdges.length + c.removedEdges.length +
     c.addedGroups.length + c.updatedGroups.length + c.removedGroups.length > 0;
   const chapters = [...c.addedBlocks, ...c.updatedBlocks, ...c.removedBlocks];
   const chapter = chapters.find((id) => ws.store.scene.blocks.some((b) => b.id === id));
   if (dashChanged) ws.showView('dashboard');
-  else if (motionChanged) ws.showView('motion');
+  else if (deckChanged) ws.showView('deck');
   else if (diagram) ws.showView('diagram');
   else if (chapters.length > 0) ws.showView('doc', { chapter });
 }
 
 const DOC_WORDS = /\b(doc|docs|documentation|documentatia|documentatie|documentația|documentație|book|carte|cartea)\b/i;
 const DASH_WORDS = /\b(dashboard|dashboards|metrics|charts|kpi|kpis)\b/i;
-const MOTION_WORDS = /\b(motion|animation|animated|explainer|video|walkthrough)\b/i;
+const DECK_WORDS = /\b(deck|decks|slides?|presentation|powerpoint|pptx|pitch|motion)\b/i;
 
 /** The tables the user loaded, so "my data" and "the file I just loaded" always have an answer. */
 function loadedDataLine(): string {
@@ -359,7 +363,7 @@ export function schemaForModel(all: TableSchemaInfo[], search?: string): Record<
   };
 }
 
-async function computeDashboardResults(d: DashboardSpec): Promise<Record<string, QueryExecutionResult | undefined>> {
+export async function computeDashboardResults(d: DashboardSpec): Promise<Record<string, QueryExecutionResult | undefined>> {
   const out: Record<string, QueryExecutionResult | undefined> = {};
   const params = filterParamsOf(d);
   await Promise.all(
@@ -373,6 +377,15 @@ async function computeDashboardResults(d: DashboardSpec): Promise<Record<string,
     }),
   );
   return out;
+}
+
+/** The live results of the page's dashboard: those on screen, or computed now (`fresh` always recomputes). */
+async function resultsFor(ctx: ToolContext, store: DiagramStore, fresh = false): Promise<Record<string, QueryExecutionResult | undefined> | undefined> {
+  const dashboard = store.scene.dashboard;
+  if (dashboard == null) return undefined;
+  const shown = fresh ? undefined : ctx.studio?.getDashboardResults?.();
+  if (shown && dashboard.widgets.every((w) => shown[w.id] != null)) return shown;
+  return computeDashboardResults(dashboard);
 }
 
 /** A warehouse query that takes longer than this is reviewed by the user's eyes, not by the model. */
@@ -765,67 +778,97 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       }
     }
 
-    case 'create_motion': {
+    case 'create_deck': {
       const store = storeOf(ctx);
-      const req = a as unknown as CreateMotionRequest;
-      let dashResults = ctx.studio?.getDashboardResults?.();
-      if ((!dashResults || Object.keys(dashResults).length === 0) && store.scene.dashboard) {
-        dashResults = await computeDashboardResults(store.scene.dashboard);
-      }
-
-      const hasMot = store.scene.motion != null;
-      if (hasMot && req.new_page === true && ws != null) {
+      const req = a as unknown as CreateDeckRequest;
+      const dashResults = await resultsFor(ctx, store);
+      if (req.new_page === true && ws != null) {
         const draft = new DiagramStore(store.scene);
-        const res = draft.createMotion({ ...req, replace: true }, meta, dashResults);
+        const res = draft.createDeck({ ...req, replace: true }, meta, dashResults);
         if (res.ok) {
           ws.addPage({
-            scene: { ...draft.scene, nodes: [], edges: [], groups: [], blocks: [], dashboard: undefined },
-            view: 'motion',
-            label: `Created motion “${draft.scene.motion?.title ?? 'Motion'}”`,
+            scene: { ...draft.scene, title: draft.scene.deck?.title ?? draft.scene.title, nodes: [], edges: [], groups: [], blocks: [], dashboard: undefined, board: undefined },
+            view: 'deck',
+            label: `Created deck “${draft.scene.deck?.title ?? 'Deck'}”`,
             meta,
           });
+          ctx.studio?.controlDeck?.('go_to', 0);
         }
         return editResponse(ctx, res);
       }
-      if (hasMot && req.replace !== true && !req.from_current_page) {
+      if (store.scene.deck != null && req.replace !== true && !req.from_current_page) {
         return {
           ok: false,
           errors: [
-            `This page already has motion composition "${store.scene.motion!.title}". Use edit_motion to refine it, ` +
-            'or pass replace: true / new_page: true.',
+            `This page already has the deck "${store.scene.deck.title}". Use edit_deck to change it, ` +
+            'or pass replace: true (or new_page: true for a second deck).',
           ],
           diagram: stateOf(ctx),
         };
       }
-      const res = store.createMotion(req, meta, dashResults);
+      const res = store.createDeck(req, meta, dashResults);
       if (res.ok) {
-        ws?.showView('motion');
-        ctx.studio?.controlMotion?.('restart');
+        ws?.showView('deck');
+        ctx.studio?.controlDeck?.('go_to', 0);
       }
       return editResponse(ctx, res);
     }
 
-    case 'edit_motion': {
+    case 'edit_deck': {
       const store = storeOf(ctx);
-      const req = a as unknown as EditMotionRequest;
-      const res = store.editMotion(req, { ...meta, label: str(req.summary) });
-      if (res.ok) ws?.showView('motion');
+      const req = a as unknown as EditDeckRequest;
+      const bindsWidget = [...(req.add_slides ?? []), ...(req.update_slides ?? [])].some((x) => x != null && (x.widget_id != null || x.widgetId != null));
+      const res = store.editDeck(req, { ...meta, label: str(req.summary) }, bindsWidget ? await resultsFor(ctx, store) : undefined);
+      if (res.ok) {
+        ws?.showView('deck');
+        const first = res.changes.addedSlides[0] ?? res.changes.updatedSlides[0];
+        const idx = first != null ? (store.scene.deck?.slides.findIndex((x) => x.id === first) ?? -1) : -1;
+        if (idx >= 0) ctx.studio?.controlDeck?.('go_to', idx);
+      }
       return editResponse(ctx, res);
     }
 
-    case 'control_motion': {
+    case 'control_deck': {
       const store = storeOf(ctx);
-      if (!store.scene.motion) {
-        return { ok: false, errors: ['No motion explainer on this page yet. Call create_motion first.'], diagram: stateOf(ctx) };
+      const deck = store.scene.deck;
+      if (!deck) {
+        return { ok: false, errors: ['This page has no deck yet. Call create_deck first (from_current_page: true builds it from the page).'], diagram: stateOf(ctx) };
       }
-      const actionRaw = str(a.action) ?? 'play';
-      const action = (['play', 'pause', 'restart', 'seek', 'export_mp4'] as const).includes(actionRaw as any)
-        ? (actionRaw as 'play' | 'pause' | 'restart' | 'seek' | 'export_mp4')
-        : 'play';
-      const timeMs = typeof a.time_ms === 'number' ? a.time_ms : undefined;
-      ws?.showView('motion');
-      ctx.studio?.controlMotion?.(action, timeMs);
-      return { ok: true, result: `Motion command executed: ${action}.`, diagram: stateOf(ctx) };
+      const action = str(a.action) ?? 'present';
+      if (action === 'sync_data') {
+        if (store.scene.dashboard == null) {
+          return { ok: false, errors: ['This page has no dashboard to take numbers from.'], diagram: stateOf(ctx) };
+        }
+        const res = store.syncDeck((await resultsFor(ctx, store, true)) ?? {}, meta);
+        ws?.showView('deck');
+        return editResponse(ctx, res);
+      }
+      if (!(DECK_ACTIONS as readonly string[]).includes(action)) {
+        return { ok: false, errors: [`Unknown action "${action}"; use ${['sync_data', ...DECK_ACTIONS].join(', ')}.`], diagram: stateOf(ctx) };
+      }
+      let index: number | undefined;
+      const ref = str(a.slide);
+      if (ref != null) {
+        const n = /^(?:slide\s*)?(\d+)$/i.exec(ref.trim());
+        index = n ? Number(n[1]) - 1 : /^last$/i.test(ref.trim()) ? deck.slides.length - 1 : deck.slides.findIndex((x) => x.id === ref || x.title.toLowerCase() === ref.toLowerCase());
+        if (index < 0 || index >= deck.slides.length) {
+          return { ok: false, errors: [`No slide "${ref}" (the deck has ${deck.slides.length} slides).`], diagram: stateOf(ctx) };
+        }
+      } else if (action === 'go_to') {
+        return { ok: false, errors: ['go_to needs slide (a number or id).'], diagram: stateOf(ctx) };
+      }
+      ws?.showView('deck');
+      ctx.studio?.controlDeck?.(action as DeckAction, index);
+      const said: Record<DeckAction, string> = {
+        present: `Presenting from slide ${(index ?? 0) + 1} of ${deck.slides.length}.`,
+        next: 'Moved to the next slide.',
+        previous: 'Moved to the previous slide.',
+        go_to: `Showing slide ${(index ?? 0) + 1}: ${deck.slides[index ?? 0]?.title}.`,
+        exit: 'Stopped presenting.',
+        export_pptx: 'Downloading the deck as an editable PowerPoint file (.pptx).',
+        export_google_slides: 'Offered the user a button to save the deck to their Google Drive as Google Slides (Google asks for access on the first use).',
+      };
+      return { ok: true, result: said[action as DeckAction], diagram: stateOf(ctx) };
     }
 
     case 'search_catalog': {
@@ -1030,10 +1073,10 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const viewArg = str(a.view)?.toLowerCase();
       const docRef = ref != null && DOC_WORDS.test(ref);
       const dashRef = ref != null && DASH_WORDS.test(ref) && ws.active.store.scene.dashboard != null && ws.pages.length === 1;
-      const motionRef = ref != null && MOTION_WORDS.test(ref) && ws.active.store.scene.motion != null && ws.pages.length === 1;
+      const deckRef = ref != null && DECK_WORDS.test(ref) && ws.active.store.scene.deck != null && ws.pages.length === 1;
       const pageRef = docRef
         ? str(ref!.replace(new RegExp(DOC_WORDS.source, 'gi'), ' ').replace(/\b(of|the|for|a|al|lui|despre|open|show)\b/gi, ' '))
-        : dashRef || motionRef
+        : dashRef || deckRef
           ? undefined
           : ref;
 
@@ -1042,14 +1085,14 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         if (/^doc/.test(viewArg)) targetView = 'doc';
         else if (/^dash/.test(viewArg)) targetView = 'dashboard';
         else if (/^board|^explor|^scratch/.test(viewArg)) targetView = 'board';
-        else if (/^motion|^video|^anim/.test(viewArg)) targetView = 'motion';
+        else if (/^deck|^slide|^present|^motion|^video|^anim/.test(viewArg)) targetView = 'deck';
         else targetView = 'diagram';
       } else if (docRef) {
         targetView = 'doc';
       } else if (dashRef) {
         targetView = 'dashboard';
-      } else if (motionRef) {
-        targetView = 'motion';
+      } else if (deckRef) {
+        targetView = 'deck';
       }
 
       const r = ws.findPage(pageRef);
@@ -1062,11 +1105,11 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       }
       if (found != null) targetView = 'doc';
       // When switching to another page without naming a specific view, show its primary surface if it has no diagram
-      if (viewArg == null && !docRef && !dashRef && !motionRef && found == null) {
+      if (viewArg == null && !docRef && !dashRef && !deckRef && found == null) {
         const s = r.item.store.scene;
         if (s.nodes.length === 0 && s.groups.length === 0) {
           if (s.dashboard != null) targetView = 'dashboard';
-          else if (s.motion != null) targetView = 'motion';
+          else if (s.deck != null) targetView = 'deck';
         }
       }
       ws.showView(targetView, { page: r.item.id, chapter: found?.item?.id });
@@ -1075,8 +1118,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         ? (blocks.length === 0 ? 'its documentation tab (no chapters yet)' : 'its documentation tab')
         : ws.view === 'dashboard'
           ? 'its dashboard tab'
-          : ws.view === 'motion'
-            ? 'its motion explainer tab'
+          : ws.view === 'deck'
+            ? 'its deck tab'
             : 'its diagram';
       return { ok: true, result: `Now on ${r.item.id}, showing ${shown}.`, ...(notes.length ? { understood: notes } : {}), diagram: stateOf(ctx) };
     }

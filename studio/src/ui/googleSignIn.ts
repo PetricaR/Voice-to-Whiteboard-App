@@ -12,9 +12,33 @@ interface GsiId {
   disableAutoSelect(): void;
 }
 
+/** OAuth 2 token client of Google Identity Services (access tokens for Google APIs). */
+export interface GsiTokenResponse {
+  access_token?: string;
+  expires_in?: number;
+  scope?: string;
+  error?: string;
+  error_description?: string;
+}
+
+export interface GsiTokenClient {
+  requestAccessToken(overrides?: { prompt?: string }): void;
+}
+
+interface GsiOAuth2 {
+  initTokenClient(config: {
+    client_id: string;
+    scope: string;
+    callback: (response: GsiTokenResponse) => void;
+    error_callback?: (error: { type?: string; message?: string }) => void;
+    prompt?: string;
+  }): GsiTokenClient;
+  hasGrantedAllScopes?(response: GsiTokenResponse, scope: string): boolean;
+}
+
 declare global {
   interface Window {
-    google?: { accounts?: { id?: GsiId } };
+    google?: { accounts?: { id?: GsiId; oauth2?: GsiOAuth2 } };
   }
 }
 
@@ -82,4 +106,17 @@ export async function renderGoogleButton(
 /** After signing out, Google must not pick the same account again on its own. */
 export function forgetGoogleAccount() {
   window.google?.accounts?.id?.disableAutoSelect();
+}
+
+/** Google's OAuth 2 token client API, loaded on first use (the same script as the sign-in button). */
+export async function loadGoogleOAuth(): Promise<GsiOAuth2> {
+  await load();
+  const oauth2 = window.google?.accounts?.oauth2;
+  if (oauth2 == null) throw new Error('Google authorization did not load.');
+  return oauth2;
+}
+
+/** The OAuth 2 API when it is already loaded (a popup must open within the click). */
+export function googleOAuthNow(): GsiOAuth2 | null {
+  return window.google?.accounts?.oauth2 ?? null;
 }

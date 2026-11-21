@@ -20,7 +20,7 @@ import {
   VALUE_FORMATS,
   WIDGET_KINDS,
 } from '../engine/dashboard';
-import { ASPECT_RATIOS, EASING_PRESETS, MOTION_LAYER_KINDS, TRANSITION_KINDS } from '../engine/motion';
+import { DECK_CHART_TYPES, DECK_THEMES, SLIDE_LAYOUTS } from '../engine/deck';
 import { ARROWS, COLORS, DIAGRAM_TYPES, EDGE_STYLES, GROUP_KINDS, NODE_KINDS, PROVIDERS } from '../engine/types';
 
 type Schema = Record<string, unknown>;
@@ -208,55 +208,42 @@ const dashboardFilterFields = {
   value: str('Initial selected value, e.g. "ALL".'),
 };
 
-const motionLayerFields = {
-  id: str('Short snake_case layer id, e.g. "headline_1" or "arr_counter".'),
-  kind: enumOf(MOTION_LAYER_KINDS, 'Animated element type: badge, kinetic_text, metric_counter, motion_chart, flow_diagram, or callout_card.'),
-  enter_at_ms: { type: 'INTEGER', description: 'Millisecond offset within the scene when this layer animates in (e.g. 0, 200, 450).' },
-  exit_at_ms: { type: 'INTEGER', description: 'Optional millisecond offset when this layer exits.' },
-  easing: enumOf(EASING_PRESETS, 'Animation curve: spring, smooth, snappy, or linear.'),
-  x: { type: 'NUMBER', description: 'Left position as % of stage width (0..95).' },
-  y: { type: 'NUMBER', description: 'Top position as % of stage height (0..95).' },
-  w: { type: 'NUMBER', description: 'Width as % of stage width (8..100).' },
-  h: { type: 'NUMBER', description: 'Height as % of stage height (6..100).' },
-  color: enumOf(COLORS, 'Accent color.'),
-  text: str('Primary headline, badge label, or metric label.'),
-  subtext: str('Supporting subtitle or caption.'),
-  size: enumOf(['sm', 'md', 'lg', 'xl'], 'Typography scale for kinetic_text.'),
-  align: enumOf(['left', 'center', 'right'], 'Text alignment.'),
-  value: { type: 'NUMBER', description: 'Target numeric value for metric_counter.' },
-  start_value: { type: 'NUMBER', description: 'Starting number for metric_counter roll-up (default 0).' },
-  prefix: str('Counter prefix, e.g. "$" or "€".'),
-  suffix: str('Counter suffix, e.g. "M", "K", "%".'),
-  decimals: { type: 'INTEGER', description: 'Decimal places (0..3).' },
-  delta_text: str('Optional delta callout on metric_counter, e.g. "+18.4% YoY".'),
-  chart_type: enumOf(['bar', 'line', 'donut'], 'Chart type for motion_chart.'),
-  series: arrayOf(obj({
-    label: str('Category label.'),
-    value: { type: 'NUMBER', description: 'Numeric value.' },
-    color: enumOf(COLORS, 'Optional bar/slice color.'),
-  }, ['label', 'value']), 'Data points for motion_chart.'),
-  highlight_index: { type: 'INTEGER', description: '0-based index of the bar/point to spotlight.' },
-  highlight_note: str('Callout pill on motion_chart, e.g. "Top region: North America".'),
-  flow_nodes: arrayOf(obj({
-    id: str('Node id.'),
-    label: str('Node label.'),
-    color: enumOf(COLORS, 'Optional color.'),
-  }, ['id', 'label']), 'Nodes for flow_diagram layer.'),
-  flow_edges: arrayOf(obj({
-    from: str('Source node id.'),
-    to: str('Target node id.'),
-    label: str('Optional label.'),
-  }, ['from', 'to']), 'Connections for flow_diagram layer.'),
-};
-
-const motionSceneFields = {
-  id: str('Short snake_case scene id, e.g. "opening_hook" or "revenue_rollup".'),
-  title: str('Short scene title shown on the timeline.'),
-  duration_ms: { type: 'INTEGER', description: 'Scene duration in milliseconds (2500..15000, typically 4500).' },
-  transition: enumOf(TRANSITION_KINDS, 'Entrance transition: fade, slide_left, slide_up, zoom_through, or cut.'),
-  accent_color: enumOf(COLORS, 'Ambient glow & accent color for the scene.'),
-  narration: str('Concise spoken/caption line displayed as kinetic captions during this scene.'),
-  layers: arrayOf(obj(motionLayerFields, ['kind']), 'Animated layers inside this scene.'),
+const deckSlideFields = {
+  id: str('Short snake_case slide id, e.g. "revenue_trend". Never changes.'),
+  layout: enumOf(SLIDE_LAYOUTS, 'title (opening), section (divider), kpis (2–4 headline figures), chart (one chart + up to 3 takeaways), ' +
+    'points (2–4 cards: findings, options, recommendations), flow (2–6 process or architecture steps), table (≤ 8 rows × 6 columns), ' +
+    'statement (one big message or the ask), closing (takeaways + next steps).'),
+  title: str('The message of the slide as a short full sentence ("EMEA grew 24% and now leads new bookings"), not a topic label; no final period. On title/section slides: the name.'),
+  subtitle: str('Optional supporting line under the title.'),
+  kicker: str('Optional 1–3 word label above the title, e.g. "Revenue", "Executive summary".'),
+  notes: str('Speaker notes: what to say on this slide (2–4 sentences).'),
+  source: str('Footer source line, e.g. "Source: monthly_revenue, SQL".'),
+  metrics: arrayOf(obj({
+    label: str('What the figure is, e.g. "June MRR".'),
+    value: str('The formatted figure, e.g. "$266.5K", "116.7%". Copy real numbers from query results; never invent.'),
+    delta: str('Optional change, e.g. "+34.6% vs H2 2025".'),
+    trend: enumOf(['up', 'down', 'flat'], 'Direction of the change.'),
+    note: str('Optional short context line.'),
+    widget_id: str('Optional KPI widget id of the dashboard the figure comes from (kept fresh by sync).'),
+  }, ['label', 'value']), 'kpis slides: 2–4 figures.'),
+  chart: obj({
+    type: enumOf(DECK_CHART_TYPES, 'column (categories), bar (rankings, long labels), stacked_column, line or area (time), donut (shares of a whole, ≤ 6 slices).'),
+    categories: arrayOf(str('Category or period label.'), 'X-axis categories (≤ 12; ≤ 24 for line/area).'),
+    series: arrayOf(obj({
+      name: str('Series name.'),
+      values: arrayOf(num('Value.'), 'One value per category.'),
+    }, ['name', 'values']), 'Up to 4 series (1 for donut).'),
+    format: enumOf(VALUE_FORMATS, 'How values are shown, e.g. currency_usd, percent.'),
+    highlight_index: { type: 'INTEGER', description: '0-based category to draw in the accent color (the one the title talks about).' },
+  }, ['categories', 'series'], 'chart slides: the data, unless widget_id names a dashboard widget.'),
+  widget_id: str('chart or table slides: a dashboard widget id; the slide takes that widget\'s live SQL result.'),
+  points: arrayOf(obj({
+    title: str('Short heading (2–6 words), or the step name on flow slides.'),
+    text: str('One sentence.'),
+  }, ['title']), 'points slides: 2–4 cards; flow slides: 2–6 steps in order; closing slides: next steps.'),
+  columns: arrayOf(str('Column header.'), 'table slides: 2–6 headers.'),
+  rows: arrayOf(arrayOf(str('Cell text.'), 'One row.'), 'table slides: up to 8 rows.'),
+  takeaways: arrayOf(str('One short sentence.'), 'chart slides: 1–3 takeaways beside the chart; kpis slides: up to 2; closing: 2–4.'),
 };
 
 export const TOOL_DECLARATIONS = [
@@ -386,64 +373,55 @@ export const TOOL_DECLARATIONS = [
     }, ['widget_id']),
   },
   {
-    name: 'create_motion',
-    description: 'Creates a deterministic, code-backed animated Motion Explainer on the active page (or a new page) and opens the Motion Studio view. Set from_current_page: true (without scenes) to automatically synthesize a multi-scene storyboard grounded in the current page’s live dashboard numbers, diagram, or docs; or pass custom scenes for bespoke animated explainers.',
+    name: 'create_deck',
+    description: 'Creates the slide deck (presentation) of the active page and opens the Deck tab. With from_current_page: true and no slides, ' +
+      'builds a professional deck from the page: title, executive summary, headline metrics, one slide per dashboard chart whose title states ' +
+      'what the chart shows, tables, the architecture flow, documentation highlights and a closing slide — all numbers from live SQL. ' +
+      'Or pass slides to write a deck yourself (pitch, plan, update). The deck exports to PowerPoint and Google Slides.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
-      title: str('Explainer title, e.g. "Q2 SaaS Growth Walkthrough".'),
-      subtitle: str('Optional subtitle.'),
-      aspect_ratio: enumOf(ASPECT_RATIOS, '16:9 (landscape presentation), 9:16 (vertical social/mobile), or 1:1 (square).'),
-      fps: { type: 'INTEGER', description: '30 or 60 fps.' },
-      show_captions: { type: 'BOOLEAN', description: 'Whether to display kinetic captions from scene narration (true by default).' },
-      from_current_page: { type: 'BOOLEAN', description: 'When true and scenes is omitted, synthesizes scenes automatically from the active page’s live dashboard/diagram/docs.' },
-      scenes: arrayOf(obj(motionSceneFields, ['title', 'layers']), 'Ordered storyboard scenes.'),
-      new_page: { type: 'BOOLEAN', description: 'True to create on a new workspace tab.' },
-      replace: { type: 'BOOLEAN', description: 'True to replace an existing motion composition on this page.' },
+      title: str('Deck title, e.g. "Q3 Revenue Review".'),
+      subtitle: str('Optional subtitle on the title slide.'),
+      theme: enumOf(DECK_THEMES, 'Visual theme; pick one that suits the topic (midnight is the default).'),
+      author: str('Presenter or team shown on the title slide.'),
+      from_current_page: { type: 'BOOLEAN', description: 'True (without slides) to build the deck from the page\'s dashboard, diagram and documentation.' },
+      slides: arrayOf(obj(deckSlideFields, ['layout', 'title']), 'The slides in order: usually title, then content, then closing.'),
+      new_page: { type: 'BOOLEAN', description: 'True to put the deck on a new page (tab).' },
+      replace: { type: 'BOOLEAN', description: 'True to replace the deck this page already has.' },
     }, []),
   },
   {
-    name: 'edit_motion',
-    description: 'Incrementally edits the Motion Explainer: change a single headline, number, color, scene duration, transition, or layer entrance millisecond without regenerating the whole video.',
+    name: 'edit_deck',
+    description: 'Edits the deck of the active page: change the words, numbers, layout, chart or notes of named slides, add, remove or reorder slides, ' +
+      'or change the theme or title. Only the fields given change.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
-      summary: str('Short summary of what changed (at most 8 words).'),
-      title: str('New title.'),
-      subtitle: str('New subtitle.'),
-      aspect_ratio: enumOf(ASPECT_RATIOS, '16:9, 9:16, or 1:1.'),
-      show_captions: { type: 'BOOLEAN', description: 'Show or hide kinetic captions.' },
-      add_scenes: arrayOf(obj({
-        ...motionSceneFields,
-        after: str('Scene id to insert after, or "start".'),
-      }, ['title', 'layers']), 'Scenes to add.'),
-      update_scenes: arrayOf(obj({
-        id: str('Scene id, title, or 1-based scene number ("1", "scene 2").'),
-        title: str('Updated scene title.'),
-        duration_ms: { type: 'INTEGER', description: 'Updated duration in ms.' },
-        transition: enumOf(TRANSITION_KINDS, 'Updated transition.'),
-        accent_color: enumOf([...COLORS, 'none'], 'Updated accent color.'),
-        narration: str('Updated caption/narration text.'),
-      }, ['id']), 'Scene updates.'),
-      remove_scenes: arrayOf(str('Scene id or number.'), 'Scenes to remove.'),
-      reorder_scenes: arrayOf(str('Scene id.'), 'New scene order.'),
-      add_layers: arrayOf(obj({
-        ...motionLayerFields,
-        scene_id: str('Target scene id or number.'),
-      }, ['scene_id', 'kind']), 'Layers to add to a scene.'),
-      update_layers: arrayOf(obj({
-        ...motionLayerFields,
-        id: str('Layer id or "@selected".'),
-        scene_id: str('Optional scene id to scope lookup.'),
-      }, ['id']), 'Direct updates to existing layers (copy, numbers, timings, positions, colors).'),
-      remove_layers: arrayOf(str('Layer id.'), 'Layers to remove.'),
+      summary: str('Short summary of the change (at most 8 words).'),
+      title: str('New deck title.'),
+      subtitle: str('New deck subtitle.'),
+      theme: enumOf(DECK_THEMES, 'New theme.'),
+      author: str('New presenter or team.'),
+      add_slides: arrayOf(obj({
+        ...deckSlideFields,
+        after: str('Slide id or number to insert after, or "start". By default before the closing slide.'),
+      }, ['layout', 'title']), 'Slides to add.'),
+      update_slides: arrayOf(obj({
+        ...deckSlideFields,
+        id: str('Slide id, number ("3", "slide 3", "last") or title.'),
+      }, ['id']), 'Changes to existing slides; lists given replace the old ones.'),
+      remove_slides: arrayOf(str('Slide id or number.'), 'Slides to remove.'),
+      reorder_slides: arrayOf(str('Slide id or number.'), 'The new order (slides not named keep their order after these).'),
     }, ['summary']),
   },
   {
-    name: 'control_motion',
-    description: 'Plays, pauses, restarts, scrubs, or triggers MP4 video export of the active Motion Explainer.',
+    name: 'control_deck',
+    description: 'Presents the deck full screen and moves through it ("next slide", "go to slide 4", "stop presenting"), refreshes its numbers ' +
+      'from the dashboard (sync_data), or exports it: export_pptx downloads an editable PowerPoint file; export_google_slides offers the user ' +
+      'a button to save it to their Google Drive as Google Slides.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
-      action: enumOf(['play', 'pause', 'restart', 'seek', 'export_mp4'], 'Playback or export command.'),
-      time_ms: { type: 'INTEGER', description: 'Target timestamp in milliseconds when action is "seek".' },
+      action: enumOf(['present', 'next', 'previous', 'go_to', 'exit', 'sync_data', 'export_pptx', 'export_google_slides'], 'What to do.'),
+      slide: str('present / go_to: slide number or id (present starts at 1 by default).'),
     }, ['action']),
   },
   {
@@ -579,11 +557,11 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'switch_page',
-    description: 'Shows a page (tab) and/or switches its active view: live dashboard, Board (work in progress), motion explainer, diagram canvas, or documentation book.',
+    description: 'Shows a page (tab) and/or switches its active view: live dashboard, Board (work in progress), slide deck, diagram canvas, or documentation book.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
       page: str('Page id, name, or number ("2"), or "next", "previous", "last"; the current page if omitted.'),
-      view: enumOf(['dashboard', 'board', 'motion', 'diagram', 'documentation'], 'What to show on the page: dashboard, board (work in progress), motion, diagram, or documentation.'),
+      view: enumOf(['dashboard', 'board', 'deck', 'diagram', 'documentation'], 'What to show on the page: dashboard, board (work in progress), deck (slides), diagram, or documentation.'),
       chapter: str('Id or title of the chapter to open in the documentation.'),
     }, []),
   },

@@ -11,11 +11,13 @@ import {
   type EditDashboardRequest,
 } from './dashboard';
 import {
-  applyMotionEdit,
-  buildMotion,
-  type CreateMotionRequest,
-  type EditMotionRequest,
-} from './motion';
+  applyDeckEdit,
+  buildDeck,
+  syncDeckData,
+  type CreateDeckRequest,
+  type DeckOpResult,
+  type EditDeckRequest,
+} from './deck';
 import { applyEdit, buildScene, type CreateRequest, type EditRequest, type EditResult } from './ops';
 import { reflowBlocks } from './blocks';
 import { layoutScene } from './layout';
@@ -121,7 +123,7 @@ export class DiagramStore {
       scene.blocks.some((b) => b.id === id) ||
       (scene.dashboard?.widgets.some((w) => w.id === id) ?? false) ||
       (scene.board?.widgets.some((w) => w.id === id) ?? false) ||
-      (scene.motion?.scenes.some((s) => s.id === id || s.layers.some((l) => l.id === id)) ?? false),
+      (scene.deck?.slides.some((s) => s.id === id) ?? false),
     );
   }
 
@@ -368,89 +370,82 @@ export class DiagramStore {
     this.emit();
   }
 
-  /** Creates or synthesizes a programmatic Motion Explainer on this page. */
-  createMotion(
-    req: CreateMotionRequest,
+  private rejectDeck(res: Pick<DeckOpResult, 'errors' | 'warnings' | 'notes'>): EditResult {
+    return { ok: false, scene: this.scene, changes: emptyChanges(), errors: res.errors, warnings: res.warnings, notes: res.notes };
+  }
+
+  /**
+   * Creates the slide deck of this page: from the given slides, or built from
+   * the page's dashboard (with its live results), diagram and documentation.
+   */
+  createDeck(
+    req: CreateDeckRequest,
     meta: ChangeMeta,
     dashboardResults?: Record<string, QueryExecutionResult | undefined>,
+    opts: { date?: string } = {},
   ): EditResult {
     const prev = this.scene;
-    const res = buildMotion(req, { pageScene: prev, dashboardResults });
-    if (!res.ok) {
-      return {
-        ok: false,
-        scene: prev,
-        changes: emptyChanges(),
-        errors: res.errors,
-        warnings: res.warnings,
-        notes: res.notes,
-      };
-    }
+    const res = buildDeck(req, { pageScene: prev, dashboardResults, date: opts.date });
+    if (!res.ok) return this.rejectDeck(res);
     const next = cloneScene(prev);
-    next.motion = res.motion;
+    next.deck = res.deck;
     next.version = prev.version + 1;
-    if (!next.title) next.title = res.motion.title;
+    if (!next.title) next.title = res.deck.title;
     const changes = emptyChanges();
-    changes.addedMotionScenes = res.addedScenes;
-    this.push(
-      next,
-      {
-        ...meta,
-        origin: isBlankScene(prev),
-        label: meta.label ?? `Created motion “${res.motion.title}”`,
-      },
-      changes,
-    );
+    changes.addedSlides = res.addedSlides;
+    if (prev.deck) changes.removedSlides = prev.deck.slides.map((s) => s.id).filter((id) => !res.addedSlides.includes(id));
+    this.push(next, { ...meta, origin: isBlankScene(prev), label: meta.label ?? `Created deck “${res.deck.title}”` }, changes);
     this.emit();
     return { ok: true, scene: next, changes, errors: [], warnings: res.warnings, notes: res.notes };
   }
 
-  /** Incrementally edits scenes, timings, numbers, or layers in the Motion Explainer. */
-  editMotion(req: EditMotionRequest, meta: ChangeMeta): EditResult {
+  /** Edits the deck: slides added, changed, removed or reordered, the theme, the title. */
+  editDeck(
+    req: EditDeckRequest,
+    meta: ChangeMeta,
+    dashboardResults?: Record<string, QueryExecutionResult | undefined>,
+  ): EditResult {
     const prev = this.scene;
-    if (!prev.motion) {
-      return {
-        ok: false,
-        scene: prev,
-        changes: emptyChanges(),
-        errors: ['This page does not have a motion composition yet. Call create_motion first.'],
-        warnings: [],
-        notes: [],
-      };
+    if (!prev.deck) {
+      return this.rejectDeck({ errors: ['This page has no deck yet. Call create_deck first.'], warnings: [], notes: [] });
     }
-    const res = applyMotionEdit(prev.motion, req);
-    if (!res.ok) {
-      return {
-        ok: false,
-        scene: prev,
-        changes: emptyChanges(),
-        errors: res.errors,
-        warnings: res.warnings,
-        notes: res.notes,
-      };
-    }
+    const res = applyDeckEdit(prev.deck, req, { pageScene: prev, dashboardResults });
+    if (!res.ok) return this.rejectDeck(res);
     const next = cloneScene(prev);
-    next.motion = res.motion;
+    next.deck = res.deck;
     next.version = prev.version + 1;
-    if (req.title && prev.title === prev.motion.title) {
-      next.title = res.motion.title;
-    }
+    if (req.title && prev.title === prev.deck.title) next.title = res.deck.title;
     const changes = emptyChanges();
-    changes.addedMotionScenes = res.addedScenes;
-    changes.updatedMotionScenes = res.updatedScenes;
-    changes.removedMotionScenes = res.removedScenes;
-    if (
-      isEmptyChange(changes) &&
-      (prev.motion.aspectRatio !== res.motion.aspectRatio ||
-        prev.motion.fps !== res.motion.fps ||
-        prev.motion.showCaptions !== res.motion.showCaptions ||
-        prev.motion.title !== res.motion.title)
-    ) {
-      if (res.motion.scenes[0]) changes.updatedMotionScenes = [res.motion.scenes[0].id];
+    changes.addedSlides = res.addedSlides;
+    changes.updatedSlides = res.updatedSlides;
+    changes.removedSlides = res.removedSlides;
+    const deckWide = prev.deck.theme !== res.deck.theme || prev.deck.title !== res.deck.title ||
+      prev.deck.subtitle !== res.deck.subtitle || prev.deck.author !== res.deck.author;
+    if (isEmptyChange(changes) && deckWide && res.deck.slides[0]) changes.updatedSlides = [res.deck.slides[0].id];
+    if (isEmptyChange(changes)) {
+      return { ok: true, scene: prev, changes, errors: [], warnings: [...res.warnings, 'Nothing changed.'], notes: res.notes };
     }
-    this.push(next, { ...meta, label: meta.label ?? req.summary ?? 'Updated motion explainer' }, changes);
+    this.push(next, { ...meta, label: meta.label ?? req.summary ?? 'Edited the deck' }, changes);
     this.emit();
     return { ok: true, scene: next, changes, errors: [], warnings: res.warnings, notes: res.notes };
+  }
+
+  /** Refreshes the numbers of slides bound to dashboard widgets; words stay as written. */
+  syncDeck(dashboardResults: Record<string, QueryExecutionResult | undefined>, meta: ChangeMeta): EditResult {
+    const prev = this.scene;
+    if (!prev.deck) return this.rejectDeck({ errors: ['This page has no deck yet.'], warnings: [], notes: [] });
+    const { deck, updated } = syncDeckData(prev.deck, prev, dashboardResults);
+    const changes = emptyChanges();
+    if (updated.length === 0 || JSON.stringify(deck) === JSON.stringify(prev.deck)) {
+      return { ok: true, scene: prev, changes, errors: [], warnings: [], notes: ['The deck already shows the latest numbers.'] };
+    }
+    const next = cloneScene(prev);
+    next.deck = deck;
+    next.version = prev.version + 1;
+    changes.updatedSlides = updated;
+    this.push(next, { ...meta, label: meta.label ?? 'Synced the deck with the dashboard' }, changes);
+    this.emit();
+    return { ok: true, scene: next, changes, errors: [], warnings: [], notes: [] };
   }
 
   /** Lays the whole diagram out again (tidy up), optionally in another direction. */
@@ -530,7 +525,7 @@ export class DiagramStore {
     const changes = emptyChanges();
     changes.addedNodes = scene.nodes.map((n) => n.id);
     if (scene.dashboard) changes.addedWidgets = scene.dashboard.widgets.map((w) => w.id);
-    if (scene.motion) changes.addedMotionScenes = scene.motion.scenes.map((s) => s.id);
+    if (scene.deck) changes.addedSlides = scene.deck.slides.map((s) => s.id);
     this.selection = [];
     this.push({ ...cloneScene({ ...scene, blocks: scene.blocks ?? [] }), version: this.scene.version + 1 },
       { source: 'system', label, ...meta, origin: true }, changes);

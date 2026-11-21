@@ -32,6 +32,8 @@ export type AuthStatus =
 export interface ServerStatus {
   key: KeyStatus;
   auth: AuthStatus;
+  /** OAuth web client id for Google Drive access (deck → Google Slides), when the server has one. */
+  googleClientId?: string;
 }
 
 /** A failed request to the studio server; `code` is the server's error code (e.g. 'signed-out', 'daily-limit'). */
@@ -79,10 +81,11 @@ export async function fetchServerStatus(): Promise<ServerStatus> {
   try {
     const res = await fetch('/api/live/status', { cache: 'no-store', credentials: 'same-origin' });
     if (!res.ok) return { key: 'unknown', auth: { required: false } };
-    const data = await res.json() as { configured?: unknown; auth?: AuthStatus };
+    const data = await res.json() as { configured?: unknown; auth?: AuthStatus; googleClientId?: unknown };
     return {
       key: data.configured === true ? 'configured' : 'missing',
       auth: data.auth?.required === true ? data.auth : { required: false },
+      ...(typeof data.googleClientId === 'string' && data.googleClientId ? { googleClientId: data.googleClientId } : {}),
     };
   } catch {
     return { key: 'unknown', auth: { required: false } };

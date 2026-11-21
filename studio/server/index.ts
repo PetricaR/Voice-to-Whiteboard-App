@@ -30,7 +30,8 @@ export const contentSecurityPolicy = (local: boolean) => [
   "img-src 'self' data: blob: https://*.googleusercontent.com",
   "media-src 'self' data: blob:",
   "font-src 'self' data:",
-  `connect-src 'self' wss://generativelanguage.googleapis.com https://generativelanguage.googleapis.com ${GSI}${local ? ' ws://127.0.0.1:* ws://localhost:*' : ''}`,
+  // www.googleapis.com: deck upload to the user's Google Drive (converted to Google Slides)
+  `connect-src 'self' wss://generativelanguage.googleapis.com https://generativelanguage.googleapis.com https://www.googleapis.com ${GSI}${local ? ' ws://127.0.0.1:* ws://localhost:*' : ''}`,
   `frame-src ${GSI}`,
   "object-src 'none'",
   "base-uri 'self'",
@@ -106,6 +107,7 @@ export function createStudioServer(opts: StudioServerOptions = {}): Server {
     rateLimit: opts.rateLimit,
     // Fail closed: a deployment without sign-in configured issues no tokens
     requireSignIn: opts.requireSignIn ?? onCloudRun,
+    googleClientId: opts.googleClientId ?? list(process.env.GOOGLE_CLIENT_ID)?.[0],
     auth: opts.auth,
     usage: opts.usage,
     connectorEnv: opts.connectorEnv,

@@ -7,8 +7,9 @@ import {
   dashboardToStandaloneHtml,
   dashboardToVegaLiteHandoff,
 } from '../engine/dashboard';
-import { totalMotionDurationMs } from '../engine/motion';
-import { hasDashboard, hasDiagram, hasMotion, isBlankScene } from '../engine/types';
+import { hasDashboard, hasDeck, hasDiagram, isBlankScene } from '../engine/types';
+import { THEMES } from '../engine/deckLayout';
+import { downloadDeckPptx, openDeckInGoogleSlides } from './deck/deckActions';
 import { bookToMarkdown, bookToStandaloneHtml } from '../engine/book';
 import { addChapter } from './chapters';
 import { Icon, IconButton, useStoreRevision, useStudio, useWorkspaceRevision } from './context';
@@ -25,14 +26,12 @@ export function TopBar({
   panelOpen,
   togglePanel,
   dashboardResults,
-  onOpenExportMp4,
 }: {
   panelOpen: boolean;
   togglePanel: () => void;
   dashboardResults?: Record<string, QueryExecutionResult | undefined>;
-  onOpenExportMp4?: () => void;
 }) {
-  const { workspace, store, notify, openSettings, openDataSources } = useStudio();
+  const { workspace, store, notify, openSettings, openDataSources, googleClientId } = useStudio();
   useStoreRevision(store);
   useWorkspaceRevision(workspace);
   const scene = store.scene;
@@ -76,7 +75,7 @@ export function TopBar({
   const commitTitle = () => {
     const t = title.trim();
     if (t !== scene.title) {
-      const fallback = hasDashboard(scene) ? 'Untitled dashboard' : hasMotion(scene) ? 'Untitled motion explainer' : 'Untitled diagram';
+      const fallback = hasDashboard(scene) ? 'Untitled dashboard' : hasDeck(scene) ? 'Untitled presentation' : 'Untitled diagram';
       store.edit({ title: t || fallback }, { source: 'manual', label: 'Renamed the page' });
     }
   };
@@ -92,9 +91,8 @@ export function TopBar({
   } else if (view === 'board' && scene.board) {
     const pinned = scene.board.widgets.filter((w) => w.promotedAs != null).length;
     chipLabel = `Board · ${scene.board.widgets.length} ${scene.board.widgets.length === 1 ? 'chart' : 'charts'}${pinned > 0 ? ` · ${pinned} on dashboard` : ''}`;
-  } else if (view === 'motion' && scene.motion) {
-    const secs = (totalMotionDurationMs(scene.motion) / 1000).toFixed(1);
-    chipLabel = `Motion · ${scene.motion.aspectRatio} · ${secs}s`;
+  } else if (view === 'deck' && scene.deck) {
+    chipLabel = `Deck · ${scene.deck.slides.length} ${scene.deck.slides.length === 1 ? 'slide' : 'slides'} · ${THEMES[scene.deck.theme].label}`;
   } else if (!empty && diagramOpen) {
     chipLabel = `${TYPE_LABEL[scene.type]} · ${scene.direction === 'LR' ? 'left to right' : 'top to bottom'}`;
   }
@@ -186,14 +184,21 @@ export function TopBar({
                 <hr className="menu-divider" />
               </>
             )}
-            {hasMotion(scene) && (
+            {hasDeck(scene) && scene.deck && (
               <>
                 <button type="button" role="menuitem" onClick={() => {
                   setMenu(false);
-                  onOpenExportMp4?.();
+                  void downloadDeckPptx(scene.deck!, notify);
                 }}>
-                  <Icon name="video_file" size={20} />
-                  <span>Motion Video (.mp4)<small>Render 60fps MP4 via WebCodecs</small></span>
+                  <Icon name="slideshow" size={20} />
+                  <span>PowerPoint (.pptx)<small>The deck: editable slides, native charts, speaker notes</small></span>
+                </button>
+                <button type="button" role="menuitem" onClick={() => {
+                  setMenu(false);
+                  void openDeckInGoogleSlides(scene.deck!, googleClientId, notify);
+                }}>
+                  <Icon name="add_to_drive" size={20} />
+                  <span>Google Slides<small>{googleClientId ? 'Saves the deck to your Google Drive' : 'Needs GOOGLE_CLIENT_ID on the studio server'}</small></span>
                 </button>
                 <hr className="menu-divider" />
               </>

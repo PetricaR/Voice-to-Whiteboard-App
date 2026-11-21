@@ -120,9 +120,9 @@ export const kpisFirst: Check = {
     return kinds.includes('kpi') && (firstChart < 0 || !kinds.slice(firstChart).includes('kpi'));
   },
 };
-export const hasMotionScenes = (min: number): Check => ({
-  name: `at least ${min} motion scenes`,
-  test: (s) => (s.motion?.scenes.length ?? 0) >= min,
+export const hasSlides = (min: number): Check => ({
+  name: `a deck with at least ${min} slides`,
+  test: (s) => (s.deck?.slides.length ?? 0) >= min,
 });
 
 export const SCENARIOS: Scenario[] = [
@@ -326,7 +326,7 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
   {
-    name: 'Live SaaS SQL Dashboard to Programmatic Motion Explainer',
+    name: 'Live SaaS SQL Dashboard to Presentation Deck',
     steps: [
       {
         say: 'Build a live SaaS executive dashboard from our local SQL tables showing latest monthly MRR, net dollar retention, MRR trend by month, and a table of enterprise accounts.',
@@ -337,8 +337,16 @@ export const SCENARIOS: Scenario[] = [
         checks: [widgetsBetween(4, 9), hasWidget(/plan/i)],
       },
       {
-        say: 'Turn this dashboard into an animated motion explainer reel in 9:16 vertical format.',
-        checks: [hasMotionScenes(3), { name: '9:16 vertical aspect ratio', test: (s) => s.motion?.aspectRatio === '9:16' }],
+        say: 'Turn this dashboard into a presentation for the board.',
+        checks: [hasSlides(5), { name: 'chart slides bound to dashboard widgets', test: (s) => (s.deck?.slides ?? []).some((x) => x.layout === 'chart' && x.widgetId != null) }],
+      },
+      {
+        say: 'Use the forest theme and make the title of the last slide "Where we go from here".',
+        checks: [
+          { name: 'forest theme', test: (s) => s.deck?.theme === 'forest' },
+          { name: 'closing title changed', test: (s) => s.deck?.slides.at(-1)?.title === 'Where we go from here' },
+          hasSlides(5),
+        ],
       },
     ],
   },

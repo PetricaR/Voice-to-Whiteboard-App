@@ -508,14 +508,19 @@ export function DashboardView({
     );
   };
 
-  const animateDashboard = () => {
-    store.createMotion(
-      { from_current_page: true, title: `${dashboard.title} — Motion Walkthrough` },
-      { source: 'manual', label: `Animated “${dashboard.title}”` },
+  const makeDeck = () => {
+    const existing = store.scene.deck != null;
+    const res = store.createDeck(
+      { from_current_page: true, replace: true, ...(store.scene.deck ? { theme: store.scene.deck.theme } : {}) },
+      { source: 'manual', label: existing ? `Rebuilt the deck of “${dashboard.title}”` : `Made a deck of “${dashboard.title}”` },
       results,
     );
-    workspace.showView('motion');
-    notify('Synthesized animated explainer grounded in live dashboard metrics.');
+    if (!res.ok) {
+      notify(res.errors.join(' '));
+      return;
+    }
+    workspace.showView('deck');
+    notify(`Built ${store.scene.deck?.slides.length ?? 0} slides from the live dashboard.`, existing ? { label: 'Undo', run: () => store.undo() } : undefined);
   };
 
   return (
@@ -656,8 +661,8 @@ export function DashboardView({
                     {boardPicked.length > 1 ? `Add ${boardPicked.length} to dashboard` : 'Add to dashboard'}
                   </button>
                 ) : (
-                  <button type="button" className="tonal-btn small accent" onClick={animateDashboard}>
-                    <Icon name="movie" size={16} /> Animate Explainer
+                  <button type="button" className="tonal-btn small accent" onClick={makeDeck} title="Turn this dashboard into a presentation (PowerPoint, Google Slides)">
+                    <Icon name="slideshow" size={16} /> Make a deck
                   </button>
                 )}
               </div>

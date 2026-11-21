@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 #
-# Voice Whiteboard — Dashboards & Motion Studio
+# Voice Whiteboard — Dashboards, Decks & Diagrams Studio
 #
 #   ./studio.sh                 starts the app and opens it in the browser
 #   ./studio.sh eval [options]  scores the real Gemini Live model on scripted conversations
 #                               (options: --model <id>, --only <scenario name part>)
-#   ./studio.sh test            engine, SQL guard, dashboard & motion tests
+#   ./studio.sh test            engine, SQL guard, dashboard & deck tests
 #   ./studio.sh e2e             browser tests (starts the app if it is not running)
 #   ./studio.sh build           production build into dist/
 #   ./studio.sh key             saves or replaces your Gemini API key
@@ -222,7 +222,7 @@ start_app() {
 		save_key || echo "Starting without a key: voice stays off until you run ./studio.sh key."
 	fi
 	free_port
-	echo "Voice Whiteboard — Dashboards & Motion Studio: $URL  (Ctrl+C to stop)"
+	echo "Voice Whiteboard — Dashboards, Decks & Diagrams Studio: $URL  (Ctrl+C to stop)"
 	# shellcheck disable=SC2086
 	exec npx vite --host 127.0.0.1 --port "$PORT" --strictPort $open_flag
 }

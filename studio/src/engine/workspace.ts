@@ -17,8 +17,8 @@ export interface Viewport {
   zoom: number;
 }
 
-/** What a page shows: its live dashboard, motion explainer, diagram (canvas), or documentation (book). */
-export type PageView = 'diagram' | 'doc' | 'dashboard' | 'board' | 'motion';
+/** What a page shows: its live dashboard, Board, slide deck, diagram (canvas), or documentation (book). */
+export type PageView = 'diagram' | 'doc' | 'dashboard' | 'board' | 'deck';
 
 export interface Page {
   id: string;
@@ -94,7 +94,9 @@ export class Workspace {
     if (saved != null && saved.pages.length > 0) {
       for (const p of saved.pages) {
         const page = this.attach(p.id, new DiagramStore(p.scene));
-        if (p.view === 'doc' || p.view === 'dashboard' || p.view === 'board' || p.view === 'motion') page.view = p.view;
+        if (p.view === 'doc' || p.view === 'dashboard' || p.view === 'board' || p.view === 'deck') page.view = p.view;
+        // Saved by an earlier version: the Motion surface is the Deck now
+        else if ((p.view as string) === 'motion') page.view = 'deck';
         if (typeof p.chapter === 'string') page.chapter = p.chapter;
         const n = /^page_(\d+)$/.exec(p.id);
         if (n) this.pageCounter = Math.max(this.pageCounter, Number(n[1]));
@@ -265,7 +267,7 @@ export class Workspace {
       page.view = opts.view;
     } else if (scene.nodes.length === 0 && scene.groups.length === 0) {
       if (scene.dashboard != null) page.view = 'dashboard';
-      else if (scene.motion != null) page.view = 'motion';
+      else if (scene.deck != null) page.view = 'deck';
     }
     if (opts.entry != null) this.originsOf(page.id).set(store.history[0].id, opts.entry);
     this.sync(page);

@@ -1,5 +1,5 @@
 import { cloneDashboard } from './dashboard';
-import { cloneMotion } from './motion';
+import { cloneDeck } from './deck';
 import type { DGroup, DNode, Direction, NodeKind, Rect, Scene } from './types';
 
 /** Default node sizes by kind, so that the same kind always looks the same. */
@@ -39,7 +39,7 @@ export function cloneScene(scene: Scene): Scene {
     })),
     ...(scene.dashboard ? { dashboard: cloneDashboard(scene.dashboard) } : {}),
     ...(scene.board ? { board: cloneDashboard(scene.board) } : {}),
-    ...(scene.motion ? { motion: cloneMotion(scene.motion) } : {}),
+    ...(scene.deck ? { deck: cloneDeck(scene.deck) } : {}),
   };
 }
 

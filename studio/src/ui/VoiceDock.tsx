@@ -31,10 +31,10 @@ const SLASH_COMMANDS: { cmd: string; label: string; icon: IconName; template: st
     template: 'Build an executive SaaS revenue & NRR dashboard from local SQL tables with region filter',
   },
   {
-    cmd: '/motion',
-    label: 'Animate Explainer',
-    icon: 'movie',
-    template: 'Create an animated motion explainer from the current page metrics with kinetic callouts',
+    cmd: '/deck',
+    label: 'Presentation Deck',
+    icon: 'slideshow',
+    template: 'Turn this page into a professional presentation deck',
   },
   {
     cmd: '/sql',

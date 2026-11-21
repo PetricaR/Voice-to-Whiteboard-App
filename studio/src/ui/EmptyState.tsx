@@ -1,5 +1,4 @@
 import type { CreateDashboardRequest } from '../engine/dashboard';
-import type { CreateMotionRequest } from '../engine/motion';
 import { BLUEPRINTS, type Blueprint } from './blueprints';
 import { Icon, useStudio } from './context';
 import { STARTER_SAAS_DASHBOARD } from './dashboard/starterDashboard';
@@ -132,66 +131,6 @@ const FINOPS_DASHBOARD: CreateDashboardRequest = {
   ],
 };
 
-const STARTER_MOTION_REEL: CreateMotionRequest = {
-  title: 'H1 2026 SaaS Growth Explainer',
-  subtitle: 'Programmatic 60fps metrics & architecture walkthrough',
-  aspect_ratio: '16:9',
-  fps: 60,
-  show_captions: true,
-  scenes: [
-    {
-      id: 'intro_hook',
-      title: 'Executive Hook',
-      duration_ms: 3400,
-      narration: 'H1 2026 recurring revenue accelerated past two hundred sixty thousand dollars per month with industry-leading retention.',
-      transition: 'fade',
-      layers: [
-        { id: 'b1', kind: 'badge', text: 'LIVE DATA EXPLAINER · H1 2026', x: 50, y: 24, color: 'blue', enter_at_ms: 0 },
-        { id: 't1', kind: 'kinetic_text', text: 'SaaS Revenue & Retention Momentum', x: 50, y: 46, size: 'xl', align: 'center', enter_at_ms: 160 },
-        { id: 's1', kind: 'kinetic_text', text: 'Every metric verified directly against live SQLite-Wasm tables', x: 50, y: 64, size: 'sm', align: 'center', color: 'gray', enter_at_ms: 420 },
-      ],
-    },
-    {
-      id: 'kpi_callouts',
-      title: 'Headline KPIs',
-      duration_ms: 4200,
-      narration: 'June MRR reached $266.5K while cohort net revenue retention climbed to 116.7 percent.',
-      transition: 'slide_left',
-      layers: [
-        { id: 'b2', kind: 'badge', text: 'VERIFIED SQL METRICS', x: 50, y: 15, color: 'teal', enter_at_ms: 0 },
-        { id: 'm1', kind: 'metric_counter', text: 'June 2026 MRR', value: 266500, prefix: '$', delta_text: '+34.6% H1', x: 28, y: 48, w: 34, color: 'blue', enter_at_ms: 140 },
-        { id: 'm2', kind: 'metric_counter', text: 'Net Revenue Retention', value: 116.7, suffix: '%', decimals: 1, delta_text: '+4.7 pts', x: 72, y: 48, w: 34, color: 'green', enter_at_ms: 340 },
-      ],
-    },
-    {
-      id: 'regional_chart',
-      title: 'Regional Trajectory',
-      duration_ms: 4400,
-      narration: 'North America leads total recurring revenue, while EMEA and APAC drive rapid expansion.',
-      transition: 'zoom_through',
-      layers: [
-        { id: 't3', kind: 'kinetic_text', text: 'June 2026 MRR by Region ($USD)', x: 50, y: 15, size: 'md', align: 'center', enter_at_ms: 0 },
-        {
-          id: 'c3',
-          kind: 'motion_chart',
-          chart_type: 'bar',
-          x: 50,
-          y: 56,
-          w: 76,
-          h: 58,
-          color: 'purple',
-          enter_at_ms: 200,
-          series: [
-            { label: 'North America', value: 148000 },
-            { label: 'EMEA', value: 76500 },
-            { label: 'APAC', value: 42000 },
-          ],
-        },
-      ],
-    },
-  ],
-};
-
 interface QuickStarter {
   /** Runs on the built-in sample tables. */
   needsSamples?: boolean;
@@ -254,17 +193,21 @@ export function EmptyState() {
       },
     },
     {
-      id: 'motion-saas',
-      title: 'Animated SaaS Metrics Reel',
-      category: 'Programmatic Motion · MP4',
-      icon: 'movie',
-      prompt: 'Query our H1 2026 SaaS metrics and build an animated motion explainer storyboard with kinetic callouts and charts.',
+      needsSamples: true,
+      id: 'deck-saas',
+      title: 'SaaS Board Deck',
+      category: 'Slide Deck · PowerPoint',
+      icon: 'slideshow',
+      prompt: 'Build the SaaS executive revenue dashboard from monthly_revenue and enterprise_accounts, then turn it into a board presentation deck.',
       runLocal: () => {
-        store.createMotion(STARTER_MOTION_REEL, {
-          source: 'system',
-          label: `Created “${STARTER_MOTION_REEL.title}”`,
-        });
-        workspace.showView('motion');
+        const made = store.createDashboard(STARTER_SAAS_DASHBOARD, { source: 'system', label: `Created “${STARTER_SAAS_DASHBOARD.title}”` });
+        if (!made.ok || store.scene.dashboard == null) return;
+        void import('../agent/dispatcher')
+          .then(({ computeDashboardResults }) => computeDashboardResults(store.scene.dashboard!))
+          .then((results) => {
+            store.createDeck({ from_current_page: true, title: 'SaaS Revenue & Retention Review' }, { source: 'system', label: 'Built the board deck' }, results);
+            workspace.showView('deck');
+          });
       },
     },
   ];
@@ -297,9 +240,9 @@ export function EmptyState() {
     <div className="empty-state">
       <div className="empty-card">
         <div className="empty-icon"><Icon name="graphic_eq" size={32} /></div>
-        <h1>Speak live dashboards, motion &amp; diagrams</h1>
+        <h1>Speak live dashboards, decks &amp; diagrams</h1>
         <p>
-          Query live SQL tables into interactive dashboards, animate data-grounded motion explainers, or
+          Query live SQL tables into interactive dashboards, turn them into board-ready presentations, or
           sketch cloud architectures — refined conversationally with Gemini Live.
         </p>
         <div className="empty-hero-actions">
@@ -312,11 +255,11 @@ export function EmptyState() {
           <button type="button" className="tonal-btn" onClick={() => openDataSources('bigquery')}>
             <Icon name="cloud_sync" size={18} /> Connect BigQuery
           </button>
-          <button type="button" className="tonal-btn" onClick={() => starters[3].runLocal()}>
-            <Icon name="movie" size={18} /> Open Motion Studio
+          <button type="button" className="tonal-btn" onClick={() => requireSampleData(`“${starters[3].title}”`, starters[3].runLocal)}>
+            <Icon name="slideshow" size={18} /> Build a board deck
           </button>
         </div>
-        <div className="suggestions" role="group" aria-label="Dashboards, motion explainers, and architecture blueprints">
+        <div className="suggestions" role="group" aria-label="Dashboards, decks, and architecture blueprints">
           {starters.map((s) => (
             <button key={s.id} type="button" className="suggestion-chip" data-kind="starter" onClick={() => launchStarter(s)}>
               <span className="suggestion-head">

@@ -28,6 +28,8 @@ export interface Studio {
   setSettings: (s: Settings) => void;
   /** Whether the studio server has a Gemini API key (the page never sees the key). */
   liveKey: KeyStatus;
+  /** OAuth web client id for Google Drive access (deck → Google Slides), when the server has one. */
+  googleClientId?: string;
   refreshLiveKey: () => void;
   notify: (message: string, action?: { label: string; run: () => void }) => void;
   openSettings: () => void;

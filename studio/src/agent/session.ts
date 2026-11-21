@@ -66,7 +66,7 @@ export class VoiceAgent {
 
   /** Set by the canvas so that the agent can zoom and focus. */
   view: ViewController | undefined;
-  /** Set by App so the agent can pop open SQL Lineage Inspector or control Motion playback/export. */
+  /** Set by App so the agent can open the SQL Lineage Inspector and present or export the deck. */
   studio: StudioController | undefined;
 
   constructor(private workspace: Workspace, private getSettings: () => VoiceSettings) {}

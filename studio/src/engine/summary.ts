@@ -3,7 +3,7 @@
  * edits against, and a one-line description of a change for the activity log.
  */
 import { describeDashboard } from './dashboard';
-import { describeMotion } from './motion';
+import { describeDeck } from './deck';
 import { groupDepth } from './scene';
 import type { ChangeSet, DBlock, DNode, Scene } from './types';
 
@@ -34,7 +34,7 @@ export function describeScene(scene: Scene, selection: string[] = []): string {
     scene.blocks.length === 0 &&
     scene.dashboard == null &&
     scene.board == null &&
-    scene.motion == null
+    scene.deck == null
   ) {
     return `version ${scene.version} · empty canvas (no diagram yet)` + (scene.title ? ` · title ${q(scene.title)}` : '');
   }
@@ -46,15 +46,15 @@ export function describeScene(scene: Scene, selection: string[] = []): string {
     (scene.blocks.length > 0 ? `, ${scene.blocks.length} documentation ${scene.blocks.length === 1 ? 'chapter' : 'chapters'}` : '') +
     (scene.dashboard ? `, ${scene.dashboard.widgets.length} dashboard ${scene.dashboard.widgets.length === 1 ? 'widget' : 'widgets'}` : '') +
     (scene.board ? `, ${scene.board.widgets.length} board ${scene.board.widgets.length === 1 ? 'chart' : 'charts'}` : '') +
-    (scene.motion ? `, ${scene.motion.scenes.length} motion ${scene.motion.scenes.length === 1 ? 'scene' : 'scenes'}` : ''));
+    (scene.deck ? `, ${scene.deck.slides.length} deck ${scene.deck.slides.length === 1 ? 'slide' : 'slides'}` : ''));
   if (scene.dashboard) {
     lines.push(describeDashboard(scene.dashboard));
   }
   if (scene.board) {
     lines.push(describeDashboard(scene.board, 'board (work in progress; promote_to_dashboard copies charts to the dashboard)'));
   }
-  if (scene.motion) {
-    lines.push(describeMotion(scene.motion));
+  if (scene.deck) {
+    lines.push(describeDeck(scene.deck));
   }
   if (scene.groups.length > 0) {
     lines.push('groups:');
@@ -88,7 +88,7 @@ export function describeScene(scene: Scene, selection: string[] = []): string {
     scene.blocks.some((b) => b.id === id) ||
     (scene.dashboard?.widgets.some((w) => w.id === id) ?? false) ||
     (scene.board?.widgets.some((w) => w.id === id) ?? false) ||
-    (scene.motion?.scenes.some((s) => s.id === id || s.layers.some((l) => l.id === id)) ?? false),
+    (scene.deck?.slides.some((s) => s.id === id) ?? false),
   );
   lines.push(validSelection.length > 0 ? `selected: ${validSelection.join(', ')}` : 'selected: nothing');
   return lines.join('\n');
@@ -140,14 +140,14 @@ export function describeChanges(c: ChangeSet): string {
   add(c.addedGroups.length, 'group', 'groups', '+');
   add(c.addedBlocks.length, 'chapter', 'chapters', '+');
   add(c.addedWidgets.length, 'widget', 'widgets', '+');
-  add(c.addedMotionScenes.length, 'scene', 'scenes', '+');
+  add(c.addedSlides.length, 'slide', 'slides', '+');
   add(
     c.updatedNodes.length +
       c.updatedEdges.length +
       c.updatedGroups.length +
       c.updatedBlocks.length +
       c.updatedWidgets.length +
-      c.updatedMotionScenes.length,
+      c.updatedSlides.length,
     'change',
     'changes',
     '~',
@@ -157,7 +157,7 @@ export function describeChanges(c: ChangeSet): string {
   add(c.removedGroups.length, 'group', 'groups', '−');
   add(c.removedBlocks.length, 'chapter', 'chapters', '−');
   add(c.removedWidgets.length, 'widget', 'widgets', '−');
-  add(c.removedMotionScenes.length, 'scene', 'scenes', '−');
+  add(c.removedSlides.length, 'slide', 'slides', '−');
   if (parts.length === 0 && c.movedNodes.length > 0) parts.push(`moved ${c.movedNodes.length}`);
   return parts.length > 0 ? parts.join(', ') : 'no change';
 }

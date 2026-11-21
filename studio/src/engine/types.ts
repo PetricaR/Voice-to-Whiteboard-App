@@ -1,10 +1,10 @@
 /**
  * The scene model: the single source of truth for a workspace page (live
- * dashboard, motion composition, architecture diagram, and documentation book).
+ * dashboard, slide deck, architecture diagram, and documentation book).
  * Every element has a stable id that the voice agent uses to edit it.
  */
 import type { DashboardSpec } from './dashboard';
-import type { MotionSpec } from './motion';
+import type { DeckSpec } from './deck';
 
 export const DIAGRAM_TYPES = ['architecture', 'flowchart', 'sequence', 'c4', 'network', 'generic'] as const;
 export type DiagramType = (typeof DIAGRAM_TYPES)[number];
@@ -120,8 +120,8 @@ export interface Scene {
    * land here first; the ones worth keeping are copied to the dashboard.
    */
   board?: DashboardSpec;
-  /** Programmatic multi-scene animated explainer on this page. */
-  motion?: MotionSpec;
+  /** The slide deck of this page (presentation built from its dashboard, diagram and documentation). */
+  deck?: DeckSpec;
 }
 
 /** What a change did, by element id (used for highlighting and the log). */
@@ -142,9 +142,9 @@ export interface ChangeSet {
   addedWidgets: string[];
   updatedWidgets: string[];
   removedWidgets: string[];
-  addedMotionScenes: string[];
-  updatedMotionScenes: string[];
-  removedMotionScenes: string[];
+  addedSlides: string[];
+  updatedSlides: string[];
+  removedSlides: string[];
 }
 
 export function emptyChanges(): ChangeSet {
@@ -154,7 +154,7 @@ export function emptyChanges(): ChangeSet {
     addedGroups: [], updatedGroups: [], removedGroups: [],
     addedBlocks: [], updatedBlocks: [], removedBlocks: [],
     addedWidgets: [], updatedWidgets: [], removedWidgets: [],
-    addedMotionScenes: [], updatedMotionScenes: [], removedMotionScenes: [],
+    addedSlides: [], updatedSlides: [], removedSlides: [],
   };
 }
 
@@ -162,7 +162,7 @@ export function emptyScene(): Scene {
   return { version: 0, type: 'architecture', direction: 'LR', title: '', nodes: [], edges: [], groups: [], blocks: [] };
 }
 
-/** True if nothing is drawn (no nodes, groups, blocks, dashboard, or motion). */
+/** True if nothing is drawn (no nodes, groups, blocks, dashboard, or deck). */
 export function isBlankScene(scene: Scene): boolean {
   return (
     scene.nodes.length === 0 &&
@@ -170,7 +170,7 @@ export function isBlankScene(scene: Scene): boolean {
     scene.blocks.length === 0 &&
     scene.dashboard == null &&
     scene.board == null &&
-    scene.motion == null
+    scene.deck == null
   );
 }
 
@@ -184,7 +184,7 @@ export function hasDashboard(scene: Scene): boolean {
   return scene.dashboard != null && scene.dashboard.widgets.length > 0;
 }
 
-/** True if the page has a programmatic motion composition. */
-export function hasMotion(scene: Scene): boolean {
-  return scene.motion != null && scene.motion.scenes.length > 0;
+/** True if the page has a slide deck. */
+export function hasDeck(scene: Scene): boolean {
+  return scene.deck != null && scene.deck.slides.length > 0;
 }

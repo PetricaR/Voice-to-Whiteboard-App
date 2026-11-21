@@ -196,13 +196,39 @@ async function run(colorScheme) {
   const sortAttr = await page.locator('.dash-table thead th >> nth=0').getAttribute('aria-sort');
   if (sortAttr !== 'ascending') errors.push(`[${colorScheme}] expected aria-sort="ascending", got ${sortAttr}`);
 
-  // Cross-surface synthesis: turn the Live SQL Dashboard into a Programmatic Motion Explainer
-  await page.click('.dashboard-controls button:has-text("Animate Explainer")');
-  await page.waitForSelector('.motion-studio-view .motion-stage-canvas');
-  await page.waitForTimeout(500);
-  const sceneCount = await page.locator('.motion-timeline-panel .scene-track-block').count();
-  if (sceneCount < 3) errors.push(`[${colorScheme}] expected >= 3 synthesized motion scenes, found ${sceneCount}`);
-  await page.screenshot({ path: `${out}/${colorScheme}-11-motion-studio.png` });
+  // Cross-surface synthesis: turn the Live SQL Dashboard into a presentation deck
+  await page.click('.dashboard-controls button:has-text("Make a deck")');
+  await page.waitForSelector('.deck-view .deck-stage-slide');
+  await page.waitForTimeout(400);
+  const slideCount = await page.locator('.deck-rail .deck-thumb').count();
+  if (slideCount < 5) errors.push(`[${colorScheme}] expected >= 5 slides built from the dashboard, found ${slideCount}`);
+  // A chart slide draws its chart; the title states the finding
+  await page.click('.deck-thumb[aria-label*="leads"] >> nth=0').catch(() => errors.push(`[${colorScheme}] no chart slide whose title states the leader`));
+  await page.waitForSelector('.deck-stage-slide svg[role="img"]');
+  await page.screenshot({ path: `${out}/${colorScheme}-11-deck.png` });
+  // Present: arrows move, Escape ends
+  await page.click('.deck-toolbar button:has-text("Present")');
+  await page.waitForSelector('.deck-present');
+  const countBefore = await page.locator(".deck-present-count").innerText();
+  await page.keyboard.press('ArrowRight');
+  const countAfter = await page.locator(".deck-present-count").innerText();
+  if (countBefore === countAfter) errors.push(`[${colorScheme}] ArrowRight did not move to the next slide (${countBefore})`);
+  await page.screenshot({ path: `${out}/${colorScheme}-12-present.png` });
+  await page.keyboard.press('Escape');
+  await page.waitForSelector('.deck-present', { state: 'detached' });
+  // PowerPoint download
+  const [dl] = await Promise.all([
+    page.waitForEvent('download'),
+    (async () => {
+      await page.click('.deck-toolbar button:has-text("Export")');
+      await page.click('.deck-toolbar [role="menuitem"]:has-text("PowerPoint")');
+    })(),
+  ]);
+  if (!dl.suggestedFilename().endsWith('.pptx')) errors.push(`[${colorScheme}] the deck downloaded as ${dl.suggestedFilename()}`);
+  const pptxPath = await dl.path();
+  const { readFileSync } = await import('node:fs');
+  const head = readFileSync(pptxPath).subarray(0, 2).toString();
+  if (head !== 'PK') errors.push(`[${colorScheme}] the .pptx is not a ZIP file`);
 
   await page.close();
 }

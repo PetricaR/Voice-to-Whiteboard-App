@@ -47,7 +47,7 @@ describe('tool arguments are read as their declared types', () => {
       const ctx: ToolContext = { workspace: ws, source: 'text' };
       await handleToolCall('create_diagram', { title: 'T', nodes: [{ id: 'a', label: 'A' }, { id: 'b', label: 'B' }], edges: [{ from: 'a', to: 'b' }] }, ctx);
       await handleToolCall('create_dashboard', { title: 'D', new_page: true, widgets: [{ title: 'K', kind: 'kpi', sql: 'SELECT 1 AS n' }] }, ctx);
-      await handleToolCall('create_motion', { title: 'M', scenes: [{ title: 's1' }] }, ctx);
+      await handleToolCall('create_deck', { title: 'M', slides: [{ layout: 'title', title: 's1' }, { layout: 'chart', title: 'c' }] }, ctx);
       await handleToolCall('write_text', { title: 'Ch', text: 'hello' }, ctx);
       for (const args of argSets) {
         try {

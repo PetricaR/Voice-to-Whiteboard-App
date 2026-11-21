@@ -148,10 +148,16 @@ const script = [
     say: 'Opened the SQL lineage for June MRR.',
   },
   {
-    expect: /animate/i,
-    call: { name: 'create_motion', args: { title: 'SaaS Revenue Explainer', from_current_page: true, aspect_ratio: '16:9' } },
-    verify: (r) => r.ok === true && /SaaS Revenue Explainer/.test(r.diagram),
-    say: 'Animated the dashboard metrics into a motion explainer.',
+    expect: /deck|presentation/i,
+    call: { name: 'create_deck', args: { title: 'SaaS Revenue Review', from_current_page: true } },
+    verify: (r) => r.ok === true && /deck: "SaaS Revenue Review"/.test(r.diagram),
+    say: 'Built a presentation deck from the dashboard.',
+  },
+  {
+    expect: /present/i,
+    call: { name: 'control_deck', args: { action: 'present', slide: '2' } },
+    verify: (r) => r.ok === true,
+    say: 'Presenting from slide 2.',
   },
 ];
 
@@ -173,7 +179,7 @@ wss.on('connection', (ws, req) => {
       check(['create_diagram', 'edit_diagram', 'tidy_layout', 'get_diagram', 'undo', 'redo', 'write_text', 'write_table',
         'new_page', 'switch_page', 'rename_page', 'delete_page', 'change_view',
         'list_data_sources', 'inspect_schema', 'run_query', 'create_dashboard', 'edit_dashboard', 'refresh_dashboard', 'inspect_widget',
-        'create_motion', 'edit_motion', 'control_motion'].every((n) => names.includes(n)), `setup declares the tools (${names.join(', ')})`);
+        'create_deck', 'edit_deck', 'control_deck'].every((n) => names.includes(n)), `setup declares the tools (${names.join(', ')})`);
       check(/source of truth/i.test(msg.setup.systemInstruction?.parts?.[0]?.text ?? ''), 'setup carries the system instruction');
       send({ setupComplete: {} });
     } else if (msg.realtimeInput?.text) {
@@ -276,10 +282,15 @@ check((await page.locator('.kpi-number-btn >> nth=0').innerText()).includes('$')
 await type('Inspect the June MRR widget', 11);
 await page.waitForSelector('.inspector-drawer:popover-open, .inspector-drawer[open]');
 check(/SELECT SUM\(mrr_usd\)/.test(await page.locator('.inspector-drawer .inspector-sql-editor').inputValue()), 'the SQL Lineage Inspector drawer opened for June MRR');
-await type('Animate this dashboard into a motion explainer', 12);
-await page.waitForSelector('.motion-studio-view .motion-stage-canvas');
-check(await page.locator('.motion-timeline-panel .scene-track-block').count() >= 3, 'synthesized programmatic motion scenes from the live dashboard');
-await page.screenshot({ path: `${out}/mock-dashboard-motion.png` });
+await type('Turn this dashboard into a presentation deck', 12);
+await page.waitForSelector('.deck-view .deck-stage-slide');
+check(await page.locator('.deck-rail .deck-thumb').count() >= 5, 'built a presentation deck from the live dashboard');
+await page.screenshot({ path: `${out}/mock-dashboard-deck.png` });
+await type('Present it from slide 2', 13);
+await page.waitForSelector('.deck-present');
+check((await page.locator('.deck-present-count').innerText()).startsWith('2 /'), 'presenting from slide 2 by voice');
+await page.keyboard.press('Escape');
+await page.waitForSelector('.deck-present', { state: 'detached' });
 
 await browser.close();
 wss.close();

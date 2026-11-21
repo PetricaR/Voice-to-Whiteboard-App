@@ -15,7 +15,7 @@ import { DocView } from './DocView';
 import { prefersReducedMotion } from './domTransitions';
 import { EmptyState } from './EmptyState';
 import { download, fileName, pagesToJson } from './export';
-import type { MotionCommand } from './motion/MotionView';
+import type { DeckCommand } from './deck/DeckView';
 import { PageTabs } from './PageTabs';
 import { loadSettings, saveSettings, type Settings } from './settings';
 import { SettingsDialog } from './SettingsDialog';
@@ -30,10 +30,10 @@ import { TopBar } from './TopBar';
 import { VoiceDock } from './VoiceDock';
 import { ZoomControls } from './ZoomControls';
 
-// The dashboard, motion and data surfaces load when they are first shown, so
+// The dashboard, deck and data surfaces load when they are first shown, so
 // the page starts with the canvas and the voice dock only
 const DashboardView = lazy(() => import('./dashboard/DashboardView').then((m) => ({ default: m.DashboardView })));
-const MotionView = lazy(() => import('./motion/MotionView').then((m) => ({ default: m.MotionView })));
+const DeckView = lazy(() => import('./deck/DeckView').then((m) => ({ default: m.DeckView })));
 const DataSourceModal = lazy(() => import('./dashboard/DataSourceModal').then((m) => ({ default: m.DataSourceModal })));
 /** True from the first time `value` is: a dialog is loaded when first opened and then stays mounted to animate out. */
 function useOnceTrue(value: boolean): boolean {
@@ -41,8 +41,6 @@ function useOnceTrue(value: boolean): boolean {
   if (value) seen.current = true;
   return seen.current;
 }
-
-const ExportMp4Dialog = lazy(() => import('./motion/ExportMp4Dialog').then((m) => ({ default: m.ExportMp4Dialog })));
 
 const UI_KEY = 'studio.ui';
 
@@ -83,7 +81,7 @@ function Shortcuts({ focusComposer }: { focusComposer: () => void }) {
         e.preventDefault();
         focusComposer();
       } else if (e.key === 'Escape' && workspace.view === 'diagram') {
-        // In documentation, dashboard, or motion views Escape does not clear diagram selection
+        // In documentation, dashboard, or deck views Escape does not clear diagram selection
         store.setSelection([]);
       }
     };
@@ -118,7 +116,7 @@ export function App({
   projectRef.current = project;
   // Re-render when another page is shown (each page has its own canvas state)
   const activeId = useSyncExternalStore((l) => workspace.subscribe(l), () => workspace.activeId);
-  // Active surface of the page ('diagram' | 'dashboard' | 'motion' | 'doc')
+  // Active surface of the page ('diagram' | 'dashboard' | 'board' | 'deck' | 'doc')
   const activeView = useSyncExternalStore((l) => workspace.subscribe(l), () => workspace.view);
   const nonCanvasOpen = activeView !== 'diagram';
   const page = workspace.active;
@@ -143,14 +141,12 @@ export function App({
   const [toast, setToast] = useState<Toast | null>(null);
   const toastId = useRef(0);
 
-  // Live SQL query cache & cross-surface UI controls for Dashboard Inspector & Motion Studio
+  // Live SQL query cache & cross-surface UI controls for the Dashboard Inspector and the Deck
   const [dashboardResults, setDashboardResults] = useState<Record<string, QueryExecutionResult | undefined>>({});
   const dashboardResultsRef = useRef(dashboardResults);
   dashboardResultsRef.current = dashboardResults;
   const [inspectorWidgetRequest, setInspectorWidgetRequest] = useState<string | null>(null);
-  const [motionCommand, setMotionCommand] = useState<MotionCommand | null>(null);
-  const [exportMp4Open, setExportMp4Open] = useState(false);
-  const exportMp4Used = useOnceTrue(exportMp4Open);
+  const [deckCommand, setDeckCommand] = useState<DeckCommand | null>(null);
   const [dashboardMounted, setDashboardMounted] = useState(activeView === 'dashboard');
   const prevActiveIdRef = useRef(activeId);
 
@@ -180,9 +176,9 @@ export function App({
         workspace.showView('dashboard');
         setInspectorWidgetRequest(widgetId);
       },
-      controlMotion: (action, timeMs) => {
-        workspace.showView('motion');
-        setMotionCommand({ id: Date.now() + Math.random(), action, timeMs });
+      controlDeck: (action, slide) => {
+        workspace.showView('deck');
+        setDeckCommand({ id: Date.now() + Math.random(), action, slide });
       },
       getDashboardResults: () => dashboardResultsRef.current,
     };
@@ -456,11 +452,11 @@ export function App({
 
   const studio: Studio = useMemo(() => ({
     project, projects, updateProject, goToProject, editSources, requireSampleData,
-    workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice,
+    workspace, store, agent, settings, setSettings, liveKey, googleClientId: server.googleClientId, refreshLiveKey, notify, toggleVoice,
     openSettings: () => setSettingsOpen(true),
     openDataSources,
     auth, requestSignIn, signOut, ensureCanTalk,
-  }), [project, projects, updateProject, goToProject, editSources, requireSampleData, workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice, openDataSources, auth, requestSignIn, signOut, ensureCanTalk]);
+  }), [project, projects, updateProject, goToProject, editSources, requireSampleData, workspace, store, agent, settings, setSettings, liveKey, server.googleClientId, refreshLiveKey, notify, toggleVoice, openDataSources, auth, requestSignIn, signOut, ensureCanTalk]);
 
   const togglePanel = useCallback(() => updatePrefs({ panelOpen: !prefs.panelOpen }), [prefs.panelOpen, updatePrefs]);
   const appRef = useRef<HTMLDivElement>(null);
@@ -494,7 +490,6 @@ export function App({
             panelOpen={prefs.panelOpen}
             togglePanel={togglePanel}
             dashboardResults={dashboardResults}
-            onOpenExportMp4={() => setExportMp4Open(true)}
           />
           <PageTabs />
           <main ref={workspaceRef} className="workspace">
@@ -524,11 +519,11 @@ export function App({
                 {activeView === 'board' && (
                   <DashboardView key={`board-${activeId}`} surface="board" />
                 )}
-                {activeView === 'motion' && (
-                  <MotionView
-                    key={`motion-${activeId}`}
+                {activeView === 'deck' && (
+                  <DeckView
+                    key={`deck-${activeId}`}
                     dashboardResults={dashboardResults}
-                    command={motionCommand}
+                    command={deckCommand}
                   />
                 )}
               </Suspense>
@@ -545,9 +540,6 @@ export function App({
           <Suspense fallback={null}>
             {dataModalUsed && (
               <DataSourceModal open={dataModalOpen} initialTab={dataModalTab} onClose={() => setDataModalOpen(false)} />
-            )}
-            {exportMp4Used && (
-              <ExportMp4Dialog open={exportMp4Open} motion={store.scene.motion} onClose={() => setExportMp4Open(false)} />
             )}
           </Suspense>
           <SignInDialog open={signInOpen} onClose={closeSignIn} />

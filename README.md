@@ -1,8 +1,8 @@
-# Voice Whiteboard Studio — Live SQL Dashboards, Programmatic Motion & Diagrams
+# Voice Whiteboard Studio — Live SQL Dashboards, Presentation Decks & Diagrams
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-A **voice-first Live Data Dashboard, Programmatic Motion & Architecture Studio** powered by the **Gemini Live API** (`gemini-3.8-live` / `gemini-2.5-flash-native-audio`): speak or type natural-language requests to query live SQL datasets into interactive dashboards, animate data-grounded 60fps motion explainers, map cloud architectures, and write structured documentation.
+A **voice-first Live Data Dashboard, Presentation Deck & Architecture Studio** powered by the **Gemini Live API** (`gemini-3.8-live` / `gemini-2.5-flash-native-audio`): speak or type natural-language requests to query live SQL datasets into interactive dashboards, turn them into board-ready slide decks, map cloud architectures, and write structured documentation.
 
 Every request is a **deterministic, incremental edit** of your active workspace—never a destructive full redraw or black-box video hallucination.
 
@@ -19,11 +19,11 @@ Every request is a **deterministic, incremental edit** of your active workspace�
    - **Query & Lineage Inspector Drawer**: click any KPI figure, chart mark, or `SQL` badge to inspect the exact SQL query, execution latency, refresh timestamp, raw result rows, edit SQL live, or click **Ask Gemini Live** for an instant spoken explanation.
    - **BI & Report Handoffs**: export standalone interactive `.html` reports, annotated `.sql` query bundles, Vega-Lite `.vg.json` specs, and 24-column Grafana `.grafana.json` models.
 
-2. **Programmatic Motion Studio (`Motion` surface)**
-   - **Deterministic code-driven animation engine** (`60fps` Canvas2D stage + millisecond timeline scrubber) across `16:9`, `9:16`, and `1:1` aspect ratios.
-   - **1-click Cross-Surface Storyboard Synthesis**: turn any Live SQL Dashboard, Architecture Diagram, or Documentation book into an animated multi-scene explainer grounded in verified SQL numbers (`create_motion` with `from_current_page: true` or the **Animate Explainer** button).
-   - **Editable Layers & Physics**: `badge`, `kinetic_text`, `metric_counter` (interpolating real queried numbers), `motion_chart`, `flow_diagram`, and `callout_card` with `spring`, `smooth`, `snappy`, and `linear` easings, click-on-canvas hit-box selection, kinetic captions, and optional Web Speech voiceover.
-   - **Client-side `.mp4` Video Export**: deterministic frame-by-frame WebCodecs `VideoEncoder` + `mp4-muxer` H.264 `.mp4` rendering (with `MediaRecorder` `.webm` fallback).
+2. **Presentation Decks (`Deck` surface)**
+   - **One click (or one sentence) from page to deck**: `create_deck` with `from_current_page: true` (or **Make a deck** on the dashboard) builds a pyramid-structured presentation — title, executive summary, headline metrics, one slide per chart whose title states the finding (*"North America leads MRR at $291.4K, 43% of the total"*), tables, the architecture flow, documentation highlights, and a closing slide — every figure from its live SQL result, with speaker notes on every slide.
+   - **Nine professional layouts** (`title`, `section`, `kpis`, `chart`, `points`, `flow`, `table`, `statement`, `closing`), six themes, numbered-circle motif, text sized to fit; edit any field in the slide inspector or by voice (`edit_deck`: *"make slide 3 a bar chart"*, *"add a slide about risks after slide 4"*). Chart slides bound to dashboard widgets refresh with **Sync data** without touching your words.
+   - **Present** full screen (arrows, Space, `N` for notes; *"next slide"* by voice) and **export**: an editable **PowerPoint `.pptx`** (pptxgenjs: one layout per slide type, title placeholders, sections, native charts and tables, speaker notes) or **Open in Google Slides** (the same file uploaded to the user's Drive and converted, with Google's `drive.file` scope; needs `GOOGLE_CLIENT_ID` and the Drive API enabled on that OAuth client's project).
+   - Pages saved with a Motion explainer by an earlier version open as decks.
 
 3. **Architecture Whiteboard & Official Google-Grounded Book Documentation (`Diagram` & `Docs` surfaces)**
    - Incremental graph editing (`create_diagram`, `edit_diagram`, `tidy_layout`) with neighbor-aware node placement, official Google Cloud SVG icons, 101 Gen AI technical blueprints, and draw.io (`.drawio`) / PNG / SVG export.
@@ -34,14 +34,14 @@ Every request is a **deterministic, incremental edit** of your active workspace�
 
 ## Quick Start
 
-Requires **Node.js 20.19+** and a [Gemini API key](https://aistudio.google.com/apikey) in `.env` (`GEMINI_API_KEY=...` in `studio/.env` or the repository root `.env`—loaded automatically by default; local SQLite-Wasm dashboards, CSV/Parquet uploads, and programmatic motion studio also work offline without a key).
+Requires **Node.js 20.19+** and a [Gemini API key](https://aistudio.google.com/apikey) in `.env` (`GEMINI_API_KEY=...` in `studio/.env` or the repository root `.env`—loaded automatically by default; local SQLite-Wasm dashboards, CSV/Parquet uploads, and slide decks also work offline without a key).
 
 ```bash
 cd studio
 ./studio.sh          # installs dependencies, loads GEMINI_API_KEY from .env by default, opens http://127.0.0.1:5173
 ./studio.sh key      # optional fallback: saves or replaces a key in macOS Keychain / .env.local
 ./studio.sh check    # verifies key → ephemeral token → Live session against the real Gemini API
-./studio.sh test     # runs all Vitest unit, SQL guard, dashboard, motion & security tests
+./studio.sh test     # runs all Vitest unit, SQL guard, dashboard, deck & security tests
 ./studio.sh e2e      # runs headless Chrome Playwright E2E tests (UI smoke + mock Gemini Live WebSocket pipeline)
 ./studio.sh eval     # runs multi-turn stability & accuracy evals against the real Gemini Live model
 ```
@@ -52,16 +52,16 @@ cd studio
 
 ## What You Can Ask For
 
-Press **Space** (or click **Talk**) to speak, or press **`/`** to type (including slash commands `/dashboard`, `/motion`, `/sql`, `/explain`, `/diagram`, `/doc`):
+Press **Space** (or click **Talk**) to speak, or press **`/`** to type (including slash commands `/dashboard`, `/deck`, `/sql`, `/explain`, `/diagram`, `/doc`):
 
 | Say or Type | Gemini Live Tool Call |
 | --- | --- |
 | *"Build an executive SaaS revenue & retention dashboard with a region filter"* | `inspect_schema` → `create_dashboard` (validates every SQL query against SQLite-Wasm before rendering) |
 | *"Add a horizontal bar chart of top 5 enterprise accounts by ARR"* | `edit_dashboard` (adds the widget without disturbing existing cards or filters) |
 | *"Where did the June MRR number come from?"* | `inspect_widget` (opens the top-layer SQL Lineage Inspector Drawer and explains the query) |
-| *"Turn this dashboard into a 9:16 vertical animated explainer video"* | `create_motion` (`from_current_page: true`, `aspect_ratio: "9:16"`, grounded in live SQL results) |
-| *"Make the opening scene 4 seconds and change the headline to Q4 Momentum"* | `edit_motion` (updates only that scene/layer while keeping all other timings intact) |
-| *"Play from the start"* / *"Export as MP4"* | `control_motion` (`restart` / `export_mp4`) |
+| *"Turn this dashboard into a presentation for the board"* | `create_deck` (`from_current_page: true`: slides with finding-first titles, grounded in live SQL results) |
+| *"Make slide 3 a bar chart and use the forest theme"* | `edit_deck` (changes only that slide and the theme) |
+| *"Present it"* / *"Next slide"* / *"Download as PowerPoint"* / *"Put it in Google Slides"* | `control_deck` (`present` / `next` / `export_pptx` / `export_google_slides`) |
 | *"Draw our real-time BigQuery & Vertex AI architecture in a new tab"* | `create_diagram` (`new_page: true`) |
 | *"Document this architecture"* | `search_google_docs` + `get_google_docs` → `write_text` + `write_table` (official Google-grounded LLD & implementation guide in **Docs**) |
 

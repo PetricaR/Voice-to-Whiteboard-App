@@ -9,7 +9,7 @@ import { chapterInfo } from '../engine/book';
 import { blockSize, tableSize, BLOCK_METRICS } from '../engine/blocks';
 import { normalizeDashboard } from '../engine/dashboard';
 import { normalizeText, parseInline, parseMarkdown } from '../engine/markdown';
-import { normalizeMotion } from '../engine/motion';
+import { deckFromMotion, normalizeDeck } from '../engine/deck';
 import { findGroup, groupBounds, groupDepth, nodeSize, sceneBounds } from '../engine/scene';
 import {
   BLOCK_KINDS, COLORS, DIAGRAM_TYPES, DIRECTIONS, GROUP_KINDS, NODE_KINDS,
@@ -244,9 +244,10 @@ function normalizeBlock(raw: any): DBlock | null {
 export function normalizeScene(s: any): Scene | null {
   const dashboard = normalizeDashboard(s?.dashboard);
   const board = normalizeDashboard(s?.board);
-  const motion = normalizeMotion(s?.motion);
+  // A page saved with a Motion explainer (the surface the Deck replaced) opens with it as a deck
+  const deck = normalizeDeck(s?.deck) ?? deckFromMotion(s?.motion);
   const hasDiagramArrays = Array.isArray(s?.nodes) && Array.isArray(s?.edges);
-  if (!hasDiagramArrays && !dashboard && !board && !motion) return null;
+  if (!hasDiagramArrays && !dashboard && !board && !deck) return null;
   const nodes: DNode[] = [];
   for (const raw of (Array.isArray(s?.nodes) ? s.nodes : [])) {
     if (raw == null || typeof raw.id !== 'string' || typeof raw.label !== 'string') return null;
@@ -272,14 +273,14 @@ export function normalizeScene(s: any): Scene | null {
     version: typeof s?.version === 'number' ? s.version : 0,
     type: DIAGRAM_TYPES.includes(s?.type) ? s.type : 'architecture',
     direction: DIRECTIONS.includes(s?.direction) ? s.direction : 'LR',
-    title: typeof s?.title === 'string' ? s.title : (dashboard?.title ?? motion?.title ?? ''),
+    title: typeof s?.title === 'string' ? s.title : (dashboard?.title ?? deck?.title ?? ''),
     nodes,
     edges,
     groups,
     blocks,
     ...(dashboard ? { dashboard } : {}),
     ...(board ? { board: { ...board, refreshSeconds: 0 } } : {}),
-    ...(motion ? { motion } : {}),
+    ...(deck ? { deck } : {}),
   };
   if (typeof s?.subtitle === 'string' && s.subtitle) scene.subtitle = s.subtitle;
   return scene;
@@ -310,8 +311,8 @@ export function pagesFromJson(text: string): Scene[] | null {
   }
 }
 
-export function download(filename: string, content: string, type: string) {
-  const url = URL.createObjectURL(new Blob([content], { type }));
+export function download(filename: string, content: string | Blob, type: string) {
+  const url = URL.createObjectURL(typeof content === 'string' ? new Blob([content], { type }) : content);
   const a = document.createElement('a');
   a.href = url;
   a.download = filename;

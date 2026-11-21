@@ -172,6 +172,10 @@ import i_waterfall_chart from '@material-symbols/svg-400/rounded/waterfall_chart
 import i_radar from '@material-symbols/svg-400/rounded/radar.svg?raw';
 import i_speed from '@material-symbols/svg-400/rounded/speed.svg?raw';
 import i_timeline from '@material-symbols/svg-400/rounded/timeline.svg?raw';
+import i_slideshow from '@material-symbols/svg-400/rounded/slideshow.svg?raw';
+import i_co_present from '@material-symbols/svg-400/rounded/co_present.svg?raw';
+import i_speaker_notes from '@material-symbols/svg-400/rounded/speaker_notes.svg?raw';
+import i_add_to_drive from '@material-symbols/svg-400/rounded/add_to_drive.svg?raw';
 
 
 export const ICONS = {
@@ -347,6 +351,10 @@ export const ICONS = {
   radar: i_radar,
   speed: i_speed,
   timeline: i_timeline,
+  slideshow: i_slideshow,
+  co_present: i_co_present,
+  speaker_notes: i_speaker_notes,
+  add_to_drive: i_add_to_drive,
 } as const;
 
 export type IconName = keyof typeof ICONS;
