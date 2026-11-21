@@ -4,15 +4,22 @@ import {
   importDataFile,
   inspectDataSchema,
   listAllDataSources,
+  listServerSources,
+  removeUserTable,
   type DataSourceInfo,
   type TableSchemaInfo,
 } from '../../data/sqlEngine';
 import { starterDashboard } from '../../engine/chartIdeas';
 import { Icon, IconButton, useStudio } from '../context';
-import { closeTopLayerElement, handleTabListKeyDown, useDialogLightDismiss } from '../domTransitions';
+import { closeTopLayerElement, handleTabListKeyDown, HAS_NATIVE_SWITCH, useDialogLightDismiss } from '../domTransitions';
 import { BigQueryCatalogPanel } from './BigQueryCatalogPanel';
 
 export type DataModalTab = 'bigquery' | 'files';
+
+/** The id a project keeps for a server source ("bigquery" is the server's default BigQuery project). */
+function projectIdOfSource(s: DataSourceInfo): string {
+  return s.id === 'bigquery' && s.projectId ? `bigquery:${s.projectId}` : s.id;
+}
 
 export function DataSourceModal({
   open,
@@ -25,7 +32,9 @@ export function DataSourceModal({
   onClose: () => void;
   onTableImported?: (table: TableSchemaInfo) => void;
 }) {
-  const { store, workspace, agent, liveKey, auth, notify } = useStudio();
+  const { store, workspace, agent, liveKey, auth, notify, project, editSources } = useStudio();
+  const [serverSources, setServerSources] = useState<DataSourceInfo[]>([]);
+  const [sourceErr, setSourceErr] = useState<string | null>(null);
   const dialogRef = useRef<HTMLDialogElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
   const [tab, setTab] = useState<DataModalTab>(initialTab);
@@ -53,6 +62,7 @@ export function DataSourceModal({
       if (request !== schemaRequest.current) return;
       setSources(srcs);
       setTables(schema.tables);
+      setServerSources(await listServerSources());
     } catch (e) {
       if (request !== schemaRequest.current) return;
       setTables([]);
@@ -227,6 +237,20 @@ export function DataSourceModal({
 
   const isBigQuerySource = activeSource === 'bigquery' || activeSource.startsWith('bigquery:');
 
+  const changeSources = (label: string, change: Parameters<typeof editSources>[0], leaving?: string) => {
+    setSourceErr(null);
+    editSources(change)
+      .then(() => {
+        if (leaving != null && (activeSource === leaving || (leaving.startsWith('bigquery:') && activeSource === 'bigquery'))) {
+          setActiveSource('local');
+          return refreshSchema('local');
+        }
+        return refreshSchema(activeSource);
+      })
+      .then(() => notify(label))
+      .catch((e: unknown) => setSourceErr(e instanceof Error ? e.message : String(e)));
+  };
+
   return (
     <dialog
       ref={dialogRef}
@@ -348,6 +372,60 @@ export function DataSourceModal({
             </div>
             {uploadErr && <div className="widget-error" role="alert">{uploadErr}</div>}
 
+            <section className="bq-section" aria-label="Sources of this project">
+              <h3 className="bq-section-title">Sources of “{project.name}”</h3>
+              <p className="muted-hint project-sources-hint">
+                Dashboards and Gemini use only these, plus the files uploaded to this project.
+              </p>
+              <ul className="bq-source-list project-source-list">
+                <li className="bq-source-row">
+                  <div className="bq-source-meta">
+                    <div className="bq-source-title"><strong>Sample tables</strong></div>
+                    <div className="bq-source-sub"><span>SaaS revenue, e-commerce, cloud FinOps, sales CRM — to try things out</span></div>
+                  </div>
+                  <label className="bq-switch" title={project.sources.includeSamples ? 'In this project' : 'Not in this project'}>
+                    <input
+                      type="checkbox"
+                      {...({ switch: '' } as Record<string, string>)}
+                      role={HAS_NATIVE_SWITCH ? undefined : 'switch'}
+                      data-switch-fallback={HAS_NATIVE_SWITCH ? undefined : ''}
+                      aria-label="Sample tables are part of this project"
+                      checked={project.sources.includeSamples}
+                      onChange={(e) => {
+                        const on = e.target.checked;
+                        changeSources(on ? 'Sample tables added to the project' : 'Sample tables removed from the project',
+                          (cur) => ({ ...cur, includeSamples: on }));
+                      }}
+                    />
+                  </label>
+                </li>
+                {serverSources.map((s) => {
+                  const id = projectIdOfSource(s);
+                  // A project made from earlier work may keep the plain "bigquery" (the server's default project)
+                  const aliases = s.id === 'bigquery' ? [id, 'bigquery'] : [id];
+                  const attached = aliases.some((a) => project.sources.remote.includes(a));
+                  return (
+                    <li key={s.id} className={`bq-source-row${attached ? '' : ' is-paused'}`}>
+                      <div className="bq-source-meta">
+                        <div className="bq-source-title"><strong>{s.label}</strong></div>
+                        <div className="bq-source-sub"><span>{attached ? 'In this project' : 'On the studio server, not in this project'}</span></div>
+                      </div>
+                      <button
+                        type="button"
+                        className={attached ? 'text-btn small' : 'tonal-btn small'}
+                        onClick={() => attached
+                          ? changeSources(`Removed ${s.label} from the project`, (cur) => ({ ...cur, remote: cur.remote.filter((r) => !aliases.includes(r)) }), id)
+                          : changeSources(`Added ${s.label} to the project`, (cur) => ({ ...cur, remote: [...new Set([...cur.remote, id])] }))}
+                      >
+                        {attached ? 'Remove from project' : 'Add to project'}
+                      </button>
+                    </li>
+                  );
+                })}
+              </ul>
+              {sourceErr && <div className="widget-error" role="alert">{sourceErr}</div>}
+            </section>
+
             <section className="bq-section" aria-label="Connected engines">
               <h3 className="bq-section-title">Connected engines</h3>
               <div className="source-tabs" role="group" aria-label="Data sources">
@@ -398,9 +476,23 @@ export function DataSourceModal({
                           </div>
                           {t.description && <p>{t.description}</p>}
                         </div>
-                        <button type="button" className="tonal-btn small" onClick={() => void quickBuildFromTable(t)}>
-                          <Icon name="bar_chart" size={16} /> Build Dashboard
-                        </button>
+                        <div className="schema-table-actions">
+                          <button type="button" className="tonal-btn small" onClick={() => void quickBuildFromTable(t)}>
+                            <Icon name="bar_chart" size={16} /> Build Dashboard
+                          </button>
+                          {t.uploaded && activeSource === 'local' && (
+                            <IconButton
+                              icon="delete"
+                              label={`Remove ${t.name} from the project`}
+                              onClick={() => {
+                                void removeUserTable(t.name).then(() => {
+                                  notify(`Removed “${t.name}” from the project`);
+                                  return refreshSchema('local');
+                                });
+                              }}
+                            />
+                          )}
+                        </div>
                       </div>
                       <div className="schema-cols">
                         {t.columns.map((c) => (

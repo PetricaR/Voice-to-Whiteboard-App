@@ -7,11 +7,14 @@
 import { bqApi } from '../data/bqCatalogClient';
 import { columnBrief, columnForModel, columnsMatching, pickColumns, summaryForModel } from '../data/dataProfile';
 import { googleDocsApi, GoogleDocsClientError, type GoogleDocsClient } from '../data/googleDocsClient';
+import { attachSourceToProject, getProjectScope, isSourceAttached } from '../data/projectScope';
 import {
   executeSqlQuery,
   importRowsIntoLocalTable,
   inspectDataSchema,
+  invalidateDataSourcesCache,
   listAllDataSources,
+  listServerSources,
   listUserTables,
   type QueryExecutionResult,
   type TableSchemaInfo,
@@ -137,12 +140,27 @@ function loadedDataLine(): string {
     (loaded.length > 6 ? ` +${loaded.length - 6} more` : '');
 }
 
+/** The project the work belongs to: its name, what it is about and the data it may use. */
+function projectLine(): string {
+  const scope = getProjectScope();
+  if (scope == null) return '';
+  const uploaded = listUserTables().length;
+  const sources = [
+    `local (${uploaded} uploaded ${uploaded === 1 ? 'table' : 'tables'}${scope.sources.includeSamples ? ' + the sample tables' : ', no sample tables'})`,
+    ...scope.sources.remote,
+  ];
+  const brief = scope.brief.trim() ? ` — ${scope.brief.trim().replace(/\s+/g, ' ')}` : '';
+  return `project: "${scope.name}"${brief}; its data sources: ${sources.join(', ')}`;
+}
+
 function stateOf(ctx: ToolContext): string {
   const store = storeOf(ctx);
   const scene = describeScene(store.scene, store.selection);
   const data = loadedDataLine();
   const state = data ? `${data}\n${scene}` : scene;
-  return ctx.workspace != null ? `${pagesLine(ctx.workspace)}\n${state}` : state;
+  const withPages = ctx.workspace != null ? `${pagesLine(ctx.workspace)}\n${state}` : state;
+  const project = projectLine();
+  return project ? `${project}\n${withPages}` : withPages;
 }
 
 function editResponse(ctx: ToolContext, result: EditResult, staleNote?: string): ToolResponse {
@@ -434,9 +452,14 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
     case 'list_data_sources': {
       const sources = await listAllDataSources();
       const loaded = listUserTables();
+      // What the studio server has that this project does not use (yet): the user can add it
+      const server = getProjectScope() != null ? await listServerSources().catch(() => []) : [];
+      const defaultBq = server.find((s) => s.id === 'bigquery')?.projectId ?? null;
+      const notInProject = server.filter((s) => !isSourceAttached(s.id, defaultBq)).map((s) => s.id);
       return {
         ok: true,
         sources,
+        ...(notInProject.length > 0 ? { notInProject } : {}),
         ...(loaded.length > 0
           ? { loadedByUser: loaded.slice(0, 20).map((t, i) => ({ source: 'local', table: t.name, rowCount: t.rowCount, ...(i === 0 ? { latest: true } : {}) })) }
           : {}),
@@ -464,6 +487,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         if (projectId) {
           await bqApi.addSource({ project_id: projectId, dataset_filter: datasetFilter }).catch(() => undefined);
           synced = await bqApi.sync({ project_id: projectId, dataset_filter: datasetFilter });
+          // The user asked for it in this project: it becomes one of its sources
+          if (await attachSourceToProject(`bigquery:${projectId}`)) invalidateDataSourcesCache();
         } else {
           synced = await bqApi.syncAll();
         }

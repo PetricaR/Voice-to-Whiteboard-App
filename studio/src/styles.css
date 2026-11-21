@@ -8154,3 +8154,16 @@ textarea.ctrl-input {
 .menu button:disabled {
   opacity: 0.5;
 }
+
+/* ---------- Projects: sources of a project (Data sources) ---------- */
+
+.project-sources-hint {
+  margin: -4px 0 10px;
+}
+
+.schema-table-actions {
+  display: flex;
+  flex: none;
+  align-items: center;
+  gap: 4px;
+}

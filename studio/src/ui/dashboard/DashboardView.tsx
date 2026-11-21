@@ -39,7 +39,7 @@ export function DashboardView({
   inspectorWidgetRequest?: string | null;
   onClearInspectorRequest?: () => void;
 }) {
-  const { workspace, store, notify, openDataSources } = useStudio();
+  const { workspace, store, notify, openDataSources, requireSampleData } = useStudio();
   useStoreRevision(store);
   const liveDashboard = store.scene.dashboard;
 
@@ -421,9 +421,11 @@ export function DashboardView({
             type="button"
             className="filled-btn"
             onClick={() => {
-              store.createDashboard(STARTER_SAAS_DASHBOARD, {
-                source: 'manual',
-                label: 'Loaded SaaS Revenue Dashboard',
+              requireSampleData('The SaaS executive dashboard', () => {
+                store.createDashboard(STARTER_SAAS_DASHBOARD, {
+                  source: 'manual',
+                  label: 'Loaded SaaS Revenue Dashboard',
+                });
               });
             }}
           >

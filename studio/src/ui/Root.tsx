@@ -8,6 +8,7 @@
  */
 import { lazy, Suspense, useEffect, useState } from 'react';
 import type { SavedWorkspace } from '../engine/workspace';
+import { setProjectScope } from '../data/projectScope';
 import { ensureFirstProject, projectIdFromUrl, projectUrl } from '../projects/boot';
 import { takeOverProject, tryLockProject, type ProjectLock } from '../projects/projectLock';
 import { defaultSources, openProjectStore, type ProjectMeta, type ProjectStore } from '../projects/projectStore';
@@ -22,7 +23,7 @@ const App = lazy(() => import('./App').then((m) => ({ default: m.App })));
 type Boot =
   | { kind: 'loading' }
   | { kind: 'home'; store: ProjectStore; notice?: string }
-  | { kind: 'project'; store?: ProjectStore; project: ProjectMeta; saved: SavedWorkspace | null; lock?: ProjectLock }
+  | { kind: 'project'; store?: ProjectStore; project: ProjectMeta; saved: SavedWorkspace | null; lock?: ProjectLock; notice?: string }
   /** The project is open in another tab. */
   | { kind: 'busy'; store: ProjectStore; project: ProjectMeta }
   | { kind: 'blocked'; message: string };
@@ -35,11 +36,29 @@ function localStorageOrNull(): Storage | null {
   }
 }
 
-/** Reads the project once this tab owns it, so it starts from the last save of any tab. */
+/**
+ * Reads the project once this tab owns it, so it starts from the last save of
+ * any tab: its data scope, its tables, its pages.
+ */
 async function loadOwned(store: ProjectStore, project: ProjectMeta, lock: ProjectLock): Promise<Boot> {
-  const saved = await store.loadWorkspace(project.id);
-  const opened = (await store.updateProject(project.id, { lastOpenedAt: Date.now() })) ?? project;
-  return { kind: 'project', store, project: opened, saved, lock };
+  const id = project.id;
+  setProjectScope(
+    { projectId: id, name: project.name, brief: project.brief, sources: project.sources },
+    {
+      saveTable: (t) => store.putTable({ ...t, projectId: id }),
+      removeTable: (name) => store.deleteTable(id, name),
+    },
+  );
+  const [saved, tables] = await Promise.all([store.loadWorkspace(id), store.listTables(id)]);
+  let notice: string | undefined;
+  if (tables.length > 0) {
+    // The SQL engine loads only for a project with data of its own
+    const { restoreProjectTables } = await import('../data/sqlEngine');
+    const { failed } = await restoreProjectTables(tables);
+    if (failed.length > 0) notice = `Could not load ${failed.map((n) => `“${n}”`).join(', ')} — upload ${failed.length === 1 ? 'it' : 'them'} again.`;
+  }
+  const opened = (await store.updateProject(id, { lastOpenedAt: Date.now() })) ?? project;
+  return { kind: 'project', store, project: opened, saved, lock, notice };
 }
 
 async function openProject(store: ProjectStore, id: string): Promise<Boot> {
@@ -118,7 +137,11 @@ export function Root() {
       return (
         <StorageBlocked
           message={state.message}
-          onContinue={() => setState({ kind: 'project', project: unsavedProject(), saved: null })}
+          onContinue={() => {
+            const project = unsavedProject();
+            setProjectScope({ projectId: project.id, name: project.name, brief: '', sources: project.sources }, {});
+            setState({ kind: 'project', project, saved: null });
+          }}
         />
       );
     case 'busy':
@@ -134,7 +157,7 @@ export function Root() {
     case 'project':
       return (
         <Suspense fallback={<ProjectLoading />}>
-          <App key={state.project.id} project={state.project} projects={state.store} saved={state.saved} lock={state.lock} />
+          <App key={state.project.id} project={state.project} projects={state.store} saved={state.saved} lock={state.lock} notice={state.notice} />
         </Suspense>
       );
   }

@@ -132,6 +132,21 @@ describe('first start', () => {
     expect((await store.listProjects()).length).toBe(1);
   });
 
+  it('keeps the remote sources the earlier dashboards query', async () => {
+    const storage = new MemoryStorage();
+    const ws = workspaceWith('Warehouse');
+    ws.pages[0].scene.dashboard = {
+      title: 'Warehouse', defaultSource: 'bigquery', refreshSeconds: 0, filters: [],
+      widgets: [
+        { id: 'a', title: 'A', kind: 'kpi', source: 'postgres', sql: 'SELECT 1', colSpan: 4 },
+        { id: 'b', title: 'B', kind: 'kpi', source: 'local', sql: 'SELECT 1', colSpan: 4 },
+      ],
+    };
+    storage.setItem(LEGACY_WORKSPACE_KEY, JSON.stringify({ version: 2, active: ws.active, pages: ws.pages }));
+    const first = await ensureFirstProject(store, storage);
+    expect(first?.sources.remote.sort()).toEqual(['bigquery', 'postgres']);
+  });
+
   it('reads the single scene of the earliest versions', () => {
     const storage = new MemoryStorage();
     storage.setItem(LEGACY_SCENE_KEY, JSON.stringify(workspaceWith('Very old').pages[0].scene));

@@ -42,6 +42,11 @@ await page.waitForSelector('.voice-dock');
 await page.evaluate(() => localStorage.clear());
 await page.reload();
 await page.waitForSelector('.voice-dock');
+// The warehouse is one of the project's sources
+await page.evaluate(async () => {
+  const { attachSourceToProject } = await import('/src/data/projectScope.ts');
+  await attachSourceToProject('postgres');
+});
 
 await page.evaluate(() => {
   const { store, workspace } = window.__studio;

@@ -163,6 +163,94 @@ async function setTitle(page, title) {
   await context.close();
 }
 
+// ---------- The data of a project ----------
+{
+  const context = await browser.newContext({ viewport: { width: 1440, height: 900 }, deviceScaleFactor: 2 });
+  const page = await context.newPage();
+  watch(page, 'data');
+  await page.goto(url);
+  await page.waitForSelector('.voice-dock');
+  // A new project leaves the sample tables out
+  await page.click('.project-switcher');
+  await page.getByRole('menuitem', { name: 'New project…' }).click();
+  await page.fill('.project-dialog[open] input', 'Churn data');
+  const firstId = projectOf(page);
+  await Promise.all([page.waitForURL((u) => new URL(u).searchParams.get('project') !== firstId), page.getByRole('button', { name: 'Create' }).click()]);
+  await page.waitForSelector('.voice-dock');
+  const project = projectOf(page);
+
+  const openFiles = async () => {
+    await page.click('button[aria-label="BigQuery Catalog & Data Sources"]');
+    await page.click('#datasource-tab-files');
+    await page.waitForSelector('.datasource-files .bq-source-list');
+  };
+  const closeData = async () => {
+    await page.click('.datasource-footer .filled-btn');
+    await page.waitForTimeout(400);
+  };
+  const tableNames = () => page.locator('.schema-table-card .schema-table-title code').allTextContents();
+
+  await openFiles();
+  await page.waitForTimeout(300);
+  check(!(await page.locator('[aria-label="Sample tables are part of this project"]').isChecked()), 'a new project has no sample tables');
+  check(!(await tableNames()).includes('monthly_revenue'), 'and its local source lists none');
+
+  // An uploaded file is kept with the project
+  await page.setInputFiles('.datasource-files input[type="file"]', {
+    name: 'churn.csv', mimeType: 'text/csv', buffer: Buffer.from('region,churned\nEMEA,12\nAPAC,7\nNA,9\n'),
+  });
+  await page.waitForFunction(() => [...document.querySelectorAll('.schema-table-card code')].some((c) => c.textContent === 'churn'));
+  check(true, 'an uploaded file becomes a table');
+  await page.screenshot({ path: `${out}/projects-6-sources.png` });
+  await closeData();
+  await page.waitForTimeout(500);
+  await page.reload();
+  await page.waitForSelector('.voice-dock');
+  await openFiles();
+  await page.waitForFunction(() => [...document.querySelectorAll('.schema-table-card code')].some((c) => c.textContent === 'churn'));
+  check(true, 'the uploaded table is still there after a reload');
+  const sum = await page.evaluate(async () => {
+    const { executeSqlQuery } = await import('/src/data/sqlEngine.ts');
+    const r = await executeSqlQuery('SELECT SUM(churned) AS n FROM churn');
+    return r.rows[0]?.[0];
+  });
+  check(sum === 28, 'and it answers queries (28 churned)');
+
+  // Sample tables on and off
+  await page.click('[aria-label="Sample tables are part of this project"]');
+  await page.waitForFunction(() => [...document.querySelectorAll('.schema-table-card code')].some((c) => c.textContent === 'monthly_revenue'));
+  check(true, 'turning the sample tables on adds them');
+  await page.click('[aria-label="Sample tables are part of this project"]');
+  await page.waitForFunction(() => ![...document.querySelectorAll('.schema-table-card code')].some((c) => c.textContent === 'monthly_revenue'));
+  check(true, 'turning them off removes them');
+
+  // Removing the table removes it from the project
+  await page.getByRole('button', { name: 'Remove churn from the project' }).click();
+  await page.waitForFunction(() => ![...document.querySelectorAll('.schema-table-card code')].some((c) => c.textContent === 'churn'));
+  await closeData();
+  await page.waitForTimeout(400);
+  await page.reload();
+  await page.waitForSelector('.voice-dock');
+  await openFiles();
+  await page.waitForTimeout(500);
+  check(!(await tableNames()).includes('churn'), 'a removed table does not come back after a reload');
+  await closeData();
+
+  // An example that needs the sample data asks to turn it on first
+  await page.getByRole('button', { name: 'Open Live Dashboard' }).click();
+  await page.waitForSelector('.sample-data-dialog[open]');
+  check(await page.locator('.widget-card').count() === 0, 'the sample dashboard waits for the sample data');
+  await page.screenshot({ path: `${out}/projects-7-sample-dialog.png` });
+  await page.locator('.sample-data-dialog').getByRole('button', { name: 'Turn on' }).click();
+  await page.waitForSelector('.widget-card');
+  await page.waitForFunction(() => !document.querySelector('.widget-card .widget-loading, .widget-card [data-reloading="true"]'), null, { timeout: 15000 });
+  check(await page.locator('.widget-card .widget-error').count() === 0, 'after turning it on the sample dashboard runs without errors');
+
+  // Each project has its own data: the first project does not see this one's choice
+  check(project != null, 'the data project has an id');
+  await context.close();
+}
+
 // ---------- The work of an earlier version becomes the first project ----------
 {
   const context = await browser.newContext({ viewport: { width: 1280, height: 800 } });

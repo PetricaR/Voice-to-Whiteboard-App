@@ -7,7 +7,7 @@
 import type { SavedWorkspace } from '../engine/workspace';
 import { pagesFromJson } from '../ui/export';
 import { cleanBrief, cleanName, defaultSources, type NewProject, type NewTable, type ProjectMeta, type StoredTable } from './projectStore';
-import { parseSavedWorkspace, workspaceFromScenes } from './workspaceData';
+import { parseSavedWorkspace, remoteSourcesOf, workspaceFromScenes } from './workspaceData';
 
 export const PROJECT_FILE_KIND = 'voice-whiteboard-project';
 export const PROJECT_FILE_VERSION = 1;
@@ -88,9 +88,12 @@ export function projectFromFile(text: string, fileName = 'Imported project'): Ne
   const scenes = pagesFromJson(text);
   if (scenes == null || scenes.length === 0) return null;
   const base = fileName.replace(/\.[a-z0-9.]+$/i, '');
+  const workspace = workspaceFromScenes(scenes);
+  // A studio file comes from before projects: its dashboards keep the sources they query, and the sample tables
   return {
     name: cleanName(scenes[0].title || base),
-    workspace: workspaceFromScenes(scenes),
+    workspace,
+    sources: { includeSamples: true, remote: remoteSourcesOf(workspace) },
   };
 }
 

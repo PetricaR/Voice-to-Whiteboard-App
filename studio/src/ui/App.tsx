@@ -1,11 +1,12 @@
 import { ReactFlowProvider } from '@xyflow/react';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { VoiceAgent } from '../agent/session';
-import type { QueryExecutionResult } from '../data/sqlEngine';
+import { setProjectScope, setScopeHooks } from '../data/projectScope';
+import { invalidateDataSourcesCache, syncSampleTables, type QueryExecutionResult } from '../data/sqlEngine';
 import { Workspace, type SavedWorkspace } from '../engine/workspace';
 import { projectUrl } from '../projects/boot';
 import type { ProjectLock } from '../projects/projectLock';
-import { ProjectGoneError, type ProjectMeta, type ProjectPatch, type ProjectStore } from '../projects/projectStore';
+import { ProjectGoneError, type ProjectMeta, type ProjectPatch, type ProjectSources, type ProjectStore } from '../projects/projectStore';
 import { fetchServerStatus, onAccountChange, signOut as serverSignOut, type ServerStatus } from '../voice/liveToken';
 import { DiagramCanvas } from './canvas/DiagramCanvas';
 import { StudioContext, useStudio, type Studio } from './context';
@@ -21,6 +22,7 @@ import { SettingsDialog } from './SettingsDialog';
 import { SignInDialog } from './SignInDialog';
 import { forgetGoogleAccount } from './googleSignIn';
 import { MovedAwayDialog } from './projects/ProjectBusy';
+import { SampleDataDialog } from './projects/SampleDataDialog';
 import { SidePanel, type PanelTab } from './SidePanel';
 import { Snackbar, type Toast } from './Snackbar';
 import { applyTheme } from './theme';
@@ -96,6 +98,7 @@ export function App({
   projects,
   saved,
   lock,
+  notice,
 }: {
   /** The project of this tab. */
   project: ProjectMeta;
@@ -105,10 +108,14 @@ export function App({
   saved: SavedWorkspace | null;
   /** This tab's ownership of the project (none when the browser blocks storage). */
   lock?: ProjectLock;
+  /** Said once the studio is shown (e.g. a table of the project could not be loaded). */
+  notice?: string;
 }) {
   const workspace = useMemo(() => new Workspace(saved), []);
   const [project, setProject] = useState(openedProject);
   const projectId = openedProject.id;
+  const projectRef = useRef(project);
+  projectRef.current = project;
   // Re-render when another page is shown (each page has its own canvas state)
   const activeId = useSyncExternalStore((l) => workspace.subscribe(l), () => workspace.activeId);
   // Active surface of the page ('diagram' | 'dashboard' | 'motion' | 'doc')
@@ -287,14 +294,38 @@ export function App({
   }, [lock, agent]);
 
   const updateProject = useCallback(async (patch: ProjectPatch) => {
+    const before = projectRef.current;
+    let next: ProjectMeta;
     if (projects == null) {
-      setProject((p) => ({ ...p, ...patch }));
-      return;
+      next = { ...before, ...patch };
+    } else {
+      const saved = await projects.updateProject(projectId, patch);
+      if (saved == null) throw new Error('This project no longer exists (it was deleted in another tab).');
+      next = saved;
     }
-    const next = await projects.updateProject(projectId, patch);
-    if (next == null) throw new Error('This project no longer exists (it was deleted in another tab).');
+    projectRef.current = next;
     setProject(next);
+    // The data layer follows at once, so the next query already sees the change
+    setProjectScope({ projectId, name: next.name, brief: next.brief, sources: next.sources });
+    if (JSON.stringify(before.sources) !== JSON.stringify(next.sources)) {
+      invalidateDataSourcesCache();
+      await syncSampleTables();
+    }
   }, [projects, projectId]);
+
+  // Source changes run one after another, each from the latest state
+  const sourcesQueue = useRef<Promise<void>>(Promise.resolve());
+  const editSources = useCallback((change: (sources: ProjectSources) => ProjectSources) => {
+    const run = sourcesQueue.current.then(() => updateProject({ sources: change(projectRef.current.sources) }));
+    sourcesQueue.current = run.catch(() => undefined);
+    return run;
+  }, [updateProject]);
+
+  const [sampleRequest, setSampleRequest] = useState<{ what: string; run: () => void } | null>(null);
+  const requireSampleData = useCallback((what: string, run: () => void) => {
+    if (projectRef.current.sources.includeSamples) run();
+    else setSampleRequest({ what, run });
+  }, []);
 
   const goToProject = useCallback((id: string | null) => {
     agent.stop();
@@ -306,6 +337,18 @@ export function App({
   const notify = useCallback((message: string, action?: Toast['action']) => {
     setToast({ id: ++toastId.current, message, action });
   }, []);
+
+  // The agent and the data layer reach the project through these
+  useEffect(() => {
+    setScopeHooks({
+      attachSource: (id) => editSources((s) => (s.remote.includes(id) ? s : { ...s, remote: [...s.remote, id] })),
+      onSaveError: (name) => notify(`“${name}” works now, but it could not be saved with the project (browser storage is full).`),
+    });
+  }, [editSources, notify]);
+
+  useEffect(() => {
+    if (notice) notify(notice);
+  }, [notice, notify]);
 
   // A closed page (by hand or by voice) can be brought back
   useEffect(() => workspace.onPageRemoved((r) => {
@@ -412,12 +455,12 @@ export function App({
   }, [agent, refreshLiveKey]);
 
   const studio: Studio = useMemo(() => ({
-    project, projects, updateProject, goToProject,
+    project, projects, updateProject, goToProject, editSources, requireSampleData,
     workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice,
     openSettings: () => setSettingsOpen(true),
     openDataSources,
     auth, requestSignIn, signOut, ensureCanTalk,
-  }), [project, projects, updateProject, goToProject, workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice, openDataSources, auth, requestSignIn, signOut, ensureCanTalk]);
+  }), [project, projects, updateProject, goToProject, editSources, requireSampleData, workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice, openDataSources, auth, requestSignIn, signOut, ensureCanTalk]);
 
   const togglePanel = useCallback(() => updatePrefs({ panelOpen: !prefs.panelOpen }), [prefs.panelOpen, updatePrefs]);
   const appRef = useRef<HTMLDivElement>(null);
@@ -506,6 +549,17 @@ export function App({
           </Suspense>
           <SignInDialog open={signInOpen} onClose={closeSignIn} />
           <MovedAwayDialog open={movedAway} projectId={projectId} name={project.name} />
+          <SampleDataDialog
+            request={sampleRequest}
+            projectName={project.name}
+            onConfirm={async () => {
+              const r = sampleRequest;
+              await editSources((s) => ({ ...s, includeSamples: true }));
+              setSampleRequest(null);
+              r?.run();
+            }}
+            onClose={() => setSampleRequest(null)}
+          />
         </div>
       </ReactFlowProvider>
     </StudioContext.Provider>

@@ -1,6 +1,6 @@
 # Plan: Projects and Board
 
-Status: Phases 1–2 done · 2026-11-21
+Status: Phases 1–3 done · 2026-11-21
 
 ## Goal
 
@@ -104,6 +104,7 @@ To verify while building: whether the bare `bigquery` id means the server's defa
 
 ### Agent
 
+- *As built:* the token server locks every Live token to the exact system instruction, so the project context is **not** put into the system instruction (that would need server changes and loosen the lock). Instead every tool result starts with a `project:` line (name, brief, data sources), and a fixed "# The project" section in the prompt tells the agent to stay within it.
 - **`buildSystemInstruction(project)`** in [prompt.ts](../studio/src/agent/prompt.ts) adds a `# Project` section to `SYSTEM_INSTRUCTION`: the name, the brief and the attached sources. It also adds the rule: *"Work only with this project's sources and topic. If the user asks for data outside it, say so and offer to attach the source."* [session.ts:130](../studio/src/agent/session.ts#L130) passes the result instead of the constant. The project never changes within a tab, so the instruction is set once per session.
 - `list_data_sources` already goes through `listAllDataSources`, so it lists only the project's sources once that function filters them.
 - `stateOf(ctx)` prefixes the page list with the project name, so every tool result says which project it belongs to.

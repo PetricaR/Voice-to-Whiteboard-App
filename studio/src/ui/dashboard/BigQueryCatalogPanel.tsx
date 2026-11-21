@@ -267,7 +267,7 @@ export function BigQueryCatalogPanel({
   onCloseModal: () => void;
   onLocalTableLoaded?: (table: TableSchemaInfo) => void;
 }) {
-  const { workspace, store, agent, liveKey, auth, notify } = useStudio();
+  const { workspace, store, agent, liveKey, auth, notify, project, editSources } = useStudio();
   const [sources, setSources] = useState<BqSourceRead[]>([]);
   const [datasets, setDatasets] = useState<BqDatasetRead[]>([]);
   const [connectors, setConnectors] = useState<DataSourceInfo[]>([]);
@@ -339,16 +339,36 @@ export function BigQueryCatalogPanel({
   }, [loadCatalog]);
 
   const sync = useSourceSync(loadCatalog);
-  const activeSources = useMemo(() => sources.filter((s) => s.is_active), [sources]);
+  // The studio server's Google Cloud projects; this project uses the ones added to it
+  // The plain "bigquery" (kept by a project made from earlier work) is the server's default project
+  const defaultGcpProject = connectors.find((c) => c.id === 'bigquery')?.projectId ?? null;
+  const idsOf = useCallback((gcpProject: string) => (
+    gcpProject === defaultGcpProject ? [`bigquery:${gcpProject}`, 'bigquery'] : [`bigquery:${gcpProject}`]
+  ), [defaultGcpProject]);
+  const inProject = useCallback(
+    (gcpProject: string) => idsOf(gcpProject).some((id) => project.sources.remote.includes(id)),
+    [idsOf, project.sources.remote],
+  );
+  const projectSources = useMemo(() => sources.filter((s) => inProject(s.project_id)), [sources, inProject]);
+  const projectDatasets = useMemo(() => datasets.filter((d) => inProject(d.project_id)), [datasets, inProject]);
+  const activeSources = useMemo(() => projectSources.filter((s) => s.is_active), [projectSources]);
+  const setInProject = useCallback((gcpProjects: string[], add: boolean) => {
+    const ids = gcpProjects.map((p) => `bigquery:${p}`);
+    const every = gcpProjects.flatMap(idsOf);
+    return editSources((cur) => ({
+      ...cur,
+      remote: add ? [...new Set([...cur.remote, ...ids])] : cur.remote.filter((r) => !every.includes(r)),
+    }));
+  }, [editSources, idsOf]);
 
   // A filter on a project that has since been removed would hide everything with no way back
   const activeProjectFilter =
-    sources.length > 1 && sources.some((s) => s.project_id === projectFilter) ? projectFilter : 'ALL';
+    projectSources.length > 1 && projectSources.some((s) => s.project_id === projectFilter) ? projectFilter : 'ALL';
   const searching = search.trim() !== '';
 
   const filteredDatasets = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return datasets
+    return projectDatasets
       .filter((ds) => activeProjectFilter === 'ALL' || ds.project_id === activeProjectFilter)
       .map((ds) => {
         if (!q) return ds;
@@ -369,22 +389,22 @@ export function BigQueryCatalogPanel({
         return { ...ds, tables: matchingTables };
       })
       .filter((d): d is BqDatasetRead => d !== null);
-  }, [datasets, activeProjectFilter, search]);
+  }, [projectDatasets, activeProjectFilter, search]);
 
   const stats = useMemo(() => {
     let tables = 0;
     let cols = 0;
-    for (const ds of datasets) {
+    for (const ds of projectDatasets) {
       tables += ds.tables.length;
       for (const t of ds.tables) cols += t.columns.length;
     }
     return {
-      projects: sources.length,
-      datasets: datasets.length,
+      projects: projectSources.length,
+      datasets: projectDatasets.length,
       tables,
       columns: cols,
     };
-  }, [sources, datasets]);
+  }, [projectSources, projectDatasets]);
 
   const resolveConnectorIdForProject = (projectId: string): string => {
     const primary = connectors.find((c) => c.id === 'bigquery');
@@ -411,6 +431,8 @@ export function BigQueryCatalogPanel({
       setDatasetFilterInput('');
       setSecretNameInput('');
       setPanel('none');
+      // A project added from here is for this project
+      await setInProject([created.project_id], true);
       await loadCatalog();
       void sync.syncSources([created]);
     } catch (err) {
@@ -434,6 +456,7 @@ export function BigQueryCatalogPanel({
     if (!window.confirm(`Remove "${name}" and its synced datasets and tables from the catalog?`)) return;
     try {
       await bqApi.deleteSource(s.id, true);
+      if (inProject(s.project_id)) await setInProject([s.project_id], false);
       await loadCatalog();
       setNotice(`Removed "${name}" from the catalog.`);
       notify(`Removed BigQuery source "${name}".`);
@@ -870,6 +893,7 @@ export function BigQueryCatalogPanel({
           onCancel={() => setPanel('none')}
           onAdded={async (added, allAdded) => {
             if (allAdded) setPanel('none');
+            await setInProject(added.map((a) => a.project_id), true);
             await loadCatalog();
             void sync.syncSources(added);
           }}
@@ -988,8 +1012,11 @@ export function BigQueryCatalogPanel({
 
       {/* Registered GCP projects */}
       {sources.length > 0 && (
-        <section className="bq-section" aria-label="Connected projects">
-          <h3 className="bq-section-title">Connected projects</h3>
+        <section className="bq-section" aria-label="Google Cloud projects">
+          <h3 className="bq-section-title">Google Cloud projects</h3>
+          <p className="muted-hint project-sources-hint">
+            Only the ones added to “{project.name}” are used in it, by dashboards and by Gemini.
+          </p>
           <ul className="bq-source-list">
             {sources.map((s) => (
               <li key={s.id} className={`bq-source-row${s.is_active ? '' : ' is-paused'}`}>
@@ -1022,6 +1049,18 @@ export function BigQueryCatalogPanel({
                     )}
                   </div>
                 </div>
+                <button
+                  type="button"
+                  className={inProject(s.project_id) ? 'text-btn small' : 'tonal-btn small'}
+                  onClick={() => {
+                    const add = !inProject(s.project_id);
+                    setInProject([s.project_id], add)
+                      .then(() => notify(add ? `Added ${s.display_name || s.project_id} to the project` : `Removed ${s.display_name || s.project_id} from the project`))
+                      .catch((err: unknown) => setError(err instanceof Error ? err.message : String(err)));
+                  }}
+                >
+                  {inProject(s.project_id) ? 'Remove from project' : 'Add to project'}
+                </button>
                 {canManageSources && (
                   <div className="bq-source-btns">
                     <button
@@ -1043,7 +1082,7 @@ export function BigQueryCatalogPanel({
 
       {/* Search & project filter */}
       <section className="bq-section" aria-label="Datasets and tables">
-        {(datasets.length > 0 || searching) && (
+        {(projectDatasets.length > 0 || searching) && (
           <div className="bq-browser-controls">
             <h3 className="bq-section-title">Datasets &amp; tables</h3>
             <input
@@ -1057,7 +1096,7 @@ export function BigQueryCatalogPanel({
               }}
               placeholder="Search datasets, tables, descriptions or columns…"
             />
-            {sources.length > 1 && (
+            {projectSources.length > 1 && (
               <div className="source-tabs" role="group" aria-label="Filter by project">
                 <button
                   type="button"
@@ -1067,7 +1106,7 @@ export function BigQueryCatalogPanel({
                 >
                   <span>All projects</span>
                 </button>
-                {sources.map((s) => (
+                {projectSources.map((s) => (
                   <button
                     key={s.id}
                     type="button"
@@ -1085,7 +1124,7 @@ export function BigQueryCatalogPanel({
 
         {/* Dataset & table tree */}
         <div className="bq-dataset-list">
-          {loading && datasets.length === 0 ? (
+          {loading && projectDatasets.length === 0 ? (
             <p className="muted-hint">Loading BigQuery catalog…</p>
           ) : filteredDatasets.length === 0 ? (
             <div className="bq-empty-box">
@@ -1093,16 +1132,20 @@ export function BigQueryCatalogPanel({
               <strong>
                 {sources.length === 0
                   ? 'No BigQuery projects connected yet'
-                  : datasets.length === 0
-                    ? 'Projects connected — nothing synced yet'
-                    : 'No datasets or tables match'}
+                  : projectSources.length === 0
+                    ? `No Google Cloud project is in “${project.name}” yet`
+                    : projectDatasets.length === 0
+                      ? 'Projects connected — nothing synced yet'
+                      : 'No datasets or tables match'}
               </strong>
               <p className="muted-hint">
                 {sources.length === 0
                   ? canManageSources
                     ? 'Connect a Google Cloud project, sync its datasets and schemas, then load tables into live dashboards, local SQLite or the whiteboard.'
                     : 'An owner of this studio has not connected any Google Cloud projects yet.'
-                  : datasets.length === 0
+                  : projectSources.length === 0
+                    ? 'Add one of the Google Cloud projects above to this project to browse its datasets and use them here.'
+                  : projectDatasets.length === 0
                     ? canManageSources
                       ? 'Run Sync All to pull the datasets, tables and schemas of the connected projects.'
                       : 'An owner of this studio has not synced the connected projects yet.'
@@ -1117,7 +1160,7 @@ export function BigQueryCatalogPanel({
                     <Icon name="add" size={16} /> Add Project
                   </button>
                 </div>
-              ) : datasets.length > 0 ? (
+              ) : projectDatasets.length > 0 ? (
                 <div className="bq-empty-actions">
                   <button
                     type="button"

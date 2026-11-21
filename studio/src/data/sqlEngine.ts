@@ -10,6 +10,7 @@
 import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
 import { parquetReadObjects } from 'hyparquet';
 import { buildTableProfile, type ProfileCell, type ProfileInput, type TableProfile } from './dataProfile';
+import { getProjectScope, getScopeHooks, isSourceAttached, notAttachedMessage, samplesIncluded, type PersistedTable } from './projectScope';
 import { SAMPLE_TABLES, type SampleColumnSpec } from './sampleDatasets';
 import { bindSqlParams, dialectOfSource, validateReadOnlySql, type SqlParamValue } from './sqlGuard';
 import { warehouseTimestampToIso } from './timeValues';
@@ -194,9 +195,20 @@ let initPromise: Promise<Database> | null = null;
 const customTables = new Map<string, DataTableMeta>();
 let lastLoadStamp = 0;
 /** When a table was loaded; strictly increasing, so the latest load is never a tie. */
-function nextLoadStamp(): number {
+function nextLoadStamp(restored?: number): number {
+  if (typeof restored === 'number' && Number.isFinite(restored)) {
+    lastLoadStamp = Math.max(lastLoadStamp, restored);
+    return restored;
+  }
   lastLoadStamp = Math.max(Date.now(), lastLoadStamp + 1);
   return lastLoadStamp;
+}
+
+/** Keeps a loaded table with the project (when there is one), so it comes back after a reload. */
+function persistTable(table: PersistedTable) {
+  const hooks = getScopeHooks();
+  if (hooks.saveTable == null) return;
+  hooks.saveTable(table).catch((e: unknown) => hooks.onSaveError?.(table.tableName, e));
 }
 const dataListeners = new Set<() => void>();
 let remoteSourcesCache: DataSourceInfo[] | null = null;
@@ -247,7 +259,11 @@ async function loadSqlJsRuntime(): Promise<SqlJsStatic> {
   return sqlPromise;
 }
 
+/** Whether the sample tables are in the local database now. */
+let samplesSeeded = false;
+
 function seedSampleTables(db: Database) {
+  samplesSeeded = true;
   for (const table of SAMPLE_TABLES) {
     const colsDef = table.columns.map((c) => `"${c.name}" ${c.type}`).join(', ');
     db.run(`CREATE TABLE IF NOT EXISTS "${table.name}" (${colsDef});`);
@@ -274,11 +290,30 @@ export async function getLocalDatabase(): Promise<Database> {
   initPromise = (async () => {
     const SQL = await loadSqlJsRuntime();
     const db = new SQL.Database();
-    seedSampleTables(db);
+    // A project without the sample data never has them, so no query can reach them
+    if (samplesIncluded()) seedSampleTables(db);
     dbInstance = db;
     return db;
   })();
   return initPromise;
+}
+
+/** Adds or drops the sample tables after the project's setting changed. */
+export async function syncSampleTables(): Promise<void> {
+  if (dbInstance == null && initPromise == null) return;
+  const db = await getLocalDatabase();
+  const want = samplesIncluded();
+  if (want === samplesSeeded) return;
+  if (want) {
+    seedSampleTables(db);
+  } else {
+    for (const t of SAMPLE_TABLES) {
+      db.run(`DROP TABLE IF EXISTS "${t.name}";`);
+      profileCache.delete(t.name);
+    }
+    samplesSeeded = false;
+  }
+  notifyDataChanged();
 }
 
 export function sanitizeSqlIdentifier(raw: string, fallback = 'col'): string {
@@ -379,8 +414,15 @@ export interface ImportedFileInput {
   tableName?: string;
 }
 
+export interface ImportOptions {
+  /** When the table was first loaded (a table brought back with its project keeps its place). */
+  loadedAt?: number;
+  /** Brought back from the project: it is kept there already. */
+  restoring?: boolean;
+}
+
 /** Imports a `.csv`, `.tsv`, `.json`, `.jsonl`, or `.parquet` file as a live SQL table. */
-export async function importDataFile(rawInput: ImportedFileInput | File): Promise<DataTableMeta> {
+export async function importDataFile(rawInput: ImportedFileInput | File, options: ImportOptions = {}): Promise<DataTableMeta> {
   const input: ImportedFileInput = 'arrayBuffer' in rawInput && typeof rawInput.arrayBuffer === 'function'
     ? { name: rawInput.name, bytes: new Uint8Array(await rawInput.arrayBuffer()) }
     : (rawInput as ImportedFileInput);
@@ -479,9 +521,19 @@ export async function importDataFile(rawInput: ImportedFileInput | File): Promis
     rowCount: rawRows.length,
     columns,
     uploaded: true,
-    loadedAt: nextLoadStamp(),
+    loadedAt: nextLoadStamp(options.loadedAt),
   };
   customTables.set(tableName, meta);
+  profileCache.delete(tableName);
+  if (!options.restoring) {
+    persistTable({
+      tableName,
+      kind: 'file',
+      fileName: input.name,
+      bytes: input.bytes ?? new TextEncoder().encode(input.text ?? ''),
+      loadedAt: meta.loadedAt!,
+    });
+  }
   notifyDataChanged();
   return meta;
 }
@@ -505,7 +557,7 @@ export interface ImportedRowsInput {
  * into Studio's in-browser SQLite-Wasm (`sql.js`) engine so they can be queried
  * offline, joined with uploaded CSV/Parquet files, or explored via voice.
  */
-export async function importRowsIntoLocalTable(input: ImportedRowsInput): Promise<DataTableMeta> {
+export async function importRowsIntoLocalTable(input: ImportedRowsInput, options: ImportOptions = {}): Promise<DataTableMeta> {
   const db = await getLocalDatabase();
   const tableName = userTableName(input.tableName, 'bq_table');
   if (input.columns.length === 0) {
@@ -579,20 +631,67 @@ export async function importRowsIntoLocalTable(input: ImportedRowsInput): Promis
     rowCount: normalizedRows.length,
     columns,
     uploaded: true,
-    loadedAt: nextLoadStamp(),
+    loadedAt: nextLoadStamp(options.loadedAt),
     ...(input.sourceTable && typeof input.sourceRowCount === 'number' && input.sourceRowCount > normalizedRows.length
       ? { partOf: { table: input.sourceTable, rowCount: input.sourceRowCount } }
       : {}),
   };
   customTables.set(tableName, meta);
+  profileCache.delete(tableName);
+  if (!options.restoring) {
+    persistTable({
+      tableName,
+      kind: 'rows',
+      fileName: `${tableName}.rows.json`,
+      bytes: new TextEncoder().encode(JSON.stringify({ ...input, tableName })),
+      loadedAt: meta.loadedAt!,
+      description: meta.description,
+    });
+  }
   notifyDataChanged();
   return meta;
+}
+
+/** Removes a table the user loaded (from this session and from its project). */
+export async function removeUserTable(name: string): Promise<boolean> {
+  if (!customTables.has(name)) return false;
+  const db = await getLocalDatabase();
+  db.run(`DROP TABLE IF EXISTS "${name}";`);
+  customTables.delete(name);
+  profileCache.delete(name);
+  const hooks = getScopeHooks();
+  hooks.removeTable?.(name).catch(() => undefined);
+  notifyDataChanged();
+  return true;
+}
+
+/**
+ * Loads the tables kept with a project, the oldest first, without keeping them
+ * again. A table that cannot be read is skipped and named in `failed`.
+ */
+export async function restoreProjectTables(tables: PersistedTable[]): Promise<{ restored: string[]; failed: string[] }> {
+  const restored: string[] = [];
+  const failed: string[] = [];
+  for (const t of [...tables].sort((a, b) => a.loadedAt - b.loadedAt)) {
+    try {
+      if (t.kind === 'rows') {
+        const input = JSON.parse(new TextDecoder().decode(t.bytes)) as ImportedRowsInput;
+        await importRowsIntoLocalTable({ ...input, tableName: t.tableName }, { loadedAt: t.loadedAt, restoring: true });
+      } else {
+        await importDataFile({ name: t.fileName, bytes: t.bytes, tableName: t.tableName }, { loadedAt: t.loadedAt, restoring: true });
+      }
+      restored.push(t.tableName);
+    } catch {
+      failed.push(t.tableName);
+    }
+  }
+  return { restored, failed };
 }
 
 /** Lists all local tables (built-in sample datasets + uploaded files). */
 export async function listLocalTables(): Promise<DataTableMeta[]> {
   await getLocalDatabase();
-  const sampleMetas: DataTableMeta[] = SAMPLE_TABLES.map((t) => ({
+  const sampleMetas: DataTableMeta[] = (samplesSeeded ? SAMPLE_TABLES : []).map((t) => ({
     name: t.name,
     source: 'local',
     dataset: t.dataset,
@@ -625,24 +724,54 @@ export async function listAllDataSources(forceRefresh = false): Promise<DataSour
     label: 'Studio SQLite-Wasm (Sample & Uploaded Data)',
     kind: 'local',
     status: 'connected',
-    description: `${localTables.length} tables ready locally (${SAMPLE_TABLES.length} sample + ${customTables.size} uploaded). Supports CSV, TSV, JSON, and Parquet.`,
+    description: samplesSeeded
+      ? `${localTables.length} tables ready locally (${SAMPLE_TABLES.length} sample + ${customTables.size} uploaded). Supports CSV, TSV, JSON, and Parquet.`
+      : `${customTables.size} uploaded ${customTables.size === 1 ? 'table' : 'tables'} (this project has no sample tables). Supports CSV, TSV, JSON, and Parquet.`,
     tableCount: localTables.length,
   };
 
   if (typeof window === 'undefined') return [localInfo];
-  if (remoteSourcesCache && !forceRefresh) return [localInfo, ...remoteSourcesCache];
+  // Only the sources of the project; listServerSources has all of them
+  const remote = await listServerSources(forceRefresh);
+  const defaultProject = defaultBigQueryProject(remote);
+  return [localInfo, ...remote.filter((s) => isSourceAttached(s.id, defaultProject))];
+}
 
+/** Every source the studio server offers, attached to the project or not. */
+export async function listServerSources(forceRefresh = false): Promise<DataSourceInfo[]> {
+  if (typeof window === 'undefined') return [];
+  if (remoteSourcesCache && !forceRefresh) return remoteSourcesCache;
   try {
     const res = await fetch('/api/data/sources', { headers: { Accept: 'application/json' } });
     if (res.ok) {
       const data = (await res.json()) as { sources?: DataSourceInfo[] };
       remoteSourcesCache = Array.isArray(data.sources) ? data.sources : [];
-      return [localInfo, ...remoteSourcesCache];
+      return remoteSourcesCache;
     }
   } catch {
     // Offline or standalone test
   }
-  return [localInfo];
+  return [];
+}
+
+/** The GCP project behind the plain "bigquery" source, when the server has one. */
+function defaultBigQueryProject(remote: DataSourceInfo[]): string | null {
+  return remote.find((s) => s.id === 'bigquery')?.projectId ?? null;
+}
+
+/** The project-facing id of a remote source ("bigquery" → "bigquery:<its project>"). */
+export async function projectSourceId(source: string): Promise<string> {
+  const s = source.trim();
+  if (s !== 'bigquery') return s;
+  const project = defaultBigQueryProject(await listServerSources());
+  return project ? `bigquery:${project}` : s;
+}
+
+/** Why the project may not use this source, or null when it may. */
+async function sourceBlocked(source: string): Promise<string | null> {
+  if (getProjectScope() == null || source === 'local') return null;
+  const remote = typeof window === 'undefined' ? [] : await listServerSources();
+  return isSourceAttached(source, defaultBigQueryProject(remote)) ? null : notAttachedMessage(source);
 }
 
 /** Inspects schema + sample rows for a data source (used by Gemini Live `inspect_schema` and UI). */
@@ -651,6 +780,8 @@ export async function inspectDataSchema(opts: { source?: string; table?: string;
   tables: TableSchemaInfo[];
 }> {
   const source = opts.source && opts.source.trim() !== '' ? opts.source.trim() : 'local';
+  const blocked = await sourceBlocked(source);
+  if (blocked) throw new Error(blocked);
   if (source !== 'local' && typeof window !== 'undefined') {
     const url = `/api/data/schema?source=${encodeURIComponent(source)}${opts.table ? `&table=${encodeURIComponent(opts.table)}` : ''}`;
     const res = await fetch(url, { headers: { Accept: 'application/json', ...sessionGcpTokenHeader() } });
@@ -751,6 +882,23 @@ export async function executeSqlQuery(
       durationMs: Math.round((performance.now() - started) * 10) / 10,
       executedAt,
       error: check.error,
+    };
+  }
+
+  const blocked = await sourceBlocked(source);
+  if (blocked) {
+    return {
+      ok: false,
+      source,
+      sql: check.displaySql,
+      boundSql: check.sql,
+      columns: [],
+      rows: [],
+      rowCount: 0,
+      truncated: false,
+      durationMs: 0,
+      executedAt,
+      error: blocked,
     };
   }
 

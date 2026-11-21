@@ -15,12 +15,16 @@ export interface Check {
 export interface Step {
   say: string;
   checks: Check[];
+  /** Checks on what the model said (the transcript of its reply). */
+  replyChecks?: { name: string; test: (reply: string) => boolean }[];
   mayChange?: RegExp[];
 }
 
 export interface Scenario {
   name: string;
   steps: Step[];
+  /** Runs inside a studio project (without it: no project, every source and the sample tables). */
+  project?: { name: string; brief: string; includeSamples: boolean; remote?: string[] };
 }
 
 const find = (s: Scene, re: RegExp): DNode[] => s.nodes.filter((n) => re.test(n.label) || re.test(n.tech ?? ''));
@@ -330,6 +334,17 @@ export const SCENARIOS: Scenario[] = [
       {
         say: 'Turn this dashboard into an animated motion explainer reel in 9:16 vertical format.',
         checks: [hasMotionScenes(3), { name: '9:16 vertical aspect ratio', test: (s) => s.motion?.aspectRatio === '9:16' }],
+      },
+    ],
+  },
+  {
+    name: 'A project without data asks for data',
+    project: { name: 'Q4 churn analysis', brief: 'Why retail customers churn in Q4', includeSamples: false },
+    steps: [
+      {
+        say: 'Build a revenue dashboard with MRR by month and by region.',
+        checks: [{ name: 'no dashboard on tables the project does not have', test: (s) => s.dashboard == null }],
+        replyChecks: [{ name: 'asks for data (upload or BigQuery)', test: (r) => /upload|connect|bigquery|file|data source/i.test(r) }],
       },
     ],
   },

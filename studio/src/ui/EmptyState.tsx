@@ -193,6 +193,8 @@ const STARTER_MOTION_REEL: CreateMotionRequest = {
 };
 
 interface QuickStarter {
+  /** Runs on the built-in sample tables. */
+  needsSamples?: boolean;
   id: string;
   title: string;
   category: string;
@@ -202,11 +204,12 @@ interface QuickStarter {
 }
 
 export function EmptyState() {
-  const { workspace, store, agent, liveKey, auth, toggleVoice, openDataSources } = useStudio();
+  const { workspace, store, agent, liveKey, auth, toggleVoice, openDataSources, requireSampleData } = useStudio();
   const canAskGemini = liveKey === 'configured' && (!auth.required || (auth.configured && auth.account != null));
 
   const starters: QuickStarter[] = [
     {
+      needsSamples: true,
       id: 'dash-saas',
       title: 'SaaS Executive Revenue',
       category: 'Live SQL Dashboard',
@@ -221,6 +224,7 @@ export function EmptyState() {
       },
     },
     {
+      needsSamples: true,
       id: 'dash-ecom',
       title: 'E-Commerce Funnel & GMV',
       category: 'Live SQL Dashboard',
@@ -235,6 +239,7 @@ export function EmptyState() {
       },
     },
     {
+      needsSamples: true,
       id: 'dash-finops',
       title: 'Cloud & AI FinOps Spend',
       category: 'Live SQL Dashboard',
@@ -265,11 +270,15 @@ export function EmptyState() {
   ];
 
   const launchStarter = (s: QuickStarter) => {
-    if (canAskGemini) {
-      agent.sendText(s.prompt).catch(() => undefined);
-    } else {
-      s.runLocal();
-    }
+    const run = () => {
+      if (canAskGemini) {
+        agent.sendText(s.prompt).catch(() => undefined);
+      } else {
+        s.runLocal();
+      }
+    };
+    if (s.needsSamples) requireSampleData(`“${s.title}”`, run);
+    else run();
   };
 
   const launchBlueprint = (b: Blueprint) => {
@@ -297,7 +306,7 @@ export function EmptyState() {
           <button type="button" className="filled-btn" onClick={toggleVoice}>
             <Icon name="mic" size={20} /> Start talking
           </button>
-          <button type="button" className="tonal-btn" onClick={() => starters[0].runLocal()}>
+          <button type="button" className="tonal-btn" onClick={() => requireSampleData(`“${starters[0].title}”`, starters[0].runLocal)}>
             <Icon name="dashboard" size={18} /> Open Live Dashboard
           </button>
           <button type="button" className="tonal-btn" onClick={() => openDataSources('bigquery')}>

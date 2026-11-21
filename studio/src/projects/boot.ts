@@ -4,7 +4,7 @@
  * one the tab shows the project list.
  */
 import { isProjectId, type ProjectMeta, type ProjectStore } from './projectStore';
-import { readLegacyWorkspace } from './workspaceData';
+import { readLegacyWorkspace, remoteSourcesOf } from './workspaceData';
 
 export const PROJECT_PARAM = 'project';
 /** Set once the first project was made (from an earlier version's work, or empty). */
@@ -50,8 +50,8 @@ export async function ensureFirstProject(
   const legacy = storage ? readLegacyWorkspace(storage) : null;
   const project = await store.createProject({
     name: FIRST_PROJECT_NAME,
-    // Earlier versions always had the sample tables, so the work keeps them
-    sources: { includeSamples: true },
+    // Earlier versions had the sample tables and every source, so the work keeps what it uses
+    sources: { includeSamples: true, remote: remoteSourcesOf(legacy) },
     workspace: legacy,
   });
   try {

@@ -15,6 +15,8 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { readApiKey } from '../server/apiKey';
 import { handleToolCall } from '../src/agent/dispatcher';
+import { setProjectScope } from '../src/data/projectScope';
+import { syncSampleTables } from '../src/data/sqlEngine';
 import { SYSTEM_INSTRUCTION } from '../src/agent/prompt';
 import { TOOL_DECLARATIONS } from '../src/agent/tools';
 import { DiagramStore } from '../src/engine/store';
@@ -71,6 +73,14 @@ function stability(before: Scene, after: Scene, step: Step, moved: Set<string>) 
 }
 
 async function runScenario(sc: Scenario): Promise<StepResult[]> {
+  // The data the scenario's project has (the sample tables come and go with it)
+  setProjectScope(sc.project == null ? null : {
+    projectId: 'eval',
+    name: sc.project.name,
+    brief: sc.project.brief,
+    sources: { includeSamples: sc.project.includeSamples, remote: sc.project.remote ?? [], defaultSource: 'local' },
+  }, {});
+  await syncSampleTables();
   const store = new DiagramStore();
   const results: StepResult[] = [];
   let pending = 0;
@@ -147,14 +157,21 @@ async function runScenario(sc: Scenario): Promise<StepResult[]> {
     });
     await queue;
     const after = store.scene;
-    const passed = step.checks.filter((c) => c.test(after)).map((c) => c.name);
-    const failed = step.checks.filter((c) => !c.test(after)).map((c) => c.name);
+    const said = reply.trim();
+    const passed = [
+      ...step.checks.filter((c) => c.test(after)).map((c) => c.name),
+      ...(step.replyChecks ?? []).filter((c) => c.test(said)).map((c) => c.name),
+    ];
+    const failed = [
+      ...step.checks.filter((c) => !c.test(after)).map((c) => c.name),
+      ...(step.replyChecks ?? []).filter((c) => !c.test(said)).map((c) => c.name),
+    ];
     const st = stability(before, after, step, moved);
     const canvasSeconds = firstChangeAt != null ? (firstChangeAt - started) / 1000 : null;
     results.push({ say: step.say, passed, failed, ...st, calls, reply: reply.trim(), seconds: (Date.now() - started - QUIET_MS) / 1000, canvasSeconds });
     const mark = failed.length === 0 && st.unstable.length === 0 ? '✓' : '✗';
     console.log(`  ${mark} ${step.say}`);
-    console.log(`      checks ${passed.length}/${step.checks.length}` + (failed.length ? ` — failed: ${failed.join('; ')}` : '') +
+    console.log(`      checks ${passed.length}/${step.checks.length + (step.replyChecks?.length ?? 0)}` + (failed.length ? ` — failed: ${failed.join('; ')}` : '') +
       ` · stability ${st.stable}/${st.checked}` + (st.unstable.length ? ` — ${st.unstable.join(', ')}` : '') +
       ` · ${calls.map((c) => c.slice(0, c.indexOf('('))).join(', ') || 'no tool call'}` +
       ` · canvas ${canvasSeconds != null ? `${canvasSeconds.toFixed(1)} s` : '–'}`);

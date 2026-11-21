@@ -39,6 +39,20 @@ export function parseSavedWorkspace(raw: unknown): SavedWorkspace | null {
   return { version: 2, active: typeof data.active === 'string' ? data.active : '', pages, library };
 }
 
+/** The remote sources the dashboards of a workspace query ("bigquery", "postgres", …; never "local"). */
+export function remoteSourcesOf(workspace: SavedWorkspace | null | undefined): string[] {
+  const out = new Set<string>();
+  for (const p of workspace?.pages ?? []) {
+    const d = p.scene.dashboard;
+    if (d == null) continue;
+    for (const id of [d.defaultSource, ...d.widgets.map((w) => w.source)]) {
+      const s = typeof id === 'string' ? id.trim() : '';
+      if (s !== '' && s !== 'local') out.add(s);
+    }
+  }
+  return [...out];
+}
+
 /** A workspace made of opened scenes, one page each. */
 export function workspaceFromScenes(scenes: Scene[]): SavedWorkspace {
   return {

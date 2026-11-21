@@ -19,7 +19,7 @@ export function ChartGalleryModal({
   onClose: () => void;
   onWidgetAdded?: (widgetId: string) => void;
 }) {
-  const { store, notify } = useStudio();
+  const { store, notify, requireSampleData } = useStudio();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [selectedCategory, setSelectedCategory] = useState<'all' | ChartCategoryId>('all');
   const [search, setSearch] = useState('');
@@ -71,7 +71,9 @@ export function ChartGalleryModal({
     });
   }, [selectedCategory, search]);
 
-  const handleAddChart = (meta: ChartCatalogEntry) => {
+  // Every example chart runs on the sample tables
+  const handleAddChart = (meta: ChartCatalogEntry) => requireSampleData(`The ${meta.label} example`, () => addChart(meta));
+  const addChart = (meta: ChartCatalogEntry) => {
     const sample = meta.sampleWidget;
     const newId = `${meta.kind}_${Date.now().toString(36).slice(-4)}`;
     const widgetPayload = {
@@ -110,7 +112,8 @@ export function ChartGalleryModal({
     }
   };
 
-  const handleLoadShowcase = () => {
+  const handleLoadShowcase = () => requireSampleData('The showcase dashboard', loadShowcase);
+  const loadShowcase = () => {
     store.createDashboard(HOLISTICS_SHOWCASE_DASHBOARD, {
       source: 'manual',
       label: 'Loaded Holistics 8-Family Showcase Dashboard',
