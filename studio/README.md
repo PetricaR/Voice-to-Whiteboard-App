@@ -33,4 +33,4 @@ Application workspace for **Voice Whiteboard Studio**, combining four synchroniz
   - `motion/`: `MotionView.tsx` (60fps stage, click hit-box layer selection, timeline scrubber, inline property editor, captions & Web Speech narration), `ExportMp4Dialog.tsx`.
   - `canvas/`, `DocView.tsx`, `VoiceDock.tsx` (with `/` slash commands), `PageTabs.tsx`, `TopBar.tsx`, `SidePanel.tsx`.
 - `server/`
-  - `index.ts`, `liveToken.ts`, `apiKey.ts`, `auth.ts`, `dataConnectors.ts`, `sqlGuard.ts`: Zero-key-leakage ephemeral token server and read-only SQL connector proxy.
+  - `index.ts`, `liveToken.ts`, `apiKey.ts`, `auth.ts`, `dataConnectors.ts`, `googleDocsMcp.ts`, `sqlGuard.ts`: Zero-key-leakage ephemeral token server, read-only SQL connector proxy, and official Google Developer Knowledge MCP client (`/api/docs/*` → `https://developerknowledge.googleapis.com/mcp`).

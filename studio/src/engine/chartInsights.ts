@@ -112,6 +112,7 @@ const MIN_COLUMNS: Partial<Record<WidgetKind, number>> = {
   histogram: 1,
   density: 1,
   gauge: 1,
+  combo: 3,
   streamgraph: 3,
   trellis: 3,
   marimekko: 3,
@@ -133,6 +134,7 @@ const MIN_NUMERIC: Partial<Record<WidgetKind, number>> = {
   connection_map: 0,
   parallel_sets: 0,
   dot_map: 0,
+  combo: 2,
   scatter: 2,
   bubble: 3,
   gantt: 2,
@@ -143,19 +145,19 @@ const MIN_NUMERIC: Partial<Record<WidgetKind, number>> = {
 const SINGLE_ROW_OK = new Set<WidgetKind>(['kpi', 'gauge', 'bullet', 'table']);
 const RAW_ROW_KINDS = new Set<WidgetKind>(['histogram', 'density', 'box_plot', 'violin']);
 /** Kinds drawn as one mark per x value: a repeated x means un-aggregated or un-split rows. */
-const SPLITTABLE = new Set<WidgetKind>(['bar', 'column', 'horizontal_bar', 'grouped_bar', 'stacked_bar', 'line', 'area']);
+const SPLITTABLE = new Set<WidgetKind>(['bar', 'column', 'horizontal_bar', 'grouped_bar', 'stacked_bar', 'line', 'area', 'combo']);
 const ONE_ROW_PER_X = new Set<WidgetKind>(['pie', 'donut', 'funnel', 'waterfall', 'nightingale_rose', 'square_area', 'proportional_area']);
 const NEEDS_SERIES = new Set<WidgetKind>(['grouped_bar', 'stacked_bar']);
 const BAR_FAMILY = new Set<WidgetKind>(['bar', 'column', 'horizontal_bar']);
 /** Kinds whose first column is a category or period and whose first metric can be ranked or trended. */
 const RANKED_OR_TRENDED = new Set<WidgetKind>([
   'bar', 'column', 'grouped_bar', 'stacked_bar', 'horizontal_bar', 'pie', 'donut', 'nightingale_rose', 'marimekko',
-  'line', 'area', 'streamgraph', 'spiral_plot', 'trellis', 'heatmap', 'treemap', 'sunburst', 'sankey', 'chord',
+  'line', 'area', 'combo', 'streamgraph', 'spiral_plot', 'trellis', 'heatmap', 'treemap', 'sunburst', 'sankey', 'chord',
   'choropleth_map', 'dot_map', 'geo_heatmap', 'bubble_map', 'proportional_area', 'square_area', 'gauge', 'bullet',
   'funnel', 'waterfall',
 ]);
 const TREND_KINDS = new Set<WidgetKind>(['line', 'area']);
-const TIME_ORDERED_KINDS = new Set<WidgetKind>(['line', 'area', 'streamgraph', 'candlestick']);
+const TIME_ORDERED_KINDS = new Set<WidgetKind>(['line', 'area', 'combo', 'streamgraph', 'candlestick']);
 
 const snake = (k: string) => k.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
 
@@ -319,7 +321,7 @@ function factsOf(
 
   const temporal = x?.temporal === true;
   if (temporal && xTotalsValid && order.length >= 3) {
-    const sorted = order.every((k) => SORTABLE_TIME.test(k)) ? [...order].sort() : order;
+    const sorted = order.every((k) => SORTABLE_TIME.test(k)) ? order.toSorted() : order;
     const first = sorted[0];
     const last = sorted[sorted.length - 1];
     const prev = sorted[sorted.length - 2];
@@ -356,7 +358,7 @@ function factsOf(
     }
   } else if (split) {
     // A rate per series: compare the series at their latest (or only) x value
-    const lastX = temporal && order.every((k) => SORTABLE_TIME.test(k)) ? [...order].sort().pop()! : order[order.length - 1];
+    const lastX = temporal && order.every((k) => SORTABLE_TIME.test(k)) ? order.toSorted().at(-1)! : order[order.length - 1];
     const latest = rows
       .filter((r) => label(r[xIdx]) === lastX)
       .map((r) => [label(r[seriesIdx]), num(r[yIdx])] as const)
@@ -468,7 +470,7 @@ export function reviewWidget(widget: DashboardWidget, result: QueryExecutionResu
   if (TIME_ORDERED_KINDS.has(widget.kind) && x) {
     const labels = [...new Set(rows.map((r) => label(r[xIdx])))];
     if (labels.length >= 3 && labels.every((l) => SORTABLE_TIME.test(l))) {
-      const sorted = [...labels].sort();
+      const sorted = labels.toSorted();
       if (labels.some((l, i) => l !== sorted[i])) {
         issues.push(`The ${widget.kind} is not in time order: add ORDER BY ${x.name} ASC so the trend reads left to right.`);
       }
@@ -478,9 +480,11 @@ export function reviewWidget(widget: DashboardWidget, result: QueryExecutionResu
   }
 
   if (BAR_FAMILY.has(widget.kind) && x && seriesIdx < 0 && widget.chartConfig?.limitItems === undefined) {
+    // Numbers in ascending order (hours of the day, histogram bins) are a scale, not categories to rank
+    const scale = x.numeric && rows.every((r, i) => i === 0 || (num(r[xIdx]) ?? 0) >= (num(rows[i - 1][xIdx]) ?? 0));
     if (x.temporal && x.distinct > 24) {
       advice.push(`${x.distinct} periods as bars are hard to read: a line shows the trend. ${patchForModel(widget.id, { kind: 'line' })}`);
-    } else if (!x.temporal && x.distinct > (widget.kind === 'horizontal_bar' ? 15 : 12)) {
+    } else if (!x.temporal && !scale && x.distinct > (widget.kind === 'horizontal_bar' ? 15 : 12)) {
       advice.push(`${x.distinct} categories crowd the chart: show the top 10. ${patchForModel(widget.id, { kind: 'horizontal_bar', chartConfig: { sortBy: 'value_desc', limitItems: 10 } })}`);
     }
   }

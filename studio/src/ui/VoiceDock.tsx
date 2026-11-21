@@ -56,9 +56,9 @@ const SLASH_COMMANDS: { cmd: string; label: string; icon: IconName; template: st
   },
   {
     cmd: '/doc',
-    label: 'Write Documentation',
+    label: 'Full Architecture Docs',
     icon: 'menu_book',
-    template: 'Write an executive summary chapter and KPI glossary table in the documentation tab',
+    template: 'Write full documentation for this architecture grounded strictly in the latest official Google documentation via Google Developer Knowledge MCP: insert the entire architecture diagram, then document each section as low-level design architecture followed by concrete implementation guidelines with code, verification steps, and official Google documentation links',
   },
 ];
 

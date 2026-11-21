@@ -9,14 +9,19 @@
  */
 import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
 import { parquetReadObjects } from 'hyparquet';
+import { buildTableProfile, type ProfileCell, type ProfileInput, type TableProfile } from './dataProfile';
 import { SAMPLE_TABLES, type SampleColumnSpec } from './sampleDatasets';
 import { bindSqlParams, dialectOfSource, validateReadOnlySql, type SqlParamValue } from './sqlGuard';
+import { warehouseTimestampToIso } from './timeValues';
+import { readColumns, sniffDelimiter } from './valueParsing';
 
 export interface DataColumnMeta {
   name: string;
   type: string;
   mode?: string;
   description?: string;
+  /** "percent" or a currency code, when the file wrote it next to the numbers ("12%", "$1,234.50"). */
+  unit?: string;
 }
 
 export interface DataTableMeta {
@@ -34,7 +39,12 @@ export interface DataTableMeta {
   location?: string | null;
   tableType?: string;
   columns: DataColumnMeta[];
+  /** The user loaded this table (a file, or rows of a warehouse table); the rest are built-in samples. */
   uploaded?: boolean;
+  /** When the user loaded it (ms since the epoch): the latest is "the data I just loaded". */
+  loadedAt?: number;
+  /** The warehouse table these rows are a part of, when not all of it was loaded. */
+  partOf?: { table: string; rowCount: number };
 }
 
 /** What a column holds: its few distinct values, or its smallest and largest value. */
@@ -49,13 +59,18 @@ export type TableSchemaInfo = DataTableMeta & {
   sampleRows?: (string | number | boolean | null)[][];
   /** By column name; only for local tables inspected with `profile: true`. */
   columnProfiles?: Record<string, ColumnProfile>;
+  /** What the table means (roles, grain, time, what explains what); only for local tables inspected with `profile: true`. */
+  profile?: TableProfile;
 };
 
 /** Columns with at most this many distinct values are listed value by value. */
 const PROFILE_MAX_VALUES = 12;
 /** Tables beyond these sizes are not profiled: the scan would be felt in the UI. */
 const PROFILE_MAX_ROWS = 250_000;
-const PROFILE_MAX_TABLES = 12;
+const PROFILE_MAX_TABLES = 40;
+/** Rows read to work out what a table means; larger tables are read as an even sample. */
+const PROFILE_SAMPLE_ROWS = 20_000;
+const PROFILE_MOMENTS = 400;
 
 /**
  * Distinct values of low-cardinality columns and the range of the others, so
@@ -92,6 +107,62 @@ function profileLocalTable(db: Database, table: DataTableMeta): Record<string, C
   return out;
 }
 
+/** The profiles of local tables, kept until the table is loaded again (the samples never change). */
+const profileCache = new Map<string, { stamp: number; columnProfiles: Record<string, ColumnProfile>; profile: TableProfile }>();
+
+/**
+ * What a local table means: reads its rows (all of them, or an even sample of
+ * a large table) and works out the role of every column, what one row stands
+ * for and what explains the numbers.
+ */
+function readTableProfile(db: Database, table: DataTableMeta, exact: Record<string, ColumnProfile>): TableProfile {
+  const quote = (id: string) => `"${id.replace(/"/g, '""')}"`;
+  const every = Math.ceil(table.rowCount / PROFILE_SAMPLE_ROWS);
+  let rows: ProfileCell[][] = [];
+  try {
+    const sql = every <= 1
+      ? `SELECT * FROM ${quote(table.name)};`
+      : `SELECT * FROM ${quote(table.name)} WHERE rowid % ${every} = 0 LIMIT ${PROFILE_SAMPLE_ROWS};`;
+    rows = (db.exec(sql)[0]?.values ?? []) as ProfileCell[][];
+  } catch {
+    // Described by its schema alone
+  }
+  const exactInput: NonNullable<ProfileInput['exact']> = { ...exact };
+  if (every > 1) {
+    // A sample skips moments: the pace of a time column is read from its first values in a row
+    for (const col of table.columns) {
+      const lowest = exact[col.name]?.min ?? exact[col.name]?.values?.[0];
+      if (typeof lowest !== 'string' || !/^\d{4}-\d{2}/.test(lowest)) continue;
+      try {
+        const c = quote(col.name);
+        const found = db.exec(`SELECT DISTINCT ${c} FROM ${quote(table.name)} WHERE ${c} IS NOT NULL ORDER BY 1 LIMIT ${PROFILE_MOMENTS};`)[0]?.values ?? [];
+        exactInput[col.name] = { ...exactInput[col.name], moments: found.map((r) => String(r[0])) };
+      } catch {
+        // The pace is then read from the sample
+      }
+    }
+  }
+  return buildTableProfile({
+    name: table.name,
+    dialect: 'sqlite',
+    columns: table.columns,
+    rows,
+    rowCount: table.rowCount,
+    exact: exactInput,
+    partOf: table.partOf,
+  });
+}
+
+function profileOf(db: Database, table: DataTableMeta) {
+  const stamp = table.loadedAt ?? 0;
+  const cached = profileCache.get(table.name);
+  if (cached && cached.stamp === stamp) return cached;
+  const columnProfiles = profileLocalTable(db, table);
+  const entry = { stamp, columnProfiles, profile: readTableProfile(db, table, columnProfiles) };
+  profileCache.set(table.name, entry);
+  return entry;
+}
+
 export interface DataSourceInfo {
   id: string;
   label: string;
@@ -121,6 +192,12 @@ let dbInstance: Database | null = null;
 let initPromise: Promise<Database> | null = null;
 
 const customTables = new Map<string, DataTableMeta>();
+let lastLoadStamp = 0;
+/** When a table was loaded; strictly increasing, so the latest load is never a tie. */
+function nextLoadStamp(): number {
+  lastLoadStamp = Math.max(Date.now(), lastLoadStamp + 1);
+  return lastLoadStamp;
+}
 const dataListeners = new Set<() => void>();
 let remoteSourcesCache: DataSourceInfo[] | null = null;
 const REMOTE_QUERY_DEDUPE_TTL_MS = 1_500;
@@ -265,22 +342,6 @@ export function parseDelimitedText(text: string, delimiter = ','): string[][] {
   return rows;
 }
 
-function inferCellValue(raw: unknown): string | number | null {
-  if (raw === null || raw === undefined) return null;
-  if (typeof raw === 'number') return Number.isFinite(raw) ? raw : null;
-  if (typeof raw === 'boolean') return raw ? 1 : 0;
-  if (typeof raw === 'bigint') return Number(raw);
-  if (raw instanceof Date) return raw.toISOString();
-  const s = String(raw).trim();
-  if (s === '' || /^null$/i.test(s) || /^na$/i.test(s) || /^n\/a$/i.test(s)) return null;
-  // Clean currency/comma numbers ONLY if strictly numeric format like 1234.56 or -42
-  if (/^-?\d+(\.\d+)?$/.test(s)) {
-    const num = Number(s);
-    if (Number.isFinite(num)) return num;
-  }
-  return typeof raw === 'object' ? JSON.stringify(raw) : String(raw);
-}
-
 function inferColumnType(values: (string | number | null)[]): SampleColumnSpec['type'] {
   let sawNumber = false;
   let allInteger = true;
@@ -314,7 +375,9 @@ export async function importDataFile(rawInput: ImportedFileInput | File): Promis
   const tableName = sanitizeSqlIdentifier(input.tableName ?? input.name, 'uploaded_data');
 
   let headers: string[] = [];
-  let rawRows: (string | number | null)[][] = [];
+  let sourceRows: unknown[][] = [];
+  // A ";" separated export comes from a locale that writes 1.234,56
+  let decimalComma = false;
 
   if (ext === 'parquet') {
     if (!input.bytes) throw new Error('Parquet import requires binary bytes.');
@@ -323,7 +386,7 @@ export async function importDataFile(rawInput: ImportedFileInput | File): Promis
     if (objects.length === 0) throw new Error(`Parquet file "${input.name}" contains 0 rows.`);
     const keys = Object.keys(objects[0]);
     headers = keys;
-    rawRows = objects.map((obj) => keys.map((k) => inferCellValue(obj[k])));
+    sourceRows = objects.map((obj) => keys.map((k) => obj[k]));
   } else if (ext === 'json' || ext === 'jsonl') {
     const txt = (input.text ?? new TextDecoder().decode(input.bytes ?? new Uint8Array())).trim();
     const parsed: Record<string, unknown>[] = ext === 'jsonl'
@@ -340,15 +403,20 @@ export async function importDataFile(rawInput: ImportedFileInput | File): Promis
     if (parsed.length === 0) throw new Error(`JSON file "${input.name}" contains 0 rows.`);
     const keys = Array.from(new Set(parsed.slice(0, 50).flatMap((r) => Object.keys(r ?? {}))));
     headers = keys;
-    rawRows = parsed.map((obj) => keys.map((k) => inferCellValue(obj?.[k])));
+    sourceRows = parsed.map((obj) => keys.map((k) => obj?.[k]));
   } else {
     const txt = input.text ?? new TextDecoder().decode(input.bytes ?? new Uint8Array());
-    const delimiter = ext === 'tsv' ? '\t' : ',';
+    const delimiter = ext === 'tsv' ? '\t' : sniffDelimiter(txt);
+    decimalComma = delimiter === ';';
     const grid = parseDelimitedText(txt, delimiter);
     if (grid.length < 2) throw new Error(`File "${input.name}" must contain a header row and at least one data row.`);
-    headers = grid[0];
-    rawRows = grid.slice(1).map((r) => headers.map((_, idx) => inferCellValue(r[idx] ?? null)));
+    headers = grid[0].map((h) => h.trim());
+    sourceRows = grid.slice(1);
   }
+
+  // Numbers, dates and flags are read column by column, in whatever notation the file uses
+  const read = readColumns(sourceRows, headers, { decimalComma });
+  const rawRows = read.rows;
 
   const usedCols = new Set<string>();
   const colNames = headers.map((h, idx) => {
@@ -360,11 +428,16 @@ export async function importDataFile(rawInput: ImportedFileInput | File): Promis
     return candidate;
   });
 
-  const columns: DataColumnMeta[] = colNames.map((name, idx) => ({
-    name,
-    type: inferColumnType(rawRows.slice(0, 200).map((r) => r[idx])),
-    description: headers[idx] !== name ? `Imported from "${headers[idx]}"` : undefined,
-  }));
+  const columns: DataColumnMeta[] = colNames.map((name, idx) => {
+    const reading = read.readings[idx];
+    const notes = [headers[idx] !== name ? `Imported from "${headers[idx]}"` : '', reading.note ?? ''].filter(Boolean);
+    return {
+      name,
+      type: inferColumnType(rawRows.map((r) => r[idx])),
+      ...(notes.length > 0 ? { description: notes.join(' · ') } : {}),
+      ...(reading.unit ? { unit: reading.unit } : {}),
+    };
+  });
 
   db.run(`DROP TABLE IF EXISTS "${tableName}";`);
   const colsSql = columns.map((c) => `"${c.name}" ${c.type}`).join(', ');
@@ -392,6 +465,7 @@ export async function importDataFile(rawInput: ImportedFileInput | File): Promis
     rowCount: rawRows.length,
     columns,
     uploaded: true,
+    loadedAt: nextLoadStamp(),
   };
   customTables.set(tableName, meta);
   notifyDataChanged();
@@ -407,6 +481,9 @@ export interface ImportedRowsInput {
   description?: string;
   columnTypes?: Record<string, string>;
   columnDescriptions?: Record<string, string>;
+  /** The warehouse table the rows come from, and how many rows it holds in all. */
+  sourceTable?: string;
+  sourceRowCount?: number | null;
 }
 
 /**
@@ -431,11 +508,14 @@ export async function importRowsIntoLocalTable(input: ImportedRowsInput): Promis
     return candidate;
   });
 
+  const isTimestamp = input.columns.map((c) => (input.columnTypes?.[c] ?? '').toUpperCase() === 'TIMESTAMP');
   const normalizedRows: (string | number | null)[][] = input.rows.map((row) =>
     input.columns.map((_, idx) => {
       const v = row[idx];
       if (v === null || v === undefined) return null;
       if (typeof v === 'boolean') return v ? 1 : 0;
+      // A TIMESTAMP is stored as ISO text, whichever way the warehouse wrote it
+      if (isTimestamp[idx]) return warehouseTimestampToIso(v);
       if (typeof v === 'number') return Number.isFinite(v) ? v : null;
       return String(v);
     }),
@@ -485,6 +565,10 @@ export async function importRowsIntoLocalTable(input: ImportedRowsInput): Promis
     rowCount: normalizedRows.length,
     columns,
     uploaded: true,
+    loadedAt: nextLoadStamp(),
+    ...(input.sourceTable && typeof input.sourceRowCount === 'number' && input.sourceRowCount > normalizedRows.length
+      ? { partOf: { table: input.sourceTable, rowCount: input.sourceRowCount } }
+      : {}),
   };
   customTables.set(tableName, meta);
   notifyDataChanged();
@@ -503,7 +587,20 @@ export async function listLocalTables(): Promise<DataTableMeta[]> {
     rowCount: t.rows.length,
     columns: t.columns.map((c) => ({ name: c.name, type: c.type, description: c.description })),
   }));
-  return [... Array.from(customTables.values()), ...sampleMetas];
+  return [...listUserTables(), ...sampleMetas];
+}
+
+/** The tables the user loaded (files, rows of warehouse tables), the latest first. */
+export function listUserTables(): DataTableMeta[] {
+  return Array.from(customTables.values()).sort((a, b) => (b.loadedAt ?? 0) - (a.loadedAt ?? 0));
+}
+
+/** What a local table means; undefined for an unknown table. */
+export async function getTableProfile(name: string): Promise<TableProfile | undefined> {
+  const db = await getLocalDatabase();
+  const table = (await listLocalTables()).find((t) => t.name === name);
+  if (!table || table.rowCount > PROFILE_MAX_ROWS) return undefined;
+  return profileOf(db, table).profile;
 }
 
 /** Fetches server-side enterprise connectors if running against the studio server. */
@@ -550,10 +647,14 @@ export async function inspectDataSchema(opts: { source?: string; table?: string;
 
   const db = await getLocalDatabase();
   const all = await listLocalTables();
-  const filtered = opts.table
-    ? all.filter((t) => t.name === opts.table || t.dataset === opts.table)
+  // The name as it was said or written: quotes, a "local." prefix and case do not matter
+  const wanted = opts.table?.replace(/["'`]/g, '').replace(/^local\./i, '').trim().toLowerCase();
+  const filtered = wanted
+    ? all.filter((t) => t.name.toLowerCase() === wanted || t.dataset.toLowerCase() === wanted)
     : all;
 
+  // The user's tables come first; a profile is computed once and kept until the table is loaded again
+  let profiledCount = 0;
   const tables = filtered.map((t) => {
     let sampleRows: (string | number | boolean | null)[][] = [];
     try {
@@ -562,8 +663,11 @@ export async function inspectDataSchema(opts: { source?: string; table?: string;
     } catch {
       // ignore
     }
-    const profiled = opts.profile === true && filtered.length <= PROFILE_MAX_TABLES && t.rowCount <= PROFILE_MAX_ROWS;
-    return { ...t, sampleRows, ...(profiled ? { columnProfiles: profileLocalTable(db, t) } : {}) };
+    const profiled = opts.profile === true && t.rowCount <= PROFILE_MAX_ROWS && profiledCount < PROFILE_MAX_TABLES;
+    if (!profiled) return { ...t, sampleRows };
+    profiledCount++;
+    const { columnProfiles, profile } = profileOf(db, t);
+    return { ...t, sampleRows, columnProfiles, profile };
   });
 
   return { source: 'local', tables };

@@ -1,13 +1,15 @@
 import { useEffect, useRef, useState } from 'react';
 import {
+  getTableProfile,
   importDataFile,
   inspectDataSchema,
   listAllDataSources,
   type DataSourceInfo,
   type TableSchemaInfo,
 } from '../../data/sqlEngine';
+import { starterDashboard } from '../../engine/chartIdeas';
 import { Icon, IconButton, useStudio } from '../context';
-import { closeTopLayerElement } from '../domTransitions';
+import { closeTopLayerElement, handleTabListKeyDown, useDialogLightDismiss } from '../domTransitions';
 import { BigQueryCatalogPanel } from './BigQueryCatalogPanel';
 
 export type DataModalTab = 'bigquery' | 'files';
@@ -87,7 +89,7 @@ export function DataSourceModal({
     }
   }, [open]);
 
-  // Route native cancel (Escape) and backdrop click fallback through the smooth exit handler
+  // Route native cancel (Escape) through the smooth exit handler
   useEffect(() => {
     const d = dialogRef.current;
     if (!d) return;
@@ -95,18 +97,13 @@ export function DataSourceModal({
       e.preventDefault();
       onClose();
     };
-    const onClick = (e: MouseEvent) => {
-      if (!('closedBy' in HTMLDialogElement.prototype) && e.target === d) {
-        onClose();
-      }
-    };
     d.addEventListener('cancel', onCancel);
-    d.addEventListener('click', onClick);
     return () => {
       d.removeEventListener('cancel', onCancel);
-      d.removeEventListener('click', onClick);
     };
   }, [onClose]);
+
+  useDialogLightDismiss(dialogRef, onClose);
 
   const handleFile = async (file: File | undefined) => {
     if (!file) return;
@@ -128,20 +125,37 @@ export function DataSourceModal({
     }
   };
 
-  const quickBuildFromTable = (t: TableSchemaInfo) => {
+  const quickBuildFromTable = async (t: TableSchemaInfo) => {
     const isBigQuery = activeSource === 'bigquery' || activeSource.startsWith('bigquery:');
     const targetRef = isBigQuery ? `\`${t.fullName || t.name}\`` : `"${t.name}"`;
     const quoteCol = (c: string) => (isBigQuery ? `\`${c}\`` : `"${c}"`);
 
     const canAskGemini = liveKey === 'configured' && (!auth.required || (auth.configured && auth.account != null));
     if (canAskGemini) {
+      // Gemini first finds out what the table means (what a row is, how each measure adds up), then charts it
       agent
         .sendText(
-          `Create a live dashboard exploring table ${targetRef} from source "${activeSource}" with KPI headlines, breakdowns, and an interactive table.`,
+          isBigQuery
+            ? `Build the first live dashboard on the BigQuery table ${targetRef} (data source "${activeSource}"). ` +
+              'Inspect its schema first and work out what one row is, which columns are time, measures and dimensions, and how each measure adds up; then chart what matters in it.'
+            : `Build the first dashboard on the table ${targetRef}${t.uploaded ? ' that I loaded' : ''} (source "local"). ` +
+              `Read what it means with inspect_schema (table ${targetRef}) and start from its chart ideas; then chart what matters in it.`,
         )
         .catch(() => undefined);
       onClose();
       return;
+    }
+
+    // Without Gemini, a local table still gets the dashboard its profile suggests
+    if (!isBigQuery) {
+      const profile = await getTableProfile(t.name).catch(() => undefined);
+      const starter = profile ? starterDashboard(profile) : null;
+      if (starter) {
+        store.createDashboard({ ...starter, replace: true }, { source: 'manual', label: `Built dashboard from ${t.name}` });
+        workspace.showView('dashboard');
+        onClose();
+        return;
+      }
     }
 
     const topCols = t.columns.filter((c) => !c.name.includes('.') && c.type !== 'RECORD' && c.type !== 'STRUCT');
@@ -233,8 +247,21 @@ export function DataSourceModal({
             id="datasource-tab-bigquery"
             aria-selected={tab === 'bigquery'}
             aria-controls="datasource-panel"
+            tabIndex={tab === 'bigquery' ? 0 : -1}
             className={`datasource-tab${tab === 'bigquery' ? ' active' : ''}`}
             onClick={() => setTab('bigquery')}
+            onKeyDown={(e) =>
+              handleTabListKeyDown(
+                e,
+                ['bigquery', 'files'] as const,
+                tab,
+                (next) => {
+                  setTab(next);
+                  if (next === 'files') void refreshSchema(activeSource);
+                },
+                (next) => document.getElementById(`datasource-tab-${next}`)?.focus(),
+              )
+            }
           >
             <Icon name="cloud_sync" size={18} />
             <span>BigQuery Catalog</span>
@@ -245,11 +272,24 @@ export function DataSourceModal({
             id="datasource-tab-files"
             aria-selected={tab === 'files'}
             aria-controls="datasource-panel"
+            tabIndex={tab === 'files' ? 0 : -1}
             className={`datasource-tab${tab === 'files' ? ' active' : ''}`}
             onClick={() => {
               setTab('files');
               void refreshSchema(activeSource);
             }}
+            onKeyDown={(e) =>
+              handleTabListKeyDown(
+                e,
+                ['bigquery', 'files'] as const,
+                tab,
+                (next) => {
+                  setTab(next);
+                  if (next === 'files') void refreshSchema(activeSource);
+                },
+                (next) => document.getElementById(`datasource-tab-${next}`)?.focus(),
+              )
+            }
           >
             <Icon name="database" size={18} />
             <span>Files &amp; SQL Engines</span>
@@ -358,7 +398,7 @@ export function DataSourceModal({
                           </div>
                           {t.description && <p>{t.description}</p>}
                         </div>
-                        <button type="button" className="tonal-btn small" onClick={() => quickBuildFromTable(t)}>
+                        <button type="button" className="tonal-btn small" onClick={() => void quickBuildFromTable(t)}>
                           <Icon name="bar_chart" size={16} /> Build Dashboard
                         </button>
                       </div>

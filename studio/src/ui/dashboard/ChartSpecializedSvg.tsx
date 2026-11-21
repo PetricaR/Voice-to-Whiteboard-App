@@ -7,12 +7,15 @@ import {
   buildCurvePath,
   computeBoxPlotStats,
   computeKdeCurve,
+  createNumericScale,
+  formatAxisTick,
   layoutNetworkGraph,
   layoutOrgTree,
   layoutSankeyDiagram,
   layoutSquarifiedTreemap,
   pivotMultiSeries,
   resolveSeriesColor,
+  roundedBarPath,
   toFiniteNum,
 } from './chartLayouts';
 import {
@@ -95,9 +98,9 @@ export function renderDistributionSvg(p: SpecializedChartProps) {
               y1={gy}
               x2={W - padR}
               y2={gy}
-              stroke="var(--md-outline-variant)"
-              strokeDasharray={t === 0 ? undefined : '3 3'}
-              strokeOpacity={cfg?.gridOpacity ?? 0.5}
+              stroke={t === 0 ? 'var(--md-outline)' : 'var(--md-outline-variant)'}
+              strokeOpacity={t === 0 ? 0.42 : (cfg?.gridOpacity ?? 0.2)}
+              shapeRendering="crispEdges"
             />
           );
         })}
@@ -143,10 +146,13 @@ export function renderDistributionSvg(p: SpecializedChartProps) {
   if (stats.length === 0) return null;
 
   const allNums = stats.flatMap((s) => [s.min, s.max, ...s.outliers]);
-  const lo = cfg?.yMin ?? Math.min(...allNums) * (Math.min(...allNums) >= 0 && cfg?.startFromZero ? 0 : 0.92);
-  const hi = cfg?.yMax ?? Math.max(...allNums) * 1.06;
-  const span = Math.max(1e-6, hi - lo);
-  const yOf = (v: number) => padT + plotH - ((v - lo) / span) * plotH;
+  const distScale = createNumericScale(allNums, {
+    startFromZero: Boolean(cfg?.startFromZero),
+    minOverride: cfg?.yMin,
+    maxOverride: cfg?.yMax,
+    tickCount: cfg?.yTickCount ?? 5,
+  });
+  const yOf = (v: number) => padT + (1 - distScale.norm(v)) * plotH;
   const slotW = plotW / stats.length;
 
   // Gather raw values per group for Violin KDE
@@ -164,25 +170,25 @@ export function renderDistributionSvg(p: SpecializedChartProps) {
 
   return (
     <svg viewBox={`0 0 ${W} ${H}`} style={{ height: H }} className="chart-svg cartesian-svg" role="img" aria-label={widget.title}>
-      {[0, 0.5, 1].map((t) => {
-        const val = lo + span * t;
-        const gy = padT + plotH * (1 - t);
+      {distScale.ticks.map((val, ti) => {
+        const gy = yOf(val);
+        const isBase = ti === 0;
         return (
-          <g key={t}>
+          <g key={ti}>
             {cfg?.showHorizontalGrid !== false && (
               <line
                 x1={padL}
                 y1={gy}
                 x2={W - padR}
                 y2={gy}
-                stroke="var(--md-outline-variant)"
-                strokeDasharray={t === 0 ? undefined : '3 3'}
-                strokeOpacity={cfg?.gridOpacity ?? 0.5}
+                stroke={isBase ? 'var(--md-outline)' : 'var(--md-outline-variant)'}
+                strokeOpacity={isBase ? 0.42 : (cfg?.gridOpacity ?? 0.2)}
+                shapeRendering="crispEdges"
               />
             )}
             {cfg?.showYTicks !== false && (
-              <text x={padL - 8} y={gy + 4} textAnchor="end" className="axis-tick">
-                {formatMetricValue(val, cfg?.yAxisFormat ?? 'compact')}
+              <text x={padL - 10} y={gy + 3.5} textAnchor="end" className="axis-tick">
+                {formatAxisTick(val, cfg?.yAxisFormat ?? widget.format ?? 'compact', undefined, fmtOpts)}
               </text>
             )}
           </g>
@@ -206,7 +212,7 @@ export function renderDistributionSvg(p: SpecializedChartProps) {
           const maxD = Math.max(1e-6, ...kde.map((k) => k.density));
           const maxHalfW = Math.min(36, slotW * 0.42);
           const rightSide = kde.map((k) => `${(cx + (k.density / maxD) * maxHalfW).toFixed(1)},${yOf(k.x).toFixed(1)}`);
-          const leftSide = [...kde].reverse().map((k) => `${(cx - (k.density / maxD) * maxHalfW).toFixed(1)},${yOf(k.x).toFixed(1)}`);
+          const leftSide = kde.toReversed().map((k) => `${(cx - (k.density / maxD) * maxHalfW).toFixed(1)},${yOf(k.x).toFixed(1)}`);
           violinPath = `M ${rightSide.join(' L ')} L ${leftSide.join(' L ')} Z`;
         }
 
@@ -366,29 +372,44 @@ export function renderTemporalSpecialSvg(p: SpecializedChartProps) {
       const low = Math.min(open, close, toFiniteNum(r[lIdx]) || Math.min(open, close));
       return { label: String(r[xIdx] ?? `#${i + 1}`), open, high, low, close, row: r };
     });
-    const lo = cfg?.yMin ?? Math.min(...candles.map((c) => c.low)) * 0.985;
-    const hi = cfg?.yMax ?? Math.max(...candles.map((c) => c.high)) * 1.015;
-    const span = Math.max(1e-6, hi - lo);
-    const padL = cfg?.plotPaddingLeft ?? 56;
+    const ohlcScale = createNumericScale(
+      candles.flatMap((c) => [c.low, c.high]),
+      {
+        startFromZero: false,
+        minOverride: cfg?.yMin,
+        maxOverride: cfg?.yMax,
+        tickCount: cfg?.yTickCount ?? 5,
+      },
+    );
+    const padL = cfg?.plotPaddingLeft ?? 58;
     const padR = cfg?.plotPaddingRight ?? 16;
     const padT = cfg?.plotPaddingTop ?? 14;
     const padB = cfg?.plotPaddingBottom ?? 30;
     const plotW = Math.max(120, W - padL - padR);
     const plotH = Math.max(80, H - padT - padB);
-    const yOf = (v: number) => padT + plotH - ((v - lo) / span) * plotH;
+    const yOf = (v: number) => padT + (1 - ohlcScale.norm(v)) * plotH;
     const slotW = plotW / Math.max(1, candles.length);
-    const bodyW = Math.max(6, Math.min(26, slotW * 0.58));
+    const bodyW = Math.max(6, Math.min(24, slotW * 0.56));
     const step = Math.max(1, Math.ceil(candles.length / Math.max(3, Math.floor(plotW / 80))));
 
     return (
       <svg viewBox={`0 0 ${W} ${H}`} style={{ height: H }} className="chart-svg cartesian-svg" role="img" aria-label={widget.title}>
-        {[0, 0.5, 1].map((t) => {
-          const gy = padT + plotH * (1 - t);
+        {ohlcScale.ticks.map((tv, ti) => {
+          const gy = yOf(tv);
+          const isBase = ti === 0;
           return (
-            <g key={t}>
-              <line x1={padL} y1={gy} x2={W - padR} y2={gy} stroke="var(--md-outline-variant)" strokeDasharray={t === 0 ? undefined : '3 3'} strokeOpacity={0.5} />
-              <text x={padL - 8} y={gy + 4} textAnchor="end" className="axis-tick">
-                {formatMetricValue(lo + span * t, widget.format ?? 'compact', undefined, fmtOpts)}
+            <g key={ti}>
+              <line
+                x1={padL}
+                y1={gy}
+                x2={W - padR}
+                y2={gy}
+                stroke={isBase ? 'var(--md-outline)' : 'var(--md-outline-variant)'}
+                strokeOpacity={isBase ? 0.42 : (cfg?.gridOpacity ?? 0.2)}
+                shapeRendering="crispEdges"
+              />
+              <text x={padL - 10} y={gy + 3.5} textAnchor="end" className="axis-tick">
+                {formatAxisTick(tv, cfg?.yAxisFormat ?? widget.format ?? 'compact', undefined, fmtOpts)}
               </text>
             </g>
           );
@@ -470,7 +491,7 @@ export function renderTemporalSpecialSvg(p: SpecializedChartProps) {
       botPts.push({ x, y: yBottom });
     });
     const topPath = buildCurvePath(topPts, 'monotone');
-    const revBot = [...botPts].reverse();
+    const revBot = botPts.toReversed();
     const botPath = buildCurvePath(revBot, 'monotone').replace(/^M/, 'L');
     return {
       ser,
@@ -1478,43 +1499,54 @@ export function renderAdvancedAndMultiSvg(p: SpecializedChartProps) {
     bars.push({ label: 'Net Total', from: 0, to: running, delta: running, isTotal: true, row: rows[rows.length - 1] ?? ['Net Total', running] });
 
     const allVals = [0, ...bars.flatMap((b) => [b.from, b.to])];
-    const lo = Math.min(...allVals);
-    const hi = Math.max(...allVals);
-    const span = Math.max(1, hi - lo);
-    const padL = cfg?.plotPaddingLeft ?? 56;
+    const wfScale = createNumericScale(allVals, {
+      startFromZero: true,
+      minOverride: cfg?.yMin,
+      maxOverride: cfg?.yMax,
+      tickCount: cfg?.yTickCount ?? 5,
+    });
+    const padL = cfg?.plotPaddingLeft ?? 58;
     const padR = cfg?.plotPaddingRight ?? 16;
-    const padT = cfg?.plotPaddingTop ?? 18;
+    const padT = cfg?.plotPaddingTop ?? 20;
     const padB = cfg?.plotPaddingBottom ?? 30;
     const plotW = Math.max(120, W - padL - padR);
     const plotH = Math.max(80, H - padT - padB);
-    const yOf = (v: number) => padT + plotH - ((v - lo) / span) * plotH;
+    const yOf = (v: number) => padT + (1 - wfScale.norm(v)) * plotH;
     const slotW = plotW / bars.length;
-    const bw = Math.max(14, Math.min(58, slotW * 0.64));
+    const bw = Math.max(14, Math.min(54, slotW * 0.62));
 
     return (
       <svg viewBox={`0 0 ${W} ${H}`} style={{ height: H }} className="chart-svg cartesian-svg" role="img" aria-label={widget.title}>
-        {[0, 0.5, 1].map((t) => {
-          const v = lo + span * t;
+        {wfScale.ticks.map((v, ti) => {
           const gy = yOf(v);
+          const isZero = Math.abs(v) < 1e-9;
           return (
-            <g key={t}>
-              <line x1={padL} y1={gy} x2={W - padR} y2={gy} stroke="var(--md-outline-variant)" strokeDasharray="3 3" strokeOpacity={0.5} />
-              <text x={padL - 8} y={gy + 4} textAnchor="end" className="axis-tick">
-                {formatMetricValue(v, 'compact')}
+            <g key={ti}>
+              <line
+                x1={padL}
+                y1={gy}
+                x2={W - padR}
+                y2={gy}
+                stroke={isZero ? 'var(--md-outline)' : 'var(--md-outline-variant)'}
+                strokeOpacity={isZero ? 0.45 : (cfg?.gridOpacity ?? 0.2)}
+                shapeRendering="crispEdges"
+              />
+              <text x={padL - 10} y={gy + 3.5} textAnchor="end" className="axis-tick">
+                {formatAxisTick(v, cfg?.yAxisFormat ?? widget.format ?? 'compact', undefined, fmtOpts)}
               </text>
             </g>
           );
         })}
-        <line x1={padL} y1={yOf(0)} x2={W - padR} y2={yOf(0)} stroke="var(--md-outline)" strokeOpacity={0.75} />
+        <line x1={padL} y1={yOf(0)} x2={W - padR} y2={yOf(0)} stroke="var(--md-outline)" strokeOpacity={0.5} shapeRendering="crispEdges" />
         {bars.map((b, idx) => {
           const cx = padL + (idx + 0.5) * slotW;
           const top = yOf(Math.max(b.from, b.to));
           const bot = yOf(Math.min(b.from, b.to));
           const tone = b.isTotal
-            ? resolveSeriesColor(0, cfg, widget.color ?? 'blue')
+            ? resolveSeriesColor(0, cfg, widget.color)
             : b.delta >= 0
-              ? 'var(--c-green-accent)'
-              : 'var(--c-red-accent)';
+              ? '#10b981'
+              : '#e05a47';
           const fmt = formatMetricValue(b.delta, widget.format, widget.unit, fmtOpts);
           return (
             <g
@@ -1530,11 +1562,16 @@ export function renderAdvancedAndMultiSvg(p: SpecializedChartProps) {
                   y1={yOf(bars[idx - 1].to)}
                   x2={cx - bw / 2}
                   y2={yOf(bars[idx - 1].to)}
-                  stroke="var(--md-outline)"
+                  stroke="var(--md-outline-variant)"
                   strokeDasharray="3 2"
+                  strokeOpacity={0.65}
                 />
               )}
-              <rect x={cx - bw / 2} y={top} width={bw} height={Math.max(3, bot - top)} rx={cfg?.barRadius ?? 5} fill={tone} fillOpacity={cfg?.fillOpacity ?? 0.9} />
+              <path
+                d={roundedBarPath(cx - bw / 2, top, bw, Math.max(3, bot - top), cfg?.barRadius ?? 4, b.delta >= 0 || b.isTotal ? 'top' : 'bottom')}
+                fill={tone}
+                fillOpacity={cfg?.fillOpacity ?? 0.92}
+              />
               {cfg?.showDataLabels !== false && (
                 <text x={cx} y={top - 5} textAnchor="middle" className="axis-tick" style={{ fontSize: 10, fontWeight: 600 }}>
                   {b.delta >= 0 && !b.isTotal ? `+${fmt}` : fmt}

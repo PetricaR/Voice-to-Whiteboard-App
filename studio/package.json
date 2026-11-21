@@ -36,6 +36,7 @@
     "@google-cloud/firestore": "^9.4.0",
     "@material-symbols/svg-400": "^0.48.3",
     "@material/material-color-utilities": "^0.4.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "@xyflow/react": "^12.12.1",
     "elkjs": "^0.12.1",
     "html-to-image": "^1.11.13",

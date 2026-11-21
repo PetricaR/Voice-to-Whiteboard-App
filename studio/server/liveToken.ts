@@ -11,6 +11,10 @@
  *   GET  /api/data/schema        ?source&table&search → { source, tables, totalTables }
  *   POST /api/data/query         { source, sql, params?, maxRows? } → ServerQueryResponse
  *   …    /api/data/bq/*          BigQuery catalog (server/bigqueryCatalog.ts)
+ *   GET  /api/docs/status        ?verify=1 → GoogleDocsMcpStatus (server/googleDocsMcp.ts)
+ *   POST /api/docs/search        { query, limit? } → GoogleDocsSearchResult
+ *   POST /api/docs/get           { names, maxCharsPerDoc? } → GoogleDocsGetResult
+ *   POST /api/docs/answer        { query } → GoogleDocsAnswerResult
  *
  * On a deployment (sign-in required) only the studio's owners may register
  * BigQuery projects, sync them or list the projects of the server's service
@@ -21,6 +25,7 @@ import type * as LiveConfig from '../src/agent/liveConfig.ts';
 import { AuthError, type Auth } from './auth.ts';
 import { BqCatalogError, BqCatalogStore } from './bigqueryCatalog.ts';
 import { executeServerConnectorQuery, listConfiguredConnectors, type DataConnectorEnv } from './dataConnectors.ts';
+import { GoogleDocsMcpError, GoogleDocsMcpService, type GoogleDocsMcpEnv } from './googleDocsMcp.ts';
 import type { SqlParamValue } from './sqlGuard.ts';
 import type { Usage } from './usage.ts';
 
@@ -129,6 +134,10 @@ export interface LiveTokenOptions {
   connectorEnv?: DataConnectorEnv;
   bqCatalog?: BqCatalogStore;
   bqPersistPath?: string;
+  /** Studio root directory for reading Developer Knowledge MCP `.env` credentials dynamically. */
+  docsRoot?: string;
+  docsEnv?: GoogleDocsMcpEnv;
+  docsMcp?: GoogleDocsMcpService;
   fetch?: typeof fetch;
   log?: (message: string) => void;
   now?: () => number;
@@ -147,6 +156,13 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
     persistPath: o.bqPersistPath,
     env: (o.connectorEnv ?? process.env) as DataConnectorEnv & Record<string, string | undefined>,
     fetch: o.fetch,
+    now,
+  });
+  const docsMcp = o.docsMcp ?? new GoogleDocsMcpService({
+    root: o.docsRoot,
+    env: o.docsEnv,
+    fetch: o.fetch,
+    log,
     now,
   });
 
@@ -376,6 +392,7 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
           table_id: tableId,
           limit: typeof raw.limit === 'number' ? raw.limit : undefined,
           sample: typeof raw.sample === 'boolean' ? raw.sample : undefined,
+          latest: raw.latest === true,
           userAccessToken,
           fetch: o.fetch,
         });
@@ -465,6 +482,115 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
     return send(res, 404, { error: 'not-found', message: 'Not found.' });
   }
 
+  async function handleDocs(req: IncomingMessage, res: ServerResponse, path: string) {
+    const queryStr = (req.url ?? '').split('?')[1] ?? '';
+    const params = new URLSearchParams(queryStr);
+    const userAccessToken = gcpUserToken(req);
+
+    if (path === '/api/docs/status') {
+      if (req.method !== 'GET' && req.method !== 'HEAD') {
+        return send(res, 405, { error: 'method', message: 'Use GET.' }, { Allow: 'GET, HEAD' });
+      }
+      const verify = params.get('verify') === '1' || params.get('verify') === 'true';
+      let signedIn = !o.requireSignIn;
+      if (o.requireSignIn) {
+        if (!o.auth || !o.usage) return send(res, 503, NOT_CONFIGURED);
+        const user = await o.auth.userOf(req);
+        signedIn = user != null;
+        if (verify && !signedIn) {
+          return send(res, 401, { error: 'signed-out', message: 'Sign in with Google to verify official Google documentation access.' });
+        }
+      }
+      if (verify && !admit(req, res, 'docs-verify', 'Too many verification checks; wait a moment.', true)) return;
+      const status = await docsMcp.status({ verify, userAccessToken });
+      if (!signedIn) {
+        // Minimal public status without exposing internal GCP project IDs to unauthenticated browsers
+        return send(res, 200, {
+          configured: status.configured,
+          verified: status.verified,
+          authMode: status.configured ? status.authMode : 'none',
+          endpoint: status.endpoint,
+          tools: status.tools,
+        });
+      }
+      return send(res, 200, status);
+    }
+
+    if (o.requireSignIn) {
+      if (!o.auth || !o.usage) return send(res, 503, NOT_CONFIGURED);
+      const user = await o.auth.userOf(req);
+      if (!user) return send(res, 401, { error: 'signed-out', message: 'Sign in with Google to query official Google documentation.' });
+    }
+
+    if (req.method !== 'POST') {
+      return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
+    }
+    if (!admit(req, res, 'docs-mcp', 'Too many Google documentation requests; wait a moment.', true)) return;
+
+    try {
+      if (path === '/api/docs/search') {
+        const body = await readJson(req, res, MAX_BODY_BYTES);
+        if (body === undefined) return;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return send(res, 400, { error: 'bad-request', message: 'Expected a JSON object with a "query" string.' });
+        }
+        const raw = body as { query?: unknown; limit?: unknown };
+        if (typeof raw.query !== 'string' || !raw.query.trim() || raw.query.length > 600) {
+          return send(res, 400, { error: 'bad-request', message: '"query" must be a non-empty string (at most 600 characters).' });
+        }
+        const limit = typeof raw.limit === 'number' && Number.isFinite(raw.limit) ? raw.limit : undefined;
+        const result = await docsMcp.searchDocuments(raw.query, { limit, userAccessToken });
+        return send(res, 200, result);
+      }
+
+      if (path === '/api/docs/get') {
+        const body = await readJson(req, res, MAX_SIGN_IN_BYTES);
+        if (body === undefined) return;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return send(res, 400, { error: 'bad-request', message: 'Expected a JSON object with a "names" array.' });
+        }
+        const raw = body as { names?: unknown; maxCharsPerDoc?: unknown };
+        if (!Array.isArray(raw.names) || raw.names.length === 0 || raw.names.some((n) => typeof n !== 'string')) {
+          return send(res, 400, { error: 'bad-request', message: '"names" must be a non-empty array of official document resource names.' });
+        }
+        const maxCharsPerDoc = typeof raw.maxCharsPerDoc === 'number' && Number.isFinite(raw.maxCharsPerDoc)
+          ? Math.min(40_000, Math.max(500, Math.floor(raw.maxCharsPerDoc)))
+          : undefined;
+        const result = await docsMcp.getDocuments(raw.names as string[], { maxCharsPerDoc, userAccessToken });
+        return send(res, 200, result);
+      }
+
+      if (path === '/api/docs/answer') {
+        const body = await readJson(req, res, MAX_BODY_BYTES);
+        if (body === undefined) return;
+        if (!body || typeof body !== 'object' || Array.isArray(body)) {
+          return send(res, 400, { error: 'bad-request', message: 'Expected a JSON object with a "query" string.' });
+        }
+        const raw = body as { query?: unknown };
+        if (typeof raw.query !== 'string' || !raw.query.trim() || raw.query.length > 600) {
+          return send(res, 400, { error: 'bad-request', message: '"query" must be a non-empty string (at most 600 characters).' });
+        }
+        const result = await docsMcp.answerQuery(raw.query, { userAccessToken });
+        return send(res, 200, result);
+      }
+
+      return send(res, 404, { error: 'not-found', message: 'Not found.' });
+    } catch (e) {
+      if (e instanceof GoogleDocsMcpError) {
+        return send(res, e.status, {
+          error: e.code,
+          message: e.message,
+          ...(e.opts.setupHint ? { setupHint: e.opts.setupHint } : {}),
+          ...(e.opts.enableUrl ? { enableUrl: e.opts.enableUrl } : {}),
+        });
+      }
+      return send(res, 502, {
+        error: 'upstream',
+        message: e instanceof Error ? e.message : String(e),
+      });
+    }
+  }
+
   async function handle(req: IncomingMessage, res: ServerResponse, path: string) {
     const denied = checkRequestOrigin(req, hosts);
     if (denied) return send(res, 403, { error: 'forbidden', message: denied });
@@ -480,6 +606,7 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
     }
     if (path === '/api/auth/delete-account') return deleteAccount(req, res);
     if (path.startsWith('/api/data/')) return handleData(req, res, path);
+    if (path.startsWith('/api/docs/')) return handleDocs(req, res, path);
 
     if (path !== '/api/live/token') return send(res, 404, { error: 'not-found', message: 'Not found.' });
     if (req.method !== 'POST') return send(res, 405, { error: 'method', message: 'Use POST.' }, { Allow: 'POST' });
@@ -532,7 +659,8 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
     if (
       !path.startsWith('/api/live/') &&
       !path.startsWith('/api/auth/') &&
-      !path.startsWith('/api/data/')
+      !path.startsWith('/api/data/') &&
+      !path.startsWith('/api/docs/')
     ) {
       next();
       return;

@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { handleToolCall, type ViewController } from '../src/agent/dispatcher';
 import { blockSize } from '../src/engine/blocks';
-import { bookOutline, bookToMarkdown } from '../src/engine/book';
-import { parseInline, parseMarkdown } from '../src/engine/markdown';
+import { bookOutline, bookToMarkdown, bookToStandaloneHtml, sceneHasFullDiagramEmbed } from '../src/engine/book';
+import { resolveFocusSet, sceneToMermaid, sceneToSvgString } from '../src/engine/diagramSvg';
+import { parseDiagramDirective, parseInline, parseMarkdown } from '../src/engine/markdown';
 import { groupBounds, intersects } from '../src/engine/scene';
 import { DiagramStore } from '../src/engine/store';
 import { describeScene } from '../src/engine/summary';
@@ -75,6 +76,32 @@ describe('markdown', () => {
 
   it('accepts escaped line breaks from the model', () => {
     expect(parseMarkdown('## A\\n- b').map((b) => b.type)).toEqual(['heading', 'list']);
+  });
+
+  it('parses language-tagged code blocks, typed callouts, and {{diagram}} embeds', () => {
+    const md = parseMarkdown([
+      '{{diagram | Full Multi-Tenant Architecture}}',
+      '{{diagram: api, db | Data Isolation Subsystem}}',
+      '[[diagram: gcp]]',
+      '> [!WARNING] Never use session-scoped SET under connection pooling.',
+      '> Always wrap SET LOCAL inside BEGIN...COMMIT.',
+      '```sql',
+      'ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;',
+      '```',
+    ].join('\n'));
+    expect(md).toEqual([
+      { type: 'diagram', caption: 'Full Multi-Tenant Architecture' },
+      { type: 'diagram', focus: ['api', 'db'], caption: 'Data Isolation Subsystem' },
+      { type: 'diagram', focus: ['gcp'] },
+      {
+        type: 'quote',
+        variant: 'warning',
+        text: 'Never use session-scoped SET under connection pooling. Always wrap SET LOCAL inside BEGIN...COMMIT.',
+      },
+      { type: 'code', lang: 'sql', text: 'ALTER TABLE chunks ENABLE ROW LEVEL SECURITY;' },
+    ]);
+    expect(parseDiagramDirective('{{diagram}}')).toEqual({});
+    expect(parseDiagramDirective('not a directive')).toBeNull();
   });
 
   it('sizes a block by its content', () => {
@@ -509,5 +536,97 @@ describe('documentation book', () => {
       '## 2. Components',
       '| Component | Technology |\n| --- | --- |\n| API | Cloud Run \\| Go |',
     ].join('\n\n') + '\n');
+
+    // Auto-inserts Mermaid architecture diagram when includeDiagram is enabled
+    const withDiagram = bookToMarkdown(ws.store.scene, { includeDiagram: true });
+    expect(withDiagram).toContain('## Architecture Diagram');
+    expect(withDiagram).toContain('```mermaid\nflowchart LR');
+    expect(withDiagram).toContain('subgraph g_gcp["Google Cloud"]');
+    expect(withDiagram).toContain('n_api -->|"SQL"| n_db');
+  });
+
+  it('embeds full and focused architecture diagrams in Markdown, Mermaid, SVG, and standalone HTML', async () => {
+    const ws = await workspaceWithDiagram();
+    const ctx = { workspace: ws, source: 'voice' as const };
+    await handleToolCall('write_text', {
+      id: 'overview',
+      title: 'Architecture Overview',
+      text: [
+        'Lead summary for **API** (Cloud Run).',
+        '',
+        '{{diagram | Web App on GCP — Full System Architecture}}',
+        '',
+        '## Quality goals',
+        '- **Availability:** 99.95% (_Assumption_)',
+      ].join('\n'),
+    }, ctx);
+    await handleToolCall('write_text', {
+      id: 'lld_data',
+      title: 'Persistence & Connection Pooling',
+      text: [
+        '{{diagram: api, db | Compute & Database Subsystem}}',
+        '',
+        '## Low-Level Design',
+        '> [!WARNING] Always wrap `SET LOCAL` inside an explicit transaction.',
+        '',
+        '## Implementation Guidelines',
+        '```sql',
+        'SELECT set_config(\'app.tenant_id\', $1, true);',
+        '```',
+      ].join('\n'),
+    }, ctx);
+
+    const scene = ws.store.scene;
+    expect(sceneHasFullDiagramEmbed(scene)).toBe(true);
+
+    // Focus resolution expands group membership and ancestor groups
+    const focus = resolveFocusSet(scene, ['api', 'db']);
+    expect([...focus!.nodes].sort()).toEqual(['api', 'db']);
+    expect(focus!.ancestorGroups.has('gcp')).toBe(true);
+    const groupFocus = resolveFocusSet(scene, ['gcp']);
+    expect(groupFocus!.nodes.has('lb')).toBe(true);
+    expect(groupFocus!.nodes.has('api')).toBe(true);
+    expect(groupFocus!.nodes.has('db')).toBe(true);
+    expect(groupFocus!.nodes.has('user')).toBe(false);
+
+    // Markdown expands inline {{diagram}} directives into Mermaid without duplicating a top diagram
+    const md = bookToMarkdown(scene, { includeDiagram: true });
+    expect(md).not.toContain('## Architecture Diagram');
+    expect(md).toContain('_Web App on GCP — Full System Architecture_');
+    expect(md).toContain('classDef focus stroke:#1a73e8');
+    expect(md).toContain('class n_api,n_db focus;');
+
+    // Mermaid & SVG helpers render crisp vector content
+    expect(sceneToMermaid(scene)).toContain('n_db[("Database<br/><i>Cloud SQL</i>")]');
+    const svg = sceneToSvgString(scene, { focus: ['api', 'db'] });
+    expect(svg).toContain('<svg ');
+    expect(svg).toContain('Cloud Run');
+    expect(svg).toContain('Cloud SQL');
+    expect(svg).toContain('opacity="0.25"');
+
+    // Standalone HTML guide contains embedded vector SVG, callouts, and numbered code blocks
+    const html = bookToStandaloneHtml(scene);
+    expect(html).toContain('<!doctype html>');
+    expect(html).toContain('<figure class="arch-figure">');
+    expect(html).toContain('callout-warning');
+    expect(html).toContain('code-lang">sql</span>');
+    expect(html).toContain('Web App on GCP — Full System Architecture');
+    expect(html).toContain('Compute &amp; Database Subsystem');
+  });
+
+  it('compacts unselected chapters in describeScene for long documentation books', async () => {
+    const ws = await workspaceWithDiagram();
+    const ctx = { workspace: ws, source: 'voice' as const };
+    await handleToolCall('write_text', { id: 'overview', title: 'Overview', text: 'Intro.\n## Quality goals\n- Fast\n' + 'x'.repeat(600) }, ctx);
+    await handleToolCall('write_table', { id: 'context', title: 'Context', columns: ['Actor', 'Interface'], rows: [['Users', 'HTTPS']] }, ctx);
+    await handleToolCall('write_text', { id: 'lld_api', title: 'API LLD', text: '## Low-Level Design\nDetails.\n## Implementation Guidelines\n```ts\nexport const ok = true;\n```' }, ctx);
+    const r = await handleToolCall('write_text', { id: 'rollout', title: 'Rollout', text: '## Stage 1\nDeploy.' }, ctx);
+    const state = String(r.diagram);
+    // Selected chapter (rollout) has full text; earlier chapters have compact section outlines
+    expect(state).toContain('1. overview text "Overview"');
+    expect(state).toContain('sections: ## Quality goals');
+    expect(state).not.toContain('x'.repeat(200));
+    expect(state).toContain('4. rollout text "Rollout":');
+    expect(state).toContain('Deploy.');
   });
 });

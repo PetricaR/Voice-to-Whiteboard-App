@@ -5,17 +5,21 @@
  * user made by hand) instead of its memory.
  */
 import { bqApi } from '../data/bqCatalogClient';
+import { columnBrief, columnForModel, columnsMatching, pickColumns, summaryForModel } from '../data/dataProfile';
+import { googleDocsApi, GoogleDocsClientError, type GoogleDocsClient } from '../data/googleDocsClient';
 import {
   executeSqlQuery,
   importRowsIntoLocalTable,
   inspectDataSchema,
   listAllDataSources,
+  listUserTables,
   type QueryExecutionResult,
   type TableSchemaInfo,
 } from '../data/sqlEngine';
 import { dialectOfSource, validateReadOnlySql } from '../data/sqlGuard';
 import { resolveBlock } from '../engine/blocks';
 import { loadAllBlueprints, retrieveCatalogContext } from '../engine/catalog';
+import { ideaForModel, suggestCharts, type IdeaSlot } from '../engine/chartIdeas';
 import { reviewDashboardLayout, reviewForModel, reviewWidget } from '../engine/chartInsights';
 import {
   filterParamsOf,
@@ -61,6 +65,8 @@ export interface ToolContext {
   request?: string;
   view?: ViewController;
   studio?: StudioController;
+  /** Optional override for the Official Google Developer Knowledge MCP client (tests / evals). */
+  googleDocs?: GoogleDocsClient;
 }
 
 export type ToolResponse = Record<string, unknown>;
@@ -120,10 +126,21 @@ const DOC_WORDS = /\b(doc|docs|documentation|documentatia|documentatie|documenta
 const DASH_WORDS = /\b(dashboard|dashboards|metrics|charts|kpi|kpis)\b/i;
 const MOTION_WORDS = /\b(motion|animation|animated|explainer|video|walkthrough)\b/i;
 
+/** The tables the user loaded, so "my data" and "the file I just loaded" always have an answer. */
+function loadedDataLine(): string {
+  const loaded = listUserTables();
+  if (loaded.length === 0) return '';
+  return 'data loaded by the user (source local, latest first): ' +
+    loaded.slice(0, 6).map((t, i) => `${t.name} (${t.rowCount.toLocaleString('en-US')} rows${i === 0 ? ', latest' : ''})`).join(', ') +
+    (loaded.length > 6 ? ` +${loaded.length - 6} more` : '');
+}
+
 function stateOf(ctx: ToolContext): string {
   const store = storeOf(ctx);
   const scene = describeScene(store.scene, store.selection);
-  return ctx.workspace != null ? `${pagesLine(ctx.workspace)}\n${scene}` : scene;
+  const data = loadedDataLine();
+  const state = data ? `${data}\n${scene}` : scene;
+  return ctx.workspace != null ? `${pagesLine(ctx.workspace)}\n${state}` : state;
 }
 
 function editResponse(ctx: ToolContext, result: EditResult, staleNote?: string): ToolResponse {
@@ -180,14 +197,70 @@ function blockLabel(kind: 'text' | 'table', input: BlockInput, existed: boolean,
 const SCHEMA_FULL_TABLES = 12;
 const SCHEMA_INDEX_TABLES = 150;
 const SCHEMA_COLUMNS = 60;
+/** Columns of a profiled table described one by one; a wider table is summarised by name families. */
+const PROFILE_COLUMNS = 40;
+/** Ideas handed to the model per part of the story. */
+const IDEAS_PER_SLOT: Record<IdeaSlot, number> = { headline: 4, trend: 2, pattern: 1, breakdown: 3, relationship: 1, distribution: 1, detail: 1 };
 
 const clip = (text: string | undefined, max: number) =>
   (text == null || text.length <= max ? text : `${text.slice(0, max - 1)}…`);
 
+/** Charts that answer the main questions of a table, each with SQL that was run and checked. */
+function chartIdeasFor(t: TableSchemaInfo): Record<string, unknown>[] {
+  if (!t.profile) return [];
+  const taken: Partial<Record<IdeaSlot, number>> = {};
+  return suggestCharts(t.profile)
+    .filter((idea) => {
+      taken[idea.slot] = (taken[idea.slot] ?? 0) + 1;
+      return taken[idea.slot]! <= IDEAS_PER_SLOT[idea.slot];
+    })
+    .map(ideaForModel);
+}
+
+/**
+ * A local table as the model reads it: what it means (what one row is, the
+ * time, how every measure combines, what explains the numbers, the rules
+ * for this table), its columns, and charts worth drawing from it.
+ */
+function profiledTableForModel(
+  t: TableSchemaInfo,
+  opts: { detail: 'full' | 'brief'; latest: boolean; words: string[]; ideas: boolean },
+): Record<string, unknown> {
+  const p = t.profile!;
+  const head: Record<string, unknown> = {
+    name: t.name,
+    ...(t.uploaded ? { loadedByUser: true } : {}),
+    ...(opts.latest ? { latest: true } : {}),
+    rowCount: t.rowCount,
+    ...(t.description && !t.uploaded ? { description: clip(t.description, 160) } : {}),
+  };
+  if (opts.detail === 'brief') {
+    return { ...head, about: p.about, columns: p.columns.slice(0, 30).map(columnBrief), ...(p.columns.length > 30 ? { moreColumns: p.columns.length - 30 } : {}) };
+  }
+  // A search in a wide table shows the columns it names; otherwise the telling ones first
+  const searched = columnsMatching(p, opts.words);
+  const { shown, families } = searched.length > 0 && p.columns.length > PROFILE_COLUMNS
+    ? { shown: [...new Set([...p.columns.filter((c) => c.name === p.timeColumn || p.grain?.includes(c.name)), ...searched])].slice(0, PROFILE_COLUMNS), families: [] }
+    : pickColumns(p, PROFILE_COLUMNS);
+  const hidden = p.columns.length - shown.length;
+  const ideas = opts.ideas ? chartIdeasFor(t) : [];
+  return {
+    ...head,
+    ...summaryForModel(p),
+    columns: shown.map(columnForModel),
+    ...(hidden > 0
+      ? { moreColumns: `${hidden} more columns${families.length > 0 ? `: ${families.map((f) => `${f.prefix} (${f.columns})`).join(', ')}` : ''}. Call inspect_schema with this table and search (words of the column names) to see them.` }
+      : {}),
+    ...(t.sampleRows?.length && p.columns.length <= PROFILE_COLUMNS ? { sampleRows: t.sampleRows.slice(0, 2) } : {}),
+    ...(ideas.length > 0 ? { chartIdeas: ideas } : {}),
+  };
+}
+
 /**
  * A warehouse catalog can hold thousands of tables; sent whole it would fill
  * the model's context. Few tables are described in full, many as an index of
- * names the model narrows with `table` or `search`.
+ * names the model narrows with `table` or `search`. Tables the user loaded
+ * come first and say so; the latest one is what "my data" means.
  */
 export function schemaForModel(all: TableSchemaInfo[], search?: string): Record<string, unknown> {
   const words = (search ?? '').toLowerCase().split(/\s+/).filter(Boolean);
@@ -197,28 +270,42 @@ export function schemaForModel(all: TableSchemaInfo[], search?: string): Record<
     return words.every((w) => text.includes(w));
   };
   const tables = all.filter(matches);
+  const latest = tables.filter((t) => t.uploaded).sort((a, b) => (b.loadedAt ?? 0) - (a.loadedAt ?? 0))[0]?.name;
   if (tables.length <= SCHEMA_FULL_TABLES) {
+    // The table asked for is described in full with chart ideas; next to others, the user's own tables are
+    const focused = tables.length <= 2;
     return {
-      tables: tables.map((t) => ({
-        name: t.name,
-        ...(t.fullName ? { fullName: t.fullName } : {}),
-        dataset: t.dataset,
-        description: clip(t.description, 240),
-        rowCount: t.rowCount,
-        columns: t.columns.slice(0, SCHEMA_COLUMNS).map((c) => {
-          const p = t.columnProfiles?.[c.name];
-          return {
-            name: c.name,
-            type: c.type,
-            ...(c.description ? { description: clip(c.description, 120) } : {}),
-            // Literals that exist in the data: every value of a small dimension, the range of the rest
-            ...(p?.values ? { values: p.values } : {}),
-            ...(p && !p.values && p.min !== undefined && p.max !== undefined ? { range: [p.min, p.max], distinct: p.distinct } : {}),
-          };
-        }),
-        ...(t.columns.length > SCHEMA_COLUMNS ? { moreColumns: t.columns.length - SCHEMA_COLUMNS } : {}),
-        ...(t.sampleRows?.length ? { sampleRows: t.sampleRows } : {}),
-      })),
+      tables: tables.map((t) => {
+        if (t.profile) {
+          const full = focused || t.uploaded === true;
+          return profiledTableForModel(t, {
+            detail: full ? 'full' : 'brief',
+            latest: t.name === latest,
+            words,
+            ideas: tables.length === 1 || (t.name === latest && !focused) || (focused && t.uploaded === true),
+          });
+        }
+        return {
+          name: t.name,
+          ...(t.fullName ? { fullName: t.fullName } : {}),
+          dataset: t.dataset,
+          description: clip(t.description, 240),
+          rowCount: t.rowCount,
+          columns: t.columns.slice(0, SCHEMA_COLUMNS).map((c) => {
+            const p = t.columnProfiles?.[c.name];
+            return {
+              name: c.name,
+              type: c.type,
+              ...(c.description ? { description: clip(c.description, 120) } : {}),
+              // Literals that exist in the data: every value of a small dimension, the range of the rest
+              ...(p?.values ? { values: p.values } : {}),
+              ...(p && !p.values && p.min !== undefined && p.max !== undefined ? { range: [p.min, p.max], distinct: p.distinct } : {}),
+            };
+          }),
+          ...(t.columns.length > SCHEMA_COLUMNS ? { moreColumns: t.columns.length - SCHEMA_COLUMNS } : {}),
+          ...(t.sampleRows?.length ? { sampleRows: t.sampleRows } : {}),
+        };
+      }),
       ...(words.length > 0 && tables.length === 0 ? { note: `No table matches "${search}". Call inspect_schema without search to list the tables.` } : {}),
     };
   }
@@ -226,9 +313,11 @@ export function schemaForModel(all: TableSchemaInfo[], search?: string): Record<
     tableCount: tables.length,
     tableIndex: tables.slice(0, SCHEMA_INDEX_TABLES).map((t) => ({
       name: t.name,
+      ...(t.uploaded ? { loadedByUser: true } : {}),
+      ...(t.name === latest ? { latest: true } : {}),
       rowCount: t.rowCount,
       columns: t.columns.length,
-      ...(t.description ? { description: clip(t.description, 80) } : {}),
+      ...(t.profile ? { about: t.profile.about } : t.description ? { description: clip(t.description, 80) } : {}),
     })),
     note: `${tables.length} tables${tables.length > SCHEMA_INDEX_TABLES ? ` (the first ${SCHEMA_INDEX_TABLES} are listed)` : ''}: too many to describe at once. Call inspect_schema again with table (a table or dataset name) or search (words) to get the columns.`,
   };
@@ -305,6 +394,26 @@ export async function reviewDashboardCharts(
   };
 }
 
+function googleDocsErrorResponse(ctx: ToolContext, err: unknown): ToolResponse {
+  if (err instanceof GoogleDocsClientError) {
+    return {
+      ok: false,
+      errorCode: err.code,
+      errors: [err.message],
+      ...(err.setupHint ? { setupHint: err.setupHint } : {}),
+      ...(err.enableUrl ? { enableUrl: err.enableUrl } : {}),
+      note: 'Official Google Developer Knowledge MCP is unavailable right now. Do NOT fabricate unverified Google API details; inform the user of the exact setup step above so official Google docs grounding can run.',
+      diagram: stateOf(ctx),
+    };
+  }
+  return {
+    ok: false,
+    errors: [err instanceof Error ? err.message : String(err)],
+    note: 'Official Google Developer Knowledge MCP failed. Do NOT guess Google API signatures or quotas; report the error clearly.',
+    diagram: stateOf(ctx),
+  };
+}
+
 export async function handleToolCall(name: string, args: Record<string, unknown> | undefined, ctx: ToolContext): Promise<ToolResponse> {
   const a = args ?? {};
   const ws = ctx.workspace;
@@ -316,7 +425,15 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
     case 'list_data_sources': {
       const sources = await listAllDataSources();
-      return { ok: true, sources, diagram: stateOf(ctx) };
+      const loaded = listUserTables();
+      return {
+        ok: true,
+        sources,
+        ...(loaded.length > 0
+          ? { loadedByUser: loaded.slice(0, 20).map((t, i) => ({ source: 'local', table: t.name, rowCount: t.rowCount, ...(i === 0 ? { latest: true } : {}) })) }
+          : {}),
+        diagram: stateOf(ctx),
+      };
     }
 
     case 'inspect_schema': {
@@ -354,6 +471,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
               table_id: tblId,
               limit: 1000,
               sample: false,
+              latest: true,
             });
             loadedLocalTable = await importRowsIntoLocalTable({
               tableName: `${dsId}_${tblId}`,
@@ -361,6 +479,10 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
               rows: preview.rows,
               dataset: `${projectId}.${dsId}`,
               datasetLabel: `BigQuery · ${projectId}.${dsId}`,
+              sourceTable: `${projectId}.${dsId}.${tblId}`,
+              // How many rows the whole table has, so the profile can say these are only part of it
+              sourceRowCount: (await bqApi.listDatasets({ project_id: projectId }).catch(() => null))
+                ?.datasets.find((d) => d.dataset_id === dsId)?.tables.find((t) => t.table_id === tblId)?.row_count ?? null,
             });
           }
         }
@@ -633,6 +755,97 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         components: retrieved.components,
         diagram: stateOf(ctx),
       };
+    }
+
+    case 'search_google_docs': {
+      const query = str(a.query);
+      if (!query) {
+        return { ok: false, errors: ['search_google_docs requires a non-empty "query" string.'], diagram: stateOf(ctx) };
+      }
+      const limit = Math.min(12, Math.max(1, asInt(a.limit, 8)));
+      const client = ctx.googleDocs ?? googleDocsApi;
+      try {
+        const res = await client.search(query, limit);
+        return {
+          ok: true,
+          source: res.source,
+          query: res.query,
+          cached: res.cached,
+          results: res.results.map((r) => ({
+            parent: r.parent,
+            uri: r.uri,
+            id: r.id,
+            content: clip(r.content, 1100),
+          })),
+          next: res.results.length > 0
+            ? 'Call get_google_docs with the most relevant "parent" names for exact SDK APIs, DDL/SQL, CLI flags, and limits, and cite every used official "uri" in the documentation.'
+            : 'No official Google documentation matched this query; try broader official Google product terms.',
+          diagram: stateOf(ctx),
+        };
+      } catch (e) {
+        return googleDocsErrorResponse(ctx, e);
+      }
+    }
+
+    case 'get_google_docs': {
+      const names = Array.isArray(a.names)
+        ? a.names.filter((n): n is string => typeof n === 'string' && n.trim() !== '').map((n) => n.trim()).slice(0, 5)
+        : [];
+      if (names.length === 0) {
+        return {
+          ok: false,
+          errors: ['get_google_docs requires a non-empty "names" array of official "documents/..." names from search_google_docs or answer_google_docs.'],
+          diagram: stateOf(ctx),
+        };
+      }
+      const client = ctx.googleDocs ?? googleDocsApi;
+      try {
+        const res = await client.getDocuments(names, 6500);
+        return {
+          ok: true,
+          source: res.source,
+          cachedCount: res.cachedCount,
+          fetchedCount: res.fetchedCount,
+          documents: res.documents,
+          citationNote: 'Ground your Low-Level Design & Implementation Guidelines strictly in these official Google docs and cite every used document via its exact "uri" (https://...).',
+          diagram: stateOf(ctx),
+        };
+      } catch (e) {
+        return googleDocsErrorResponse(ctx, e);
+      }
+    }
+
+    case 'answer_google_docs': {
+      const query = str(a.query);
+      if (!query) {
+        return { ok: false, errors: ['answer_google_docs requires a non-empty "query" string.'], diagram: stateOf(ctx) };
+      }
+      const client = ctx.googleDocs ?? googleDocsApi;
+      try {
+        const res = await client.answer(query);
+        return {
+          ok: true,
+          source: res.source,
+          query: res.query,
+          cached: res.cached,
+          ...(res.answerText != null ? { answerText: res.answerText } : {}),
+          references: res.references,
+          ...(res.results ? {
+            results: res.results.map((r) => ({
+              parent: r.parent,
+              uri: r.uri,
+              id: r.id,
+              content: clip(r.content, 1100),
+            })),
+          } : {}),
+          ...(res.fallback ? { fallback: res.fallback } : {}),
+          ...(res.note ? { note: res.note } : {}),
+          citationNote: 'Cite the official "references" URIs (https://...) in your documentation. Call get_google_docs on any reference name when you need exact code, SQL/DDL, or CLI syntax.',
+          diagram: stateOf(ctx),
+        };
+      } catch (e) {
+        return googleDocsErrorResponse(ctx, e);
+      }
     }
 
     case 'create_diagram': {

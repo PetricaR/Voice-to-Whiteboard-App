@@ -548,7 +548,14 @@ export function generateMotionFromPage(
   }
 
   // Closing Takeaway Scene
-  const docSummary = pageScene.blocks.find((b) => b.kind === 'text')?.text?.split('\n').find((l) => l.trim() && !l.startsWith('#'))?.replace(/[*_`]/g, '');
+  const docSummary = pageScene.blocks
+    .find((b) => b.kind === 'text')
+    ?.text?.split('\n')
+    .find((l) => {
+      const t = l.trim();
+      return t !== '' && !t.startsWith('#') && !t.startsWith('{{') && !t.startsWith('[[');
+    })
+    ?.replace(/[*_`]/g, '');
   scenesInput.push({
     id: 'closing_summary',
     title: 'Executive Takeaway',

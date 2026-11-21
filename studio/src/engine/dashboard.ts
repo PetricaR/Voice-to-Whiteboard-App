@@ -22,9 +22,10 @@ export const WIDGET_KINDS = [
   'nightingale_rose',
   'radar',
   'marimekko',
-  // 2. Temporal (5)
+  // 2. Temporal (6)
   'line',
   'area',
+  'combo',
   'gantt',
   'candlestick',
   'streamgraph',
@@ -90,6 +91,11 @@ export const FILTER_KINDS = ['select', 'text'] as const;
 export type FilterKind = (typeof FILTER_KINDS)[number];
 
 export const CHART_PALETTES = [
+  'editorial',
+  'stripe',
+  'flourish',
+  'economist',
+  'okabe_ito',
   'studio',
   'viridis',
   'ocean',
@@ -101,6 +107,12 @@ export const CHART_PALETTES = [
   'neon',
 ] as const;
 export type ChartPalette = (typeof CHART_PALETTES)[number];
+
+export const CHART_DESIGN_PRESETS = ['editorial', 'stripe', 'flourish', 'minimal'] as const;
+export type ChartDesignPreset = (typeof CHART_DESIGN_PRESETS)[number];
+
+export const SECONDARY_SERIES_TYPES = ['line', 'dashed_line', 'area', 'bar'] as const;
+export type SecondarySeriesType = (typeof SECONDARY_SERIES_TYPES)[number];
 
 export const CHART_ORIENTATIONS = ['auto', 'vertical', 'horizontal'] as const;
 export type ChartOrientation = (typeof CHART_ORIENTATIONS)[number];
@@ -152,7 +164,7 @@ export type ChartTitleSize = (typeof TITLE_SIZES)[number];
 
 export interface ChartReferenceLine {
   id?: string;
-  axis: 'x' | 'y';
+  axis: 'x' | 'y' | 'y2';
   value: number | string;
   label?: string;
   color?: string;
@@ -161,7 +173,7 @@ export interface ChartReferenceLine {
 
 export interface ChartReferenceBand {
   id?: string;
-  axis: 'x' | 'y';
+  axis: 'x' | 'y' | 'y2';
   from: number;
   to: number;
   label?: string;
@@ -192,7 +204,8 @@ export interface ChartRangeBand {
  * annotations, and interactivity.
  */
 export interface ChartElementConfig {
-  // 1. Typography & Card Frame
+  // 1. Typography, Visual Design Preset & Card Frame
+  designPreset?: ChartDesignPreset;
   footnote?: string;
   badgeText?: string;
   titleSize?: ChartTitleSize;
@@ -226,7 +239,7 @@ export interface ChartElementConfig {
   xTickTruncate?: number;
   xAxisScale?: AxisScale;
 
-  // 5. Y-Axis
+  // 5. Y-Axis (Primary Left)
   showYAxis?: boolean;
   showYTicks?: boolean;
   yAxisTitle?: string;
@@ -237,6 +250,19 @@ export interface ChartElementConfig {
   startFromZero?: boolean;
   yTickCount?: number;
   yAxisFormat?: ValueFormat;
+
+  // 5B. Secondary Y-Axis (Right / Dual-Axis & Combo)
+  showY2Axis?: boolean;
+  secondaryYFields?: string[];
+  secondarySeriesType?: SecondarySeriesType;
+  y2AxisTitle?: string;
+  y2AxisFormat?: ValueFormat;
+  y2AxisScale?: AxisScale;
+  y2Min?: number;
+  y2Max?: number;
+  y2StartFromZero?: boolean;
+  y2Unit?: string;
+  y2Decimals?: number;
 
   // 6. Grid & Plot Margins
   showHorizontalGrid?: boolean;
@@ -562,7 +588,8 @@ export function normalizeChartConfig(
     }
   };
 
-  // 1. Typography & Card Frame
+  // 1. Typography, Visual Design Preset & Card Frame
+  setEnum('designPreset', CHART_DESIGN_PRESETS);
   setStr('footnote');
   setStr('badgeText');
   setEnum('titleSize', TITLE_SIZES);
@@ -608,7 +635,7 @@ export function normalizeChartConfig(
   setNum('xTickTruncate', 3, 60);
   setEnum('xAxisScale', AXIS_SCALES);
 
-  // 5. Y-Axis
+  // 5. Y-Axis (Primary)
   setBool('showYAxis');
   setBool('showYTicks');
   setStr('yAxisTitle');
@@ -619,6 +646,29 @@ export function normalizeChartConfig(
   setBool('startFromZero');
   setNum('yTickCount', 2, 12);
   setEnum('yAxisFormat', VALUE_FORMATS);
+
+  // 5B. Secondary Y-Axis (Right / Dual-Axis)
+  setBool('showY2Axis');
+  if ('secondaryYFields' in src) {
+    const sy = src.secondaryYFields;
+    if (sy === null || sy === undefined) delete out.secondaryYFields;
+    else if (Array.isArray(sy)) {
+      const cleaned = sy.map((s) => String(s).trim()).filter(Boolean);
+      if (cleaned.length > 0) out.secondaryYFields = cleaned;
+      else delete out.secondaryYFields;
+    } else if (typeof sy === 'string' && sy.trim()) {
+      out.secondaryYFields = [sy.trim()];
+    }
+  }
+  setEnum('secondarySeriesType', SECONDARY_SERIES_TYPES);
+  setStr('y2AxisTitle');
+  setEnum('y2AxisFormat', VALUE_FORMATS);
+  setEnum('y2AxisScale', AXIS_SCALES);
+  setFreeNum('y2Min');
+  setFreeNum('y2Max');
+  setBool('y2StartFromZero');
+  setStr('y2Unit');
+  setNum('y2Decimals', 0, 6);
 
   // 6. Grid & Plot Margins
   setBool('showHorizontalGrid');
@@ -693,10 +743,10 @@ export function normalizeChartConfig(
     if (src.referenceLines === null || src.referenceLines === undefined) delete out.referenceLines;
     else if (Array.isArray(src.referenceLines)) {
       out.referenceLines = src.referenceLines
-        .filter((rl: any) => rl && (rl.axis === 'x' || rl.axis === 'y') && rl.value !== undefined)
+        .filter((rl: any) => rl && (rl.axis === 'x' || rl.axis === 'y' || rl.axis === 'y2') && rl.value !== undefined)
         .map((rl: any, i: number) => ({
           id: rl.id ? String(rl.id) : `ref_${i + 1}`,
-          axis: rl.axis === 'x' ? 'x' : 'y',
+          axis: rl.axis === 'x' ? 'x' : rl.axis === 'y2' ? 'y2' : 'y',
           value: typeof rl.value === 'number' || (typeof rl.value === 'string' && rl.value.trim() !== '' && !Number.isNaN(Number(rl.value)))
             ? Number(rl.value)
             : String(rl.value),
@@ -710,10 +760,10 @@ export function normalizeChartConfig(
     if (src.referenceBands === null || src.referenceBands === undefined) delete out.referenceBands;
     else if (Array.isArray(src.referenceBands)) {
       out.referenceBands = src.referenceBands
-        .filter((rb: any) => rb && (rb.axis === 'x' || rb.axis === 'y') && Number.isFinite(Number(rb.from)) && Number.isFinite(Number(rb.to)))
+        .filter((rb: any) => rb && (rb.axis === 'x' || rb.axis === 'y' || rb.axis === 'y2') && Number.isFinite(Number(rb.from)) && Number.isFinite(Number(rb.to)))
         .map((rb: any, i: number) => ({
           id: rb.id ? String(rb.id) : `band_${i + 1}`,
-          axis: rb.axis === 'x' ? 'x' : 'y',
+          axis: rb.axis === 'x' ? 'x' : rb.axis === 'y2' ? 'y2' : 'y',
           from: Number(rb.from),
           to: Number(rb.to),
           ...(rb.label ? { label: String(rb.label) } : {}),
@@ -749,6 +799,7 @@ export function cloneChartConfig(cfg: ChartElementConfig | undefined): ChartElem
   return {
     ...cfg,
     ...(cfg.customColors ? { customColors: [...cfg.customColors] } : {}),
+    ...(cfg.secondaryYFields ? { secondaryYFields: [...cfg.secondaryYFields] } : {}),
     ...(cfg.ranges ? { ranges: cfg.ranges.map((r) => ({ ...r })) } : {}),
     ...(cfg.referenceLines ? { referenceLines: cfg.referenceLines.map((rl) => ({ ...rl })) } : {}),
     ...(cfg.referenceBands ? { referenceBands: cfg.referenceBands.map((rb) => ({ ...rb })) } : {}),
@@ -1452,6 +1503,49 @@ export function dashboardToVegaLiteHandoff(
     const cfg = w.chartConfig;
     const mark = vegaMarkForKind(w.kind);
     const isArc = mark === 'arc';
+    const y2Col = cfg?.secondaryYFields?.[0] ?? (w.kind === 'combo' ? (w.yFields?.[1] ?? cols[2]) : undefined);
+    if (y2Col && !isArc && y2Col !== yCol) {
+      const secondaryMark = cfg?.secondarySeriesType === 'bar' ? 'bar' : cfg?.secondarySeriesType === 'area' ? 'area' : 'line';
+      return {
+        title: {
+          text: w.title,
+          subtitle: w.subtitle ?? `SQL: ${w.sql.replace(/\s+/g, ' ')}`,
+        },
+        data: { values },
+        layer: [
+          {
+            mark: { type: w.kind === 'combo' ? 'bar' : mark, tooltip: cfg?.showTooltip !== false },
+            encoding: {
+              x: { field: xCol, type: 'nominal', ...(cfg?.xAxisTitle ? { title: cfg.xAxisTitle } : {}) },
+              y: {
+                field: yCol,
+                type: 'quantitative',
+                axis: { title: cfg?.yAxisTitle ?? yCol, orient: 'left' },
+                ...(cfg?.yAxisScale && cfg.yAxisScale !== 'linear' ? { scale: { type: cfg.yAxisScale } } : {}),
+              },
+            },
+          },
+          {
+            mark: {
+              type: secondaryMark,
+              tooltip: cfg?.showTooltip !== false,
+              ...(cfg?.secondarySeriesType === 'dashed_line' ? { strokeDash: [6, 4] } : {}),
+            },
+            encoding: {
+              x: { field: xCol, type: 'nominal' },
+              y: {
+                field: y2Col,
+                type: 'quantitative',
+                axis: { title: cfg?.y2AxisTitle ?? y2Col, orient: 'right' },
+                ...(cfg?.y2AxisScale && cfg.y2AxisScale !== 'linear' ? { scale: { type: cfg.y2AxisScale } } : {}),
+              },
+            },
+          },
+        ],
+        resolve: { scale: { y: 'independent' } },
+        ...(w.chartConfig ? { usermeta: { studioChartKind: w.kind, chartConfig: w.chartConfig } } : {}),
+      };
+    }
     return {
       title: {
         text: w.title,
@@ -1518,6 +1612,7 @@ function grafanaTypeForKind(kind: WidgetKind): string {
       return 'piechart';
     case 'line':
     case 'area':
+    case 'combo':
     case 'streamgraph':
     case 'density':
     case 'spiral_plot':

@@ -10,6 +10,7 @@ import { isBlankScene } from '../engine/types';
 import { flowId } from './canvas/DiagramCanvas';
 import { FIT_OPTIONS } from './canvas/fit';
 import { Icon, IconButton, useStoreRevision, useStudio } from './context';
+import { usePopoverMenu } from './domTransitions';
 
 const DURATION = 220;
 const PRESETS = [0.5, 1, 1.5, 2];
@@ -25,9 +26,18 @@ export function ZoomControls({ minimap, setMinimap, hidden = false }: {
   const { store, agent } = useStudio();
   useStoreRevision(store);
   const [menu, setMenu] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const empty = isBlankScene(store.scene);
   const pct = Math.round(zoom * 100);
+
+  usePopoverMenu({
+    open: menu,
+    onOpenChange: setMenu,
+    menuRef,
+    triggerRef,
+    placement: 'right-end',
+  });
 
   const fit = useCallback(() => {
     rf.fitView({ ...FIT_OPTIONS, duration: 400 });
@@ -92,68 +102,47 @@ export function ZoomControls({ minimap, setMinimap, hidden = false }: {
     return () => window.removeEventListener('keydown', onKey);
   }, [rf, fit, zoomTo, zoomToSelection, minimap, setMinimap, hidden]);
 
-  useEffect(() => {
-    if (!menu) return;
-    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
-    const close = (e: PointerEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setMenu(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        setMenu(false);
-      }
-    };
-    window.addEventListener('pointerdown', close);
-    window.addEventListener('keydown', onKey, true);
-    return () => {
-      window.removeEventListener('pointerdown', close);
-      window.removeEventListener('keydown', onKey, true);
-    };
-  }, [menu]);
-
   const item = (label: string, run: () => void, shortcut?: string, disabled = false) => (
     <button type="button" role="menuitem" disabled={disabled} onClick={() => { run(); setMenu(false); }}>
       <span>{label}</span>
-      {shortcut && <kbd>{shortcut}</kbd>}
+      {shortcut && <kbd aria-hidden="true">{shortcut}</kbd>}
     </button>
   );
 
   return (
     <div className="zoom-controls" role="toolbar" aria-label="Zoom and view" aria-orientation="vertical" hidden={hidden}>
       <IconButton icon="zoom_in" label="Zoom in" shortcut="⌘+" onClick={() => rf.zoomIn({ duration: DURATION })} />
-      <div className="menu-anchor" ref={menuRef}>
+      <div className="menu-anchor">
         <button
+          ref={triggerRef}
           type="button"
           className="zoom-level"
           aria-haspopup="menu"
           aria-expanded={menu}
           aria-label={`Zoom ${pct} %, zoom options`}
           data-tooltip="Zoom options"
-          onClick={() => setMenu(!menu)}
+          onClick={() => setMenu((v) => !v)}
         >
           {pct}%
         </button>
-        {menu && (
-          <div className="menu zoom-menu" role="menu" aria-label="Zoom">
-            {item('Zoom to fit', fit, '⇧1', empty)}
-            {item('Zoom to selection', zoomToSelection, '⇧2', store.selection.length === 0)}
-            <div className="menu-divider" />
-            {PRESETS.map((z) => (
-              <button key={z} type="button" role="menuitemradio" aria-checked={Math.abs(zoom - z) < 0.005}
-                onClick={() => { zoomTo(z); setMenu(false); }}>
-                <span>{z * 100}%</span>
-                {z === 1 && <kbd>⌘0</kbd>}
-                {Math.abs(zoom - z) < 0.005 && <Icon name="check" size={18} />}
-              </button>
-            ))}
-            <div className="menu-divider" />
-            {item(minimap ? 'Hide minimap' : 'Show minimap', () => setMinimap(!minimap), 'M')}
-          </div>
-        )}
+        <div ref={menuRef} popover="auto" className="menu menu-popover menu-right zoom-menu" role="menu" aria-label="Zoom">
+          {item('Zoom to fit', fit, '⇧1', empty)}
+          {item('Zoom to selection', zoomToSelection, '⇧2', store.selection.length === 0)}
+          <hr className="menu-divider" />
+          {PRESETS.map((z) => (
+            <button key={z} type="button" role="menuitemradio" aria-checked={Math.abs(zoom - z) < 0.005}
+              onClick={() => { zoomTo(z); setMenu(false); }}>
+              <span>{z * 100}%</span>
+              {z === 1 && <kbd aria-hidden="true">⌘0</kbd>}
+              {Math.abs(zoom - z) < 0.005 && <Icon name="check" size={18} />}
+            </button>
+          ))}
+          <hr className="menu-divider" />
+          {item(minimap ? 'Hide minimap' : 'Show minimap', () => setMinimap(!minimap), 'M')}
+        </div>
       </div>
       <IconButton icon="zoom_out" label="Zoom out" shortcut="⌘−" onClick={() => rf.zoomOut({ duration: DURATION })} />
-      <span className="zoom-divider" />
+      <span className="zoom-divider" role="separator" aria-orientation="horizontal" />
       <IconButton icon="fit_screen" label="Fit to screen" shortcut="⇧1" disabled={empty} onClick={fit} />
       <IconButton icon="filter_center_focus" label="Zoom to selection" shortcut="⇧2" disabled={store.selection.length === 0} onClick={zoomToSelection} />
       <IconButton icon="map" label={minimap ? 'Hide minimap' : 'Show minimap'} shortcut="M" selected={minimap} onClick={() => setMinimap(!minimap)} />

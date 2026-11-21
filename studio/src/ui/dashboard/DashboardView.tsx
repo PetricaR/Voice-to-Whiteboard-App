@@ -589,6 +589,23 @@ export function DashboardView({
                 ? ({ '--widget-stagger': `${Math.min(idx, 7) * 32}ms` } as CSSProperties)
                 : undefined;
 
+              const cfg = w.chartConfig;
+              const cardClasses = [
+                'widget-card',
+                `kind-${w.kind}`,
+                w.color ? `accent-${w.color}` : '',
+                isSelected ? 'selected' : '',
+                cfg?.designPreset ? `preset-${cfg.designPreset}` : 'preset-editorial',
+                cfg?.cardBackground && cfg.cardBackground !== 'default' ? `card-bg-${cfg.cardBackground}` : '',
+                cfg?.cardBorder && cfg.cardBorder !== 'default' ? `card-border-${cfg.cardBorder}` : '',
+                cfg?.cardPadding && cfg.cardPadding !== 'normal' ? `card-pad-${cfg.cardPadding}` : '',
+                cfg?.titleSize && cfg.titleSize !== 'md' ? `title-size-${cfg.titleSize}` : '',
+                cfg?.titleAlign && cfg.titleAlign !== 'left' ? `title-align-${cfg.titleAlign}` : '',
+                cfg?.fontFamily && cfg.fontFamily !== 'sans' ? `font-${cfg.fontFamily}` : '',
+              ]
+                .filter(Boolean)
+                .join(' ');
+
               return (
                 <div
                   key={w.id}
@@ -603,7 +620,7 @@ export function DashboardView({
                   inert={exiting || undefined}
                 >
                   <article
-                    className={`widget-card kind-${w.kind}${w.color ? ` accent-${w.color}` : ''}${isSelected ? ' selected' : ''}`}
+                    className={cardClasses}
                     data-widget-id={w.id}
                     onClick={(e) => {
                       if (exiting) return;
@@ -614,6 +631,7 @@ export function DashboardView({
                   >
                     <header className="widget-card-head">
                       <div className="widget-titles">
+                        {cfg?.badgeText && <span className="widget-eyebrow-badge">{cfg.badgeText}</span>}
                         <h3>{w.title}</h3>
                         {w.subtitle && <p>{w.subtitle}</p>}
                       </div>

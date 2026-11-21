@@ -103,6 +103,9 @@ function markdownHeight(text: string, inner: number): number {
       case 'table':
         h += tableSize(b.header, b.rows, inner).height + 8;
         break;
+      case 'diagram':
+        h += 220;
+        break;
       case 'rule':
         h += 17;
         break;

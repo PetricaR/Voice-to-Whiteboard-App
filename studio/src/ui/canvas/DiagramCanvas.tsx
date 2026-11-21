@@ -256,7 +256,7 @@ export function DiagramCanvas({ onEmptyChange, viewport, onLeave, minimap = fals
   const nodes = useMemo(() => {
     const result: Node[] = [];
     const bounds = shownGroupBounds;
-    const groups = [...scene.groups].sort((a, b) => groupDepth(scene, a) - groupDepth(scene, b));
+    const groups = scene.groups.toSorted((a, b) => groupDepth(scene, a) - groupDepth(scene, b));
     for (const g of groups) {
       const b = bounds.get(g.id);
       if (b == null) continue;

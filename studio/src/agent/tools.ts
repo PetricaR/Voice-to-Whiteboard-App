@@ -4,6 +4,7 @@
  */
 import {
   AXIS_SCALES,
+  CHART_DESIGN_PRESETS,
   CHART_ORIENTATIONS,
   CHART_PALETTES,
   CURVE_TYPES,
@@ -13,6 +14,7 @@ import {
   LEGEND_POSITIONS,
   LINE_STYLES,
   MAP_SCOPES,
+  SECONDARY_SERIES_TYPES,
   SORT_MODES,
   STACK_MODES,
   VALUE_FORMATS,
@@ -74,12 +76,12 @@ export const chartConfigFields = {
   // Context that turns a chart into an insight
   target_value: num('Goal or quota: the target marker of kpi, gauge and bullet.'),
   reference_lines: arrayOf(obj({
-    axis: enumOf(['x', 'y'], 'y for a horizontal line at a value (target, budget, SLA); x for a vertical line at a category or date.'),
+    axis: enumOf(['x', 'y', 'y2'], 'y for a horizontal line on the left axis, y2 for the right (secondary) y axis, x for a vertical line at a category or date.'),
     value: str('Value on that axis, e.g. "180000" or "2026-07".'),
     label: str('Short label, e.g. "Target $180K".'),
   }, ['axis', 'value']), 'Target, budget, threshold or event lines.'),
   reference_bands: arrayOf(obj({
-    axis: enumOf(['x', 'y'], 'Axis of the band.'),
+    axis: enumOf(['x', 'y', 'y2'], 'Axis of the band (x, y left, or y2 right).'),
     from: num('Start value.'),
     to: num('End value.'),
     label: str('Short label, e.g. "Healthy range".'),
@@ -102,14 +104,27 @@ export const chartConfigFields = {
   footnote: str('One line under the chart: scope, caveat or data source.'),
   // Axes
   x_axis_title: str('Title of the x axis, when the column name is not clear.'),
-  y_axis_title: str('Title of the y axis, with the unit.'),
-  y_axis_format: enumOf(VALUE_FORMATS, 'Format of the axis ticks when it differs from the widget format.'),
+  y_axis_title: str('Title of the left y axis, with the unit.'),
+  y_axis_format: enumOf(VALUE_FORMATS, 'Format of the left y axis ticks when it differs from the widget format.'),
   y_axis_scale: enumOf(AXIS_SCALES, 'log when values span several orders of magnitude.'),
   start_from_zero: bool('Bars always start at zero. For lines, false zooms in on the variation.'),
-  y_min: num('Lower bound of the y axis.'),
-  y_max: num('Upper bound of the y axis, e.g. 100 for percentages.'),
-  // Color
-  palette: enumOf(CHART_PALETTES, 'Color palette; diverging for values around a midpoint, viridis/ocean for sequential intensity.'),
+  y_min: num('Lower bound of the left y axis.'),
+  y_max: num('Upper bound of the left y axis, e.g. 100 for percentages.'),
+  // Second Y-Axis (Dual-Axis & Combo)
+  show_y2_axis: bool('Show an independent right-hand (second) Y-axis.'),
+  secondary_y_fields: arrayOf(str('Series or column name.'), 'Metric columns or series plotted against the right-hand Y2 axis (e.g. ["ndr_pct"] on a combo or dual-axis chart).'),
+  secondary_series_type: enumOf(SECONDARY_SERIES_TYPES, 'Visual geometry for secondary-axis series: line, dashed_line, area, or bar.'),
+  y2_axis_title: str('Title of the right-hand (second) Y-axis, including unit (color-matched to the secondary series).'),
+  y2_axis_format: enumOf(VALUE_FORMATS, 'Display format of the right-hand Y2 axis ticks and values (e.g. "percent" while left axis is "currency_usd").'),
+  y2_axis_scale: enumOf(AXIS_SCALES, 'Scale of the right-hand Y2 axis: linear, log, or sqrt.'),
+  y2_min: num('Lower bound of the right-hand Y2 axis.'),
+  y2_max: num('Upper bound of the right-hand Y2 axis.'),
+  y2_start_from_zero: bool('Whether the right-hand Y2 axis starts at zero (false often works better for rates/indices like 95%–125%).'),
+  y2_unit: str('Optional unit suffix for secondary-axis values (e.g. "ms", "pts").'),
+  y2_decimals: { type: 'INTEGER', description: 'Decimal places for secondary-axis values (0–6).' },
+  // Visual Design Preset & Color
+  design_preset: enumOf(CHART_DESIGN_PRESETS, 'Visual design system preset: editorial (FT/Economist), stripe (Stripe/Linear), flourish (Flourish storytelling), or minimal (Tufte).'),
+  palette: enumOf(CHART_PALETTES, 'Color palette; editorial/stripe/flourish/economist/okabe_ito for high-craft categoricals, diverging around a midpoint, viridis/ocean for sequential intensity.'),
   color_by: enumOf(['series', 'category', 'value'], 'value shades by magnitude; category gives each bar its own color (only when the categories are the story).'),
   // Per kind
   curve_type: enumOf(CURVE_TYPES, 'monotone for smooth trends, step for values that change at discrete moments.'),
@@ -503,19 +518,20 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'write_text',
-    description: 'Writes one chapter of the documentation of the current page. The documentation is not on the ' +
-      'canvas: it is a book in its own tab, with a table of contents (chapters, and the "## " headings of each ' +
-      'chapter as its sections), and it opens at this chapter. Use it for the text chapters of arc42-style ' +
-      'architecture documentation (introduction and goals, runtime view, deployment, cross-cutting concepts, ' +
-      'architecture decision records), and for runbooks and notes. With the id of an existing chapter it rewrites ' +
-      'that chapter (append: true adds to its end, e.g. one more ADR). Returns the state.',
+    description: 'Writes one chapter of the documentation of the current page. The documentation is not drawn on the ' +
+      'canvas: it is a reference guide in its own tab, with a table of contents (chapters, and the "## " / "### " ' +
+      'headings of each chapter as its sections), and it opens at this chapter. Supports embedding the full ' +
+      'architecture diagram inline (`{{diagram | Caption}}`), subsystem-focused architecture diagrams ' +
+      '(`{{diagram: node_id1, node_id2 | Caption}}`), language-tagged fenced code blocks (```typescript, ```python, ' +
+      '```sql, ```hcl, ```yaml, ```bash), typed production callouts (`> [!WARNING] ...`, `> [!IMPORTANT] ...`, ' +
+      '`> [!NOTE] ...`, `> [!TIP] ...`), and inline Markdown comparison tables. Use it for full low-level design ' +
+      'architecture and concrete implementation guidelines, overview/topology, runtime flows, ADRs, runbooks, and ' +
+      'rollout roadmaps. With the id of an existing chapter it rewrites that chapter (append: true adds to its end). Returns the state.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
-      id: str('Short snake_case id of a new chapter (e.g. "overview", "runtime", "decisions"), or the id of an existing chapter to rewrite.'),
-      title: str('Title of the chapter in the table of contents, e.g. "Introduction and goals", "Runtime view", "Architecture decisions".'),
-      text: str('Markdown body of the chapter, without the chapter title: "## " section headings, "- " bullets, ' +
-        '"1. " steps, **bold**, _italic_, `code`, "| a | b |" tables. Uses the exact labels of the diagram; ' +
-        'anything the diagram does not show is marked "_Assumption:_". In English.'),
+      id: str('Short snake_case id of a new chapter (e.g. "overview", "runtime", "lld_data_isolation", "decisions", "rollout"), or the id of an existing chapter to rewrite.'),
+      title: str('Title of the chapter in the table of contents, e.g. "Architecture Overview & System Topology", "AlloyDB Isolation & Vector Search", "Implementation Roadmap & Verification".'),
+      text: str('Rich Markdown body of the chapter, without repeating the chapter title: `{{diagram | Caption}}` to embed the full architecture or `{{diagram: id1, id2 | Caption}}` to highlight a subsystem in context; "## " / "### " section headings; "- " bullets and "1. " steps; `> [!WARNING] ...` / `> [!IMPORTANT] ...` callout boxes; "| a | b |" comparison tables; and language-tagged fenced code blocks (```python, ```typescript, ```sql, ```yaml, ```hcl, ```bash) with production-ready implementation guidelines. Uses exact canvas labels; inferred targets/limits are marked "(_Assumption_)". In English.'),
       append: { type: 'BOOLEAN', description: 'Add the text to the end of the existing chapter instead of replacing it.' },
       after: str('Only to set the reading order: id of the chapter this one follows, or "start". New chapters go at the end.'),
       summary: str('What changed, at most 8 words (shown in the history).'),
@@ -606,6 +622,38 @@ export const TOOL_DECLARATIONS = [
       query: str('Search query: use case, industry, agent type, architectural layer, or component (e.g. "rag document ai", "customer agent", "secops", "vector database").'),
       provider: enumOf(PROVIDERS, 'Optional cloud provider filter ("gcp", "aws", "azure", "k8s", "onprem").'),
       category: enumOf(['customer', 'employee', 'data', 'code', 'creative', 'security', 'architecture', 'flowchart'], 'Optional blueprint category: blueprints of this category rank first, the others still match the query.'),
+    }, ['query']),
+  },
+  {
+    name: 'search_google_docs',
+    description: 'Searches Google’s official Developer Knowledge MCP server (developerknowledge.googleapis.com/mcp) covering ' +
+      'docs.cloud.google.com, ai.google.dev, firebase.google.com, adk.dev, genkit.dev, docs.apigee.com, developer.android.com, ' +
+      'developer.chrome.com, docs.flutter.dev, go.dev, web.dev, and Google Workspace docs. Returns authoritative Markdown snippets ' +
+      'plus exact "parent" ("documents/...") resource names and "uri" ("https://...") citation URLs. Mandatory before writing ' +
+      'Low-Level Design or Implementation Guidelines for any Google / Google Cloud service.',
+    behavior: 'NON_BLOCKING',
+    parameters: obj({
+      query: str('Focused technical search query naming the Google product and low-level mechanic (e.g. "AlloyDB pgvector ScaNN index row level security", "Cloud Run concurrency max instances VPC egress", "Cloud Tasks OIDC token verification", "Gemini API structured output thoughtSignature").'),
+      limit: { type: 'INTEGER', description: 'Maximum snippets to return (1–12, default 8).' },
+    }, ['query']),
+  },
+  {
+    name: 'get_google_docs',
+    description: 'Fetches full, latest official Google documentation Markdown pages via the official Developer Knowledge MCP ' +
+      'get_documents tool (exact SDK APIs, DDL/SQL, IAM roles, CLI flags, limits, and official code samples). ' +
+      'Pass 1 to 5 exact "parent" ("documents/...") names or "uri" URLs returned by search_google_docs or answer_google_docs.',
+    behavior: 'NON_BLOCKING',
+    parameters: obj({
+      names: arrayOf(str('Official document resource name ("documents/docs.cloud.google.com/...") or URI returned by search_google_docs / answer_google_docs.'), '1 to 5 document names to retrieve in one batch.'),
+    }, ['names']),
+  },
+  {
+    name: 'answer_google_docs',
+    description: 'Calls Google’s official Developer Knowledge MCP answer_query tool for synthesized, authoritative answers ' +
+      'grounded in official Google documentation with exact "references" URIs. Automatically falls back to search_documents on quota limits.',
+    behavior: 'NON_BLOCKING',
+    parameters: obj({
+      query: str('Technical question about official Google Cloud, Gemini/Vertex AI, Firebase, or Google developer APIs, architecture limits, or best practices.'),
     }, ['query']),
   },
   {

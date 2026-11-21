@@ -5,13 +5,16 @@
  * the size estimate, so a block is as tall as its content.
  */
 
+export type CalloutVariant = 'note' | 'tip' | 'important' | 'warning' | 'caution';
+
 export type MdBlock =
   | { type: 'heading'; level: 1 | 2 | 3; text: string }
   | { type: 'paragraph'; text: string }
   | { type: 'list'; ordered: boolean; items: { text: string; depth: number }[] }
-  | { type: 'quote'; text: string }
-  | { type: 'code'; text: string }
+  | { type: 'quote'; text: string; variant?: CalloutVariant }
+  | { type: 'code'; text: string; lang?: string }
   | { type: 'table'; header: string[]; rows: string[][] }
+  | { type: 'diagram'; caption?: string; focus?: string[] }
   | { type: 'rule' };
 
 export interface InlineSpan {
@@ -19,6 +22,35 @@ export interface InlineSpan {
   bold?: boolean;
   italic?: boolean;
   code?: boolean;
+  /** Safe `https://` external URL (e.g. official Google Developer Knowledge documentation link). */
+  href?: string;
+}
+
+const DIAGRAM_DIRECTIVE_RE = /^(?:\{\{|\[\[)\s*diagram(?:\s*:\s*([^|}\]]+))?(?:\s*\|\s*([^}\]]+))?\s*(?:\}\}|\]\])$/i;
+const CALLOUT_TAG_RE = /^\[!(NOTE|TIP|IMPORTANT|WARNING|CAUTION)\]\s*(.*)$/i;
+
+/**
+ * Parses an embedded architecture diagram directive:
+ *   {{diagram}}
+ *   {{diagram | Full Multi-Tenant Architecture}}
+ *   {{diagram: api, cache, db | Caching & Persistence Subsystem}}
+ */
+export function parseDiagramDirective(line: string): { caption?: string; focus?: string[] } | null {
+  const m = DIAGRAM_DIRECTIVE_RE.exec(line.trim());
+  if (m == null) return null;
+  const focus = m[1]
+    ? m[1].split(/[,;]+/).map((s) => s.trim()).filter(Boolean)
+    : undefined;
+  const caption = m[2]?.trim() || undefined;
+  return {
+    ...(focus && focus.length > 0 ? { focus } : {}),
+    ...(caption ? { caption } : {}),
+  };
+}
+
+/** Lists all diagram embed directives inside a Markdown chapter. */
+export function findDiagramDirectives(src: string): { caption?: string; focus?: string[] }[] {
+  return parseMarkdown(src).flatMap((b) => (b.type === 'diagram' ? [{ caption: b.caption, focus: b.focus }] : []));
 }
 
 const splitRow = (line: string): string[] =>
@@ -51,9 +83,17 @@ export function parseMarkdown(src: string): MdBlock[] {
     }
     if (trimmed.startsWith('```')) {
       flush();
+      const langMatch = /^```+\s*([A-Za-z0-9_+#.-]+)/.exec(trimmed);
+      const lang = langMatch ? langMatch[1].toLowerCase() : undefined;
       const code: string[] = [];
       for (i++; i < lines.length && !lines[i].trim().startsWith('```'); i++) code.push(lines[i]);
-      out.push({ type: 'code', text: code.join('\n') });
+      out.push({ type: 'code', text: code.join('\n'), ...(lang ? { lang } : {}) });
+      continue;
+    }
+    const diagram = parseDiagramDirective(trimmed);
+    if (diagram != null) {
+      flush();
+      out.push({ type: 'diagram', ...diagram });
       continue;
     }
     const heading = /^(#{1,6})\s+(.*)$/.exec(trimmed);
@@ -94,10 +134,18 @@ export function parseMarkdown(src: string): MdBlock[] {
     }
     if (trimmed.startsWith('>')) {
       flush();
-      const text = trimmed.replace(/^>\s?/, '');
-      const last = out[out.length - 1];
-      if (last?.type === 'quote') last.text += ' ' + text;
-      else out.push({ type: 'quote', text });
+      const raw = trimmed.replace(/^>\s?/, '');
+      const tag = CALLOUT_TAG_RE.exec(raw);
+      if (tag) {
+        out.push({ type: 'quote', variant: tag[1].toLowerCase() as CalloutVariant, text: tag[2].trim() });
+      } else {
+        const last = out[out.length - 1];
+        if (last?.type === 'quote') {
+          last.text = last.text ? (raw ? `${last.text} ${raw}` : last.text) : raw;
+        } else {
+          out.push({ type: 'quote', text: raw });
+        }
+      }
       continue;
     }
     // A line right after a list item that is indented continues it
@@ -112,17 +160,46 @@ export function parseMarkdown(src: string): MdBlock[] {
   return out;
 }
 
-/** Splits **bold**, *italic* / _italic_ and `code` marks. */
+/** Accepts only valid `https://` URLs to prevent XSS (`javascript:`, `data:`, etc.). */
+export function safeHttpsUrl(raw: string): string | null {
+  try {
+    const u = new URL(raw.trim());
+    if (u.protocol !== 'https:' || !u.hostname) return null;
+    return u.href;
+  } catch {
+    return null;
+  }
+}
+
+/** Splits Markdown links `[label](https://...)`, bare `https://` URLs, **bold**, *italic* / _italic_ and `code` marks. */
 export function parseInline(text: string): InlineSpan[] {
   const spans: InlineSpan[] = [];
-  const re = /(\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*\s][^*]*\*|_[^_\s][^_]*_)/g;
+  const re = /(\[[^\]\n]+\]\((?:[^()\s]|\([^()\s]*\))+\)|https:\/\/[^\s<>)\]]+|\*\*[^*]+\*\*|__[^_]+__|`[^`]+`|\*[^*\s][^*]*\*|_[^_\s][^_]*_)/g;
   let last = 0;
   for (let m = re.exec(text); m != null; m = re.exec(text)) {
     if (m.index > last) spans.push({ text: text.slice(last, m.index) });
     const t = m[0];
-    if (t.startsWith('**') || t.startsWith('__')) spans.push({ text: t.slice(2, -2), bold: true });
-    else if (t.startsWith('`')) spans.push({ text: t.slice(1, -1), code: true });
-    else spans.push({ text: t.slice(1, -1), italic: true });
+    if (t.startsWith('[')) {
+      const linkMatch = /^\[([^\]\n]+)\]\(((?:[^()\s]|\([^()\s]*\))+)\)$/.exec(t);
+      if (linkMatch) {
+        const href = safeHttpsUrl(linkMatch[2]);
+        spans.push(href ? { text: linkMatch[1], href } : { text: linkMatch[1] });
+      } else {
+        spans.push({ text: t });
+      }
+    } else if (t.startsWith('https://')) {
+      const cleaned = t.replace(/[.,;:!?]+$/, '');
+      const trailing = t.slice(cleaned.length);
+      const href = safeHttpsUrl(cleaned);
+      spans.push(href ? { text: cleaned, href } : { text: cleaned });
+      if (trailing) spans.push({ text: trailing });
+    } else if (t.startsWith('**') || t.startsWith('__')) {
+      spans.push({ text: t.slice(2, -2), bold: true });
+    } else if (t.startsWith('`')) {
+      spans.push({ text: t.slice(1, -1), code: true });
+    } else {
+      spans.push({ text: t.slice(1, -1), italic: true });
+    }
     last = m.index + t.length;
   }
   if (last < text.length) spans.push({ text: text.slice(last) });

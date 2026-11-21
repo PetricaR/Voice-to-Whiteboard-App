@@ -10,6 +10,7 @@ import { Fragment, useEffect, useRef, useState, type KeyboardEvent as ReactKeybo
 import { hasDashboard, hasDiagram, hasMotion, isBlankScene, type Scene } from '../engine/types';
 import type { Page, PageView } from '../engine/workspace';
 import { Icon, IconButton, useStudio, useWorkspaceRevision } from './context';
+import { usePopoverMenu } from './domTransitions';
 import type { IconName } from './icons';
 
 const TYPE_ICON: Record<string, IconName> = {
@@ -60,8 +61,8 @@ export function PageTabs() {
   const { workspace } = useStudio();
   useWorkspaceRevision(workspace);
   const [renaming, setRenaming] = useState<string | null>(null);
-  // The menu is fixed-positioned: the tab list scrolls and would clip it
-  const [menu, setMenu] = useState<{ id: string; left: number; top: number } | null>(null);
+  const [menuId, setMenuId] = useState<string | null>(null);
+  const menuTriggerRef = useRef<HTMLElement | null>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const listRef = useRef<HTMLDivElement>(null);
   const pages = workspace.pages;
@@ -73,27 +74,14 @@ export function PageTabs() {
     return hasDocTab(p) ? [{ page: p, view: primary }, { page: p, view: 'doc' as const }] : [{ page: p, view: primary }];
   });
 
-  useEffect(() => {
-    if (menu == null) return;
-    menuRef.current?.querySelector<HTMLButtonElement>('[role="menuitem"]:not(:disabled)')?.focus();
-    const close = (e: PointerEvent) => {
-      const t = e.target as Element;
-      // The button that opened the menu toggles it itself
-      if (!menuRef.current?.contains(t) && !t.closest?.('[aria-haspopup="menu"]')) setMenu(null);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        setMenu(null);
-      }
-    };
-    window.addEventListener('pointerdown', close);
-    window.addEventListener('keydown', onKey, true);
-    return () => {
-      window.removeEventListener('pointerdown', close);
-      window.removeEventListener('keydown', onKey, true);
-    };
-  }, [menu]);
+  usePopoverMenu({
+    open: menuId != null,
+    onOpenChange: (next) => { if (!next) setMenuId(null); },
+    menuRef,
+    triggerRef: menuTriggerRef,
+    placement: 'bottom-start',
+    focusFirstOnOpen: true,
+  });
 
   // Keep the active tab visible when pages are added or switched (also by voice)
   useEffect(() => {
@@ -107,144 +95,153 @@ export function PageTabs() {
   const focusTab = (id: string, v: PageView) =>
     listRef.current?.querySelector<HTMLElement>(`[data-page="${id}"][data-view="${v}"]`)?.focus();
   const onArrow = (e: ReactKeyboardEvent, page: Page, v: PageView): boolean => {
-    if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return false;
+    if (!['ArrowRight', 'ArrowLeft', 'Home', 'End'].includes(e.key)) return false;
     e.preventDefault();
     const i = stops.findIndex((s) => s.page === page && s.view === v);
-    const next = stops[(i + (e.key === 'ArrowRight' ? 1 : stops.length - 1)) % stops.length];
+    const nextIdx = e.key === 'Home' ? 0
+      : e.key === 'End' ? stops.length - 1
+      : (i + (e.key === 'ArrowRight' ? 1 : stops.length - 1)) % stops.length;
+    const next = stops[nextIdx];
     workspace.showView(next.view, { page: next.page.id });
     requestAnimationFrame(() => focusTab(next.page.id, next.view));
     return true;
   };
-  const openMenu = (id: string, el: Element) => {
-    const r = el.closest('.page-tab')!.getBoundingClientRect();
-    setMenu({ id, left: Math.min(r.left, window.innerWidth - 232), top: r.bottom + 4 });
+  const openMenu = (id: string, el: HTMLElement) => {
+    menuTriggerRef.current = el;
+    setMenuId(id);
   };
 
   const activeScene = workspace.active.store.scene;
+  const menuPageIdx = menuId ? pages.findIndex((p) => p.id === menuId) : -1;
+  const menuPage = menuPageIdx >= 0 ? pages[menuPageIdx] : null;
 
   return (
     <nav className="page-tabs" aria-label="Pages">
-      <div className="tab-list" role="tablist" aria-label="Pages" ref={listRef}>
-        {pages.map((p, i) => {
-          const pageActive = p.id === workspace.activeId;
-          const active = pageActive && view !== 'doc';
-          const docActive = pageActive && view === 'doc';
-          const title = workspace.pageTitle(p);
-          const scene = p.store.scene;
-          const chapters = scene.blocks.length;
-          const primaryView = primaryViewOf(scene);
-          const icon: IconName = pageIconOf(scene);
-          return (
-            <Fragment key={p.id}>
-            <div className={`page-tab${active ? ' active' : ''}`}>
-              <button
-                type="button"
-                role="tab"
-                data-page={p.id}
-                data-view={primaryView}
-                aria-selected={active}
-                tabIndex={active ? 0 : -1}
-                className="tab-main"
-                title={`${title} (page ${i + 1})`}
-                onClick={() => workspace.showView(primaryView, { page: p.id })}
-                onDoubleClick={() => setRenaming(p.id)}
-                onContextMenu={(e) => {
-                  e.preventDefault();
-                  workspace.switchTo(p.id);
-                  openMenu(p.id, e.currentTarget);
-                }}
-                onKeyDown={(e) => {
-                  if (onArrow(e, p, primaryView)) return;
-                  if (e.key === 'F2' || (e.key === 'Enter' && active)) {
-                    e.preventDefault();
-                    setRenaming(p.id);
-                  }
-                }}
-              >
-                <Icon name={icon} size={16} />
-                {renaming === p.id
-                  ? <RenameInput value={scene.title} onDone={(v) => finishRename(p, v)} />
-                  : <span className="tab-label">{title}</span>}
-              </button>
-              {pageActive && renaming !== p.id && (
-                <button
-                  type="button"
-                  className="tab-action"
-                  aria-label={`Page options for ${title}`}
-                  aria-haspopup="menu"
-                  aria-expanded={menu?.id === p.id}
-                  onClick={(e) => (menu?.id === p.id ? setMenu(null) : openMenu(p.id, e.currentTarget))}
-                >
-                  <Icon name="more_vert" size={16} />
-                </button>
-              )}
-              {pages.length > 1 && renaming !== p.id && (
-                <button
-                  type="button"
-                  className="tab-action tab-close"
-                  aria-label={`Close page ${title}`}
-                  data-tooltip="Close page"
-                  onClick={() => workspace.removePage(p.id)}
-                >
-                  <Icon name="close" size={16} />
-                </button>
-              )}
-              {menu?.id === p.id && (
-                <div className="menu tab-menu" role="menu" ref={menuRef} style={{ left: menu.left, top: menu.top }}>
-                  <button type="button" role="menuitem" onClick={() => { setMenu(null); setRenaming(p.id); }}>
-                    <Icon name="edit" size={20} /><span>Rename</span>
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => { setMenu(null); workspace.showView('dashboard', { page: p.id }); }}>
-                    <Icon name="dashboard" size={20} /><span>{scene.dashboard ? 'Open live dashboard' : 'Build SQL dashboard'}</span>
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => { setMenu(null); workspace.showView('motion', { page: p.id }); }}>
-                    <Icon name="movie" size={20} /><span>{scene.motion ? 'Open motion explainer' : 'Animate motion explainer'}</span>
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => { setMenu(null); workspace.showView('doc', { page: p.id }); }}>
-                    <Icon name="menu_book" size={20} /><span>{chapters > 0 ? 'Open the documentation' : 'Write documentation'}</span>
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => { setMenu(null); workspace.duplicatePage(p.id); }}>
-                    <Icon name="content_copy" size={20} /><span>Duplicate</span>
-                  </button>
-                  <button type="button" role="menuitem" disabled={i === 0} onClick={() => { setMenu(null); workspace.movePage(p.id, -1); }}>
-                    <Icon name="chevron_left" size={20} /><span>Move left</span>
-                  </button>
-                  <button type="button" role="menuitem" disabled={i === pages.length - 1} onClick={() => { setMenu(null); workspace.movePage(p.id, 1); }}>
-                    <Icon name="chevron_right" size={20} /><span>Move right</span>
-                  </button>
-                  <div className="menu-divider" />
-                  <button type="button" role="menuitem" disabled={pages.length <= 1} onClick={() => { setMenu(null); workspace.removePage(p.id); }}>
-                    <Icon name="close" size={20} /><span>Close page</span>
-                  </button>
-                </div>
-              )}
-            </div>
-            {hasDocTab(p) && (
-              <div className={`page-tab doc-tab${docActive ? ' active' : ''}`}>
+      <div className="page-tabs-row">
+        <div className="tab-list" role="tablist" aria-label="Pages" ref={listRef}>
+          {pages.map((p, i) => {
+            const pageActive = p.id === workspace.activeId;
+            const active = pageActive && view !== 'doc';
+            const docActive = pageActive && view === 'doc';
+            const title = workspace.pageTitle(p);
+            const scene = p.store.scene;
+            const chapters = scene.blocks.length;
+            const primaryView = primaryViewOf(scene);
+            const icon: IconName = pageIconOf(scene);
+            return (
+              <Fragment key={p.id}>
+              <div className={`page-tab${active ? ' active' : ''}`}>
                 <button
                   type="button"
                   role="tab"
                   data-page={p.id}
-                  data-view="doc"
-                  aria-selected={docActive}
-                  tabIndex={docActive ? 0 : -1}
+                  data-view={primaryView}
+                  aria-selected={active}
+                  tabIndex={active ? 0 : -1}
                   className="tab-main"
-                  title={`Documentation of “${title}”${chapters > 0 ? ` · ${chapters} ${chapters === 1 ? 'chapter' : 'chapters'}` : ''}`}
-                  aria-label={`Documentation of ${title}`}
-                  onClick={() => workspace.showView('doc', { page: p.id })}
-                  onKeyDown={(e) => { onArrow(e, p, 'doc'); }}
+                  title={`${title} (page ${i + 1})`}
+                  onClick={() => workspace.showView(primaryView, { page: p.id })}
+                  onDoubleClick={() => setRenaming(p.id)}
+                  onContextMenu={(e) => {
+                    e.preventDefault();
+                    workspace.switchTo(p.id);
+                    openMenu(p.id, e.currentTarget);
+                  }}
+                  onKeyDown={(e) => {
+                    if (onArrow(e, p, primaryView)) return;
+                    if (e.key === 'F2' || (e.key === 'Enter' && active)) {
+                      e.preventDefault();
+                      setRenaming(p.id);
+                    }
+                  }}
                 >
-                  <Icon name="menu_book" size={16} />
-                  <span className="tab-label">Documentation</span>
-                  {chapters > 0 && <span className="tab-count">{chapters}</span>}
+                  <Icon name={icon} size={16} />
+                  {renaming === p.id
+                    ? <RenameInput value={scene.title} onDone={(v) => finishRename(p, v)} />
+                    : <span className="tab-label">{title}</span>}
                 </button>
+                {pageActive && renaming !== p.id && (
+                  <button
+                    type="button"
+                    className="tab-action"
+                    aria-label={`Page options for ${title}`}
+                    aria-haspopup="menu"
+                    aria-expanded={menuId === p.id}
+                    onClick={(e) => (menuId === p.id ? setMenuId(null) : openMenu(p.id, e.currentTarget))}
+                  >
+                    <Icon name="more_vert" size={16} />
+                  </button>
+                )}
+                {pages.length > 1 && renaming !== p.id && (
+                  <button
+                    type="button"
+                    className="tab-action tab-close"
+                    aria-label={`Close page ${title}`}
+                    title="Close page"
+                    onClick={() => workspace.removePage(p.id)}
+                  >
+                    <Icon name="close" size={16} />
+                  </button>
+                )}
               </div>
-            )}
-            </Fragment>
-          );
-        })}
+              {hasDocTab(p) && (
+                <div className={`page-tab doc-tab${docActive ? ' active' : ''}`}>
+                  <button
+                    type="button"
+                    role="tab"
+                    data-page={p.id}
+                    data-view="doc"
+                    aria-selected={docActive}
+                    tabIndex={docActive ? 0 : -1}
+                    className="tab-main"
+                    title={`Documentation of “${title}”${chapters > 0 ? ` · ${chapters} ${chapters === 1 ? 'chapter' : 'chapters'}` : ''}`}
+                    aria-label={`Documentation of ${title}`}
+                    onClick={() => workspace.showView('doc', { page: p.id })}
+                    onKeyDown={(e) => { onArrow(e, p, 'doc'); }}
+                  >
+                    <Icon name="menu_book" size={16} />
+                    <span className="tab-label">Documentation</span>
+                    {chapters > 0 && <span className="tab-count">{chapters}</span>}
+                  </button>
+                </div>
+              )}
+              </Fragment>
+            );
+          })}
+        </div>
+        <IconButton icon="add" label="New page" onClick={() => workspace.addPage({ label: 'New page' })} />
       </div>
-      <IconButton icon="add" label="New page" onClick={() => workspace.addPage({ label: 'New page' })} />
+      <div ref={menuRef} popover="auto" className="menu menu-popover menu-start tab-menu" role="menu" aria-label="Page options">
+        {menuPage && (
+          <>
+            <button type="button" role="menuitem" onClick={() => { setMenuId(null); setRenaming(menuPage.id); }}>
+              <Icon name="edit" size={20} /><span>Rename</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.showView('dashboard', { page: menuPage.id }); }}>
+              <Icon name="dashboard" size={20} /><span>{menuPage.store.scene.dashboard ? 'Open live dashboard' : 'Build SQL dashboard'}</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.showView('motion', { page: menuPage.id }); }}>
+              <Icon name="movie" size={20} /><span>{menuPage.store.scene.motion ? 'Open motion explainer' : 'Animate motion explainer'}</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.showView('doc', { page: menuPage.id }); }}>
+              <Icon name="menu_book" size={20} /><span>{menuPage.store.scene.blocks.length > 0 ? 'Open the documentation' : 'Write documentation'}</span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.duplicatePage(menuPage.id); }}>
+              <Icon name="content_copy" size={20} /><span>Duplicate</span>
+            </button>
+            <button type="button" role="menuitem" disabled={menuPageIdx === 0} onClick={() => { setMenuId(null); workspace.movePage(menuPage.id, -1); }}>
+              <Icon name="chevron_left" size={20} /><span>Move left</span>
+            </button>
+            <button type="button" role="menuitem" disabled={menuPageIdx === pages.length - 1} onClick={() => { setMenuId(null); workspace.movePage(menuPage.id, 1); }}>
+              <Icon name="chevron_right" size={20} /><span>Move right</span>
+            </button>
+            <hr className="menu-divider" />
+            <button type="button" role="menuitem" disabled={pages.length <= 1} onClick={() => { setMenuId(null); workspace.removePage(menuPage.id); }}>
+              <Icon name="close" size={20} /><span>Close page</span>
+            </button>
+          </>
+        )}
+      </div>
       <div className="surface-switcher" role="group" aria-label="Surface mode">
         <button
           type="button"

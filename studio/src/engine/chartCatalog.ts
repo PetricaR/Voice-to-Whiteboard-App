@@ -357,7 +357,7 @@ export const CHART_CATALOG: readonly ChartCatalogEntry[] = [
   },
 
   // =========================================================================
-  // 2. TEMPORAL (5)
+  // 2. TEMPORAL (6)
   // =========================================================================
   {
     kind: 'line',
@@ -400,6 +400,37 @@ export const CHART_CATALOG: readonly ChartCatalogEntry[] = [
       colSpan: 6,
       chartConfig: { curveType: 'monotone', gradientFill: true },
       explanation: 'Aggregates monthly MRR across all regions and plans.',
+    },
+  },
+  {
+    kind: 'combo',
+    label: 'Dual-Axis Combo Chart',
+    category: 'temporal',
+    icon: 'stacked_line_chart',
+    summary: 'Pairs volume bars on the left Y-axis with a rate, margin, or index line on an independent color-matched right Y-axis.',
+    whenToUse: 'Comparing two related metrics with different units over time (e.g., MRR in $ on the left axis vs. Net Dollar Retention % on the right axis).',
+    avoidWhen: 'Both series share the exact same unit and scale (use a single-axis multi-series Line or Grouped Bar chart instead).',
+    sqlShapeHint: 'time_or_category, primary_metric_y1, secondary_metric_y2',
+    sampleWidget: {
+      title: 'Monthly MRR & Net Dollar Retention',
+      subtitle: 'Volume bars (Left $) paired with cohort NDR % trend (Right %)',
+      kind: 'combo',
+      sql: `SELECT month, SUM(mrr_usd) AS mrr_usd, ROUND(AVG(net_dollar_retention_pct), 1) AS ndr_pct FROM monthly_revenue GROUP BY month ORDER BY month`,
+      xField: 'month',
+      yFields: ['mrr_usd', 'ndr_pct'],
+      format: 'currency_usd',
+      colSpan: 8,
+      chartConfig: {
+        secondaryYFields: ['ndr_pct'],
+        secondarySeriesType: 'line',
+        yAxisTitle: 'MRR (USD)',
+        y2AxisTitle: 'Net Dollar Retention (%)',
+        y2AxisFormat: 'percent',
+        y2StartFromZero: false,
+        curveType: 'monotone',
+        legendPosition: 'top',
+      },
+      explanation: 'Combines total monthly MRR columns on the left axis with average Net Dollar Retention % overlaid on the right axis.',
     },
   },
   {
@@ -1341,7 +1372,9 @@ export function adviseChartStorytelling(
     const xIdx = widget.xField ? Math.max(0, cols.indexOf(widget.xField)) : 0;
     const yIdx = widget.yFields?.[0] ? Math.max(0, cols.indexOf(widget.yFields[0])) : Math.min(1, cols.length - 1);
     const firstLabel = String(rows[0]?.[xIdx] ?? '');
-    if (!looksTemporalLabel(firstLabel)) {
+    // Hours of the day or histogram bins are a scale: their order is the message
+    const numericScale = rows.every((r) => typeof r[xIdx] === 'number');
+    if (!looksTemporalLabel(firstLabel) && !numericScale) {
       const nums = rows.map((r) => Number(r[yIdx]) || 0);
       let desc = true;
       let asc = true;

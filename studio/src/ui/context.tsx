@@ -70,12 +70,13 @@ export function IconButton(props: {
   selected?: boolean;
   variant?: 'standard' | 'tonal' | 'filled';
   shortcut?: string;
+  className?: string;
 }) {
-  const { icon, label, onClick, disabled, selected, variant = 'standard', shortcut } = props;
+  const { icon, label, onClick, disabled, selected, variant = 'standard', shortcut, className } = props;
   return (
     <button
       type="button"
-      className={`icon-btn ${variant}${selected ? ' selected' : ''}`}
+      className={`icon-btn ${variant}${selected ? ' selected' : ''}${className ? ` ${className}` : ''}`}
       onClick={onClick}
       disabled={disabled}
       aria-label={label}

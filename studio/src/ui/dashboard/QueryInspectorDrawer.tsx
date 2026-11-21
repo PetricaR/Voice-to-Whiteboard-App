@@ -4,7 +4,7 @@ import { adviseChartStorytelling, getChartMeta } from '../../engine/chartCatalog
 import { filterParamsOf, type DashboardSpec, type DashboardWidget } from '../../engine/dashboard';
 import { Icon, IconButton, useStudio } from '../context';
 import type { IconName } from '../icons';
-import { closeTopLayerElement } from '../domTransitions';
+import { closeTopLayerElement, handleTabListKeyDown } from '../domTransitions';
 import { ChartControlsPanel, type InspectorControlTab } from './ChartControlsPanel';
 import type { InspectedDatum } from './ChartRenderer';
 
@@ -227,13 +227,29 @@ export function QueryInspectorDrawer({
         <IconButton icon="close" label="Close SQL inspector" onClick={onClose} />
       </header>
 
-      <div className="inspector-tabs" role="tablist" aria-label="Chart Studio and SQL Inspector tabs">
+      <div
+        className="inspector-tabs"
+        role="tablist"
+        aria-label="Chart Studio and SQL Inspector tabs"
+        onKeyDown={(e) =>
+          handleTabListKeyDown(
+            e,
+            DRAWER_TABS.map((t) => t.id),
+            activeTab,
+            setActiveTab,
+            (id) => dialogRef.current?.querySelector<HTMLButtonElement>(`#inspector-tab-${id}`)?.focus(),
+          )
+        }
+      >
         {DRAWER_TABS.map((t) => (
           <button
             key={t.id}
+            id={`inspector-tab-${t.id}`}
             type="button"
             role="tab"
             aria-selected={activeTab === t.id}
+            aria-controls="inspector-panel"
+            tabIndex={activeTab === t.id ? 0 : -1}
             className={`inspector-tab-btn${activeTab === t.id ? ' active' : ''}`}
             onClick={() => setActiveTab(t.id)}
           >
@@ -243,7 +259,13 @@ export function QueryInspectorDrawer({
         ))}
       </div>
 
-      <div className="inspector-body" key={activeWidget.id}>
+      <div
+        id="inspector-panel"
+        role="tabpanel"
+        aria-labelledby={`inspector-tab-${activeTab}`}
+        className="inspector-body"
+        key={activeWidget.id}
+      >
         {/* Holistics Live Storytelling Advisor */}
         {storyAdvice.length > 0 && (
           <div className="story-advice-stack" aria-label="Data storytelling recommendations">

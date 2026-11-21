@@ -10,10 +10,15 @@ import {
   buildCurvePath,
   computeHistogramBins,
   computeLinearRegression,
+  createDualAxisScales,
   createNumericScale,
+  formatAxisTick,
+  humanizeColumnName,
   markerSvgPath,
   pivotMultiSeries,
+  resolveDirectLabelPositions,
   resolveSeriesColor,
+  roundedBarPath,
   shapeCategoryItems,
   strokeDashForStyle,
   toFiniteNum,
@@ -37,11 +42,28 @@ export interface InspectedDatum {
   row: unknown[];
 }
 
+export interface HoverTipRow {
+  label: string;
+  value: string;
+  color?: string;
+  axisTag?: 'L' | 'R';
+}
+
 interface HoverTip {
   x: number;
   y: number;
   title: string;
-  detail: string;
+  detail?: string;
+  rows?: HoverTipRow[];
+}
+
+interface LegendEntry {
+  name: string;
+  displayName?: string;
+  color: string;
+  valueText?: string;
+  swatch?: 'dot' | 'bar' | 'line' | 'dashed';
+  axisTag?: 'L' | 'R';
 }
 
 const SERIES_COLORS: ColorName[] = ['blue', 'teal', 'purple', 'green', 'orange', 'pink', 'yellow', 'red'];
@@ -287,12 +309,16 @@ function InteractiveLegend({
   position,
   showValues,
   muted,
+  hoveredSeries,
+  onHoverSeries,
   onToggle,
 }: {
-  entries: { name: string; color: string; valueText?: string }[];
+  entries: LegendEntry[];
   position: 'top' | 'bottom' | 'left' | 'right';
   showValues?: boolean;
   muted: Set<string>;
+  hoveredSeries: string | null;
+  onHoverSeries: (name: string | null) => void;
   onToggle: (name: string) => void;
 }) {
   if (entries.length === 0) return null;
@@ -300,17 +326,38 @@ function InteractiveLegend({
     <div className={`chart-legend chart-legend-${position}`} role="group" aria-label="Chart series legend">
       {entries.map((entry) => {
         const isMuted = muted.has(entry.name);
+        const isFocused = hoveredSeries !== null && hoveredSeries === entry.name;
+        const swatchKind = entry.swatch ?? 'dot';
         return (
           <button
             key={entry.name}
             type="button"
-            className={`chart-legend-pill${isMuted ? ' is-muted' : ''}`}
+            className={`chart-legend-pill${isMuted ? ' is-muted' : ''}${isFocused ? ' is-focused' : ''}`}
             onClick={() => onToggle(entry.name)}
+            onMouseEnter={() => onHoverSeries(entry.name)}
+            onMouseLeave={() => onHoverSeries(null)}
             aria-pressed={!isMuted}
-            title={isMuted ? `Show ${entry.name}` : `Hide ${entry.name}`}
+            title={isMuted ? `Show ${entry.displayName ?? entry.name}` : `Hide ${entry.displayName ?? entry.name}`}
           >
-            <span className="legend-dot" style={{ background: entry.color }} />
-            <span className="legend-name">{entry.name}</span>
+            {swatchKind === 'line' || swatchKind === 'dashed' ? (
+              <span
+                className={`legend-line-swatch${swatchKind === 'dashed' ? ' is-dashed' : ''}`}
+                style={{ borderColor: entry.color }}
+              />
+            ) : swatchKind === 'bar' ? (
+              <span className="legend-bar-swatch" style={{ background: entry.color }} />
+            ) : (
+              <span className="legend-dot" style={{ background: entry.color }} />
+            )}
+            <span className="legend-name">{entry.displayName ?? humanizeColumnName(entry.name)}</span>
+            {entry.axisTag && (
+              <span
+                className={`legend-axis-tag axis-${entry.axisTag.toLowerCase()}`}
+                title={entry.axisTag === 'L' ? 'Plotted on Left Y-Axis' : 'Plotted on Right (Second) Y-Axis'}
+              >
+                {entry.axisTag === 'L' ? '← L' : 'R →'}
+              </span>
+            )}
             {showValues && entry.valueText && <span className="legend-val">{entry.valueText}</span>}
           </button>
         );
@@ -370,6 +417,9 @@ export function ChartRenderer({
   const { ref: stageRef, width: stageWidth } = useStageWidth(620);
   const [mutedSeries, setMutedSeries] = useState<Set<string>>(() => new Set());
   const [hoverTip, setHoverTip] = useState<HoverTip | null>(null);
+  const [hoveredCatIdx, setHoveredCatIdx] = useState<number | null>(null);
+  const [hoveredSeries, setHoveredSeries] = useState<string | null>(null);
+  const [hoveredSlice, setHoveredSlice] = useState<string | null>(null);
 
   const cols = result?.columns ?? [];
   const rows = result?.rows ?? [];
@@ -384,9 +434,13 @@ export function ChartRenderer({
     [widget, cols, rows],
   );
 
-  // Clear muted series when widget changes
+  // Clear interactive states when widget changes
   useEffect(() => {
     setMutedSeries(new Set());
+    setHoverTip(null);
+    setHoveredCatIdx(null);
+    setHoveredSeries(null);
+    setHoveredSlice(null);
   }, [widget.id, widget.kind]);
 
   const toggleSeries = (name: string) => {
@@ -440,23 +494,31 @@ export function ChartRenderer({
     return <div className="widget-empty chart-fade-panel">No rows returned for current filter selection.</div>;
   }
 
-  const H = cfg?.chartHeight ?? 216;
+  const H = cfg?.chartHeight ?? 232;
   const W = Math.max(240, stageWidth);
+  const designPreset = cfg?.designPreset ?? 'editorial';
 
   const wrapComposite = (
     stageNode: React.ReactNode,
-    legendEntries: { name: string; color: string; valueText?: string }[] = [],
+    legendEntries: LegendEntry[] = [],
     defaultShowLegend = false,
   ) => {
-    const legendPos = cfg?.legendPosition ?? 'bottom';
+    // Financial Times / Datawrapper / Flourish pattern: decode colors above the plot before scanning the data
+    const legendPos = cfg?.legendPosition ?? 'top';
     const shouldShowLegend =
       legendPos !== 'none' &&
       legendEntries.length > 0 &&
       (cfg?.showLegend !== undefined ? cfg.showLegend : defaultShowLegend);
 
+    // Smart tooltip horizontal placement so it never clips left or right edges
+    const tipRatioX = hoverTip ? hoverTip.x / Math.max(1, W) : 0.5;
+    const tipAlignClass = tipRatioX > 0.72 ? ' align-right' : tipRatioX < 0.28 ? ' align-left' : '';
+    const tipLeftPct = hoverTip ? Math.min(96, Math.max(4, tipRatioX * 100)) : 50;
+    const tipTopPx = hoverTip ? Math.max(10, Math.min(H - 52, hoverTip.y - 12)) : 12;
+
     return (
       <div
-        className={`chart-composite chart-fade-panel${shouldShowLegend ? ` has-legend-${legendPos}` : ''}`}
+        className={`chart-composite chart-fade-panel preset-${designPreset}${shouldShowLegend ? ` has-legend-${legendPos}` : ''}`}
         data-reloading={loading ? 'true' : undefined}
         data-animated={cfg?.animate === false ? 'false' : undefined}
       >
@@ -466,6 +528,8 @@ export function ChartRenderer({
             position={legendPos}
             showValues={cfg?.legendShowValues}
             muted={mutedSeries}
+            hoveredSeries={hoveredSeries}
+            onHoverSeries={setHoveredSeries}
             onToggle={toggleSeries}
           />
         )}
@@ -473,15 +537,30 @@ export function ChartRenderer({
           {stageNode}
           {hoverTip && cfg?.showTooltip !== false && (
             <div
-              className="chart-tooltip-pill"
+              className={`chart-tooltip-card${tipAlignClass}`}
               style={{
-                left: `${Math.min(86, Math.max(14, (hoverTip.x / Math.max(1, W)) * 100))}%`,
-                top: `${Math.max(8, Math.min(H - 36, hoverTip.y - 12))}px`,
+                left: `${tipLeftPct}%`,
+                top: `${tipTopPx}px`,
               }}
               role="status"
             >
-              <strong>{hoverTip.title}</strong>
-              <span>{hoverTip.detail}</span>
+              <div className="chart-tooltip-head">{hoverTip.title}</div>
+              {hoverTip.rows && hoverTip.rows.length > 0 ? (
+                <div className="chart-tooltip-rows">
+                  {hoverTip.rows.map((r, ri) => (
+                    <div key={`${r.label}-${ri}`} className="chart-tooltip-row">
+                      <span className="chart-tooltip-key">
+                        {r.color && <i className="chart-tooltip-swatch" style={{ background: r.color }} />}
+                        <span>{r.label}</span>
+                        {r.axisTag && <em className="chart-tooltip-axis">{r.axisTag}</em>}
+                      </span>
+                      <strong className="chart-tooltip-val">{r.value}</strong>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                hoverTip.detail && <span className="chart-tooltip-detail">{hoverTip.detail}</span>
+              )}
             </div>
           )}
         </div>
@@ -491,6 +570,8 @@ export function ChartRenderer({
             position={legendPos}
             showValues={cfg?.legendShowValues}
             muted={mutedSeries}
+            hoveredSeries={hoveredSeries}
+            onHoverSeries={setHoveredSeries}
             onToggle={toggleSeries}
           />
         )}
@@ -500,7 +581,7 @@ export function ChartRenderer({
   };
 
   // =========================================================================
-  // 1. KPI Headline Metric Card
+  // 1. KPI Headline Metric Card (Stripe / Linear / Apple craft)
   // =========================================================================
   if (widget.kind === 'kpi') {
     const valColIdx = yIndices[0] ?? Math.max(0, cols.length - 1);
@@ -520,6 +601,9 @@ export function ChartRenderer({
     const deltaNum = rawDelta !== undefined ? toFiniteNum(rawDelta) : null;
     const hasDelta = deltaNum !== null && rawDelta !== null && rawDelta !== '';
     const accentTone = cfg?.customColors?.[0] ?? (widget.color ? colorVar(widget.color) : undefined);
+    const targetPct = typeof cfg?.targetValue === 'number' && cfg.targetValue > 0
+      ? Math.round((numVal / cfg.targetValue) * 100)
+      : null;
 
     return (
       <div className="kpi-body chart-fade-panel" data-reloading={loading ? 'true' : undefined}>
@@ -534,28 +618,33 @@ export function ChartRenderer({
           </span>
         </button>
         {typeof cfg?.targetValue === 'number' && cfg.targetValue > 0 && (
-          <div className="kpi-goal-track" title={`Target: ${formatMetricValue(cfg.targetValue, widget.format, widget.unit, fmtOpts)}`}>
-            <span
-              className="kpi-goal-fill"
-              style={{
-                width: `${Math.min(100, Math.max(2, (numVal / cfg.targetValue) * 100))}%`,
-                background: accentTone ?? 'var(--md-primary)',
-              }}
-            />
+          <div className="kpi-goal-wrap">
+            <div className="kpi-goal-track" title={`Target: ${formatMetricValue(cfg.targetValue, widget.format, widget.unit, fmtOpts)}`}>
+              <span
+                className="kpi-goal-fill"
+                style={{
+                  width: `${Math.min(100, Math.max(2, (numVal / cfg.targetValue) * 100))}%`,
+                  background: accentTone ?? 'var(--md-primary)',
+                }}
+              />
+            </div>
+            <span className="kpi-goal-label">
+              {targetPct}% of {formatMetricValue(cfg.targetValue, widget.format, widget.unit, fmtOpts)}
+            </span>
           </div>
         )}
         <div className="kpi-meta-slot">
           {hasDelta ? (
             <div className={`kpi-delta ${deltaNum >= 0 ? 'up' : 'down'}`}>
-              <span>
+              <span className="kpi-delta-num">
                 {deltaNum >= 0 ? '▲' : '▼'}{' '}
                 {typeof rawDelta === 'number' ? `${Math.abs(deltaNum).toFixed(1)}%` : String(rawDelta)}
               </span>
-              {cols[deltaCol] && <small>{cols[deltaCol].replace(/_/g, ' ')}</small>}
+              {cols[deltaCol] && <small>{humanizeColumnName(cols[deltaCol])}</small>}
             </div>
           ) : (
             <span className="kpi-source-caption">
-              {cfg?.footnote || (cols[valColIdx] ?? widget.id).replace(/_/g, ' ')}
+              {cfg?.footnote || humanizeColumnName(cols[valColIdx] ?? widget.id)}
             </span>
           )}
         </div>
@@ -585,21 +674,28 @@ export function ChartRenderer({
   );
 
   // =========================================================================
-  // 3. Pie & Donut Chart
+  // 3. Pie & Donut Chart (Apple / Flourish / Stripe dynamic center callout)
   // =========================================================================
   if (widget.kind === 'donut' || widget.kind === 'pie') {
     const activeItems = items.filter((it) => !mutedSeries.has(it.label));
     const total = Math.max(1e-6, activeItems.reduce((s, it) => s + Math.max(0, it.value), 0));
-    const size = Math.max(176, Math.min(240, H));
+    const size = Math.max(180, Math.min(244, H));
     const cx = size / 2;
     const cy = size / 2;
-    const rOuter = size * 0.41;
-    const defaultInner = widget.kind === 'donut' ? 0.58 : 0;
+    const rOuter = size * 0.42;
+    const defaultInner = widget.kind === 'donut' ? 0.65 : 0;
     const rInner = Math.max(0, Math.min(0.86, cfg?.innerRadiusRatio ?? defaultInner)) * rOuter;
-    const padRad = ((cfg?.padAngle ?? 1.2) * Math.PI) / 180;
+    const padRad = ((cfg?.padAngle ?? 1.6) * Math.PI) / 180;
     let angle = ((cfg?.startAngle ?? -90) * Math.PI) / 180;
 
-    const showInlineLegend = cfg?.showLegend !== false && (cfg?.legendPosition ?? 'right') === 'right';
+    const showInlineLegend = cfg?.showLegend !== false && (cfg?.legendPosition ?? 'right') !== 'none';
+    const focusedItem = hoveredSlice ? activeItems.find((it) => it.label === hoveredSlice) ?? null : null;
+    const centerPrimary = focusedItem
+      ? formatMetricValue(focusedItem.value, widget.format, widget.unit, fmtOpts)
+      : cfg?.donutCenterLabel || formatMetricValue(total, widget.format, undefined, fmtOpts);
+    const centerSub = focusedItem
+      ? `${truncateText(focusedItem.label, 14)} · ${Math.round((Math.max(0, focusedItem.value) / total) * 100)}%`
+      : cfg?.donutCenterSubtext || 'Total';
 
     return (
       <div className="donut-layout chart-fade-panel" data-reloading={loading ? 'true' : undefined}>
@@ -619,43 +715,51 @@ export function ChartRenderer({
             const end = angle + Math.max(0.02, slice - (activeItems.length > 1 ? padRad / 2 : 0));
             const mid = (start + end) / 2;
             angle += slice;
-            const x1 = cx + rOuter * Math.cos(start);
-            const y1 = cy + rOuter * Math.sin(start);
-            const x2 = cx + rOuter * Math.cos(end);
-            const y2 = cy + rOuter * Math.sin(end);
+            const isHovered = hoveredSlice === it.label;
+            const isDimmed = hoveredSlice !== null && !isHovered;
+            const rOutEff = isHovered ? rOuter + 3.5 : rOuter;
+            const x1 = cx + rOutEff * Math.cos(start);
+            const y1 = cy + rOutEff * Math.sin(start);
+            const x2 = cx + rOutEff * Math.cos(end);
+            const y2 = cy + rOutEff * Math.sin(end);
             const large = end - start > Math.PI ? 1 : 0;
             const d =
               rInner > 1
                 ? [
                     `M ${x1} ${y1}`,
-                    `A ${rOuter} ${rOuter} 0 ${large} 1 ${x2} ${y2}`,
+                    `A ${rOutEff} ${rOutEff} 0 ${large} 1 ${x2} ${y2}`,
                     `L ${cx + rInner * Math.cos(end)} ${cy + rInner * Math.sin(end)}`,
                     `A ${rInner} ${rInner} 0 ${large} 0 ${cx + rInner * Math.cos(start)} ${cy + rInner * Math.sin(start)}`,
                     'Z',
                   ].join(' ')
-                : `M ${cx} ${cy} L ${x1} ${y1} A ${rOuter} ${rOuter} 0 ${large} 1 ${x2} ${y2} Z`;
+                : `M ${cx} ${cy} L ${x1} ${y1} A ${rOutEff} ${rOutEff} 0 ${large} 1 ${x2} ${y2} Z`;
             const formatted = formatMetricValue(it.value, widget.format, widget.unit, fmtOpts);
-            const labelR = (rInner > 1 ? (rInner + rOuter) / 2 : rOuter * 0.65);
+            const labelR = rInner > 1 ? (rInner + rOuter) / 2 : rOuter * 0.65;
             return (
-              <g key={`${it.label}-${idx}`}>
+              <g
+                key={`${it.label}-${idx}`}
+                style={{ opacity: isDimmed ? 0.38 : 1, transition: 'opacity 160ms ease' }}
+              >
                 <path
                   d={d}
                   fill={col}
-                  fillOpacity={cfg?.fillOpacity ?? 0.92}
+                  fillOpacity={cfg?.fillOpacity ?? 0.94}
                   stroke="var(--md-surface-container-lowest)"
                   strokeWidth={2}
                   className="chart-hit"
+                  onMouseEnter={() => setHoveredSlice(it.label)}
+                  onMouseLeave={() => setHoveredSlice(null)}
                   onClick={() => emitDatumClick(it.label, it.raw, cols[primaryY] ?? 'value', it.row)}
                 >
                   <title>{`${it.label}: ${formatted} (${Math.round((it.value / total) * 100)}%)`}</title>
                 </path>
-                {cfg?.showDataLabels && slice > 0.26 && (
+                {cfg?.showDataLabels && slice > 0.28 && (
                   <text
                     x={cx + labelR * Math.cos(mid)}
                     y={cy + labelR * Math.sin(mid) + 3.5}
                     textAnchor="middle"
                     fill="#ffffff"
-                    style={{ fontSize: cfg?.dataLabelFontSize ?? 10, fontWeight: 700, pointerEvents: 'none' }}
+                    style={{ fontSize: cfg?.dataLabelFontSize ?? 10.5, fontWeight: 700, pointerEvents: 'none' }}
                   >
                     {formatDataLabelText(it.label, it.value, total, widget)}
                   </text>
@@ -663,30 +767,32 @@ export function ChartRenderer({
               </g>
             );
           })}
-          {rInner > 14 && (
-            <>
-              <text x={cx} y={cy + (cfg?.donutCenterSubtext ? -1 : 5)} textAnchor="middle" className="donut-center-text">
-                {cfg?.donutCenterLabel || formatMetricValue(total, widget.format, undefined, fmtOpts)}
+          {rInner > 18 && (
+            <g style={{ pointerEvents: 'none' }}>
+              <text x={cx} y={cy - 1} textAnchor="middle" className="donut-center-text">
+                {centerPrimary}
               </text>
-              {cfg?.donutCenterSubtext && (
-                <text x={cx} y={cy + 14} textAnchor="middle" className="axis-tick" style={{ fontSize: 10 }}>
-                  {cfg.donutCenterSubtext}
-                </text>
-              )}
-            </>
+              <text x={cx} y={cy + 15} textAnchor="middle" className="donut-center-subtext">
+                {centerSub}
+              </text>
+            </g>
           )}
         </svg>
         {showInlineLegend && (
           <div className="donut-legend">
             {items.slice(0, 10).map((it, idx) => {
               const formatted = formatMetricValue(it.value, widget.format, widget.unit, fmtOpts);
-              const sharePct = Math.round((Math.max(0, it.value) / Math.max(1e-6, items.reduce((s, x) => s + Math.max(0, x.value), 0))) * 100);
+              const grand = Math.max(1e-6, items.reduce((s, x) => s + Math.max(0, x.value), 0));
+              const sharePct = Math.round((Math.max(0, it.value) / grand) * 100);
               const isMuted = mutedSeries.has(it.label);
+              const isFocused = hoveredSlice === it.label;
               return (
                 <button
                   key={`${it.label}-${idx}`}
                   type="button"
-                  className={`legend-item-btn${isMuted ? ' is-muted' : ''}`}
+                  className={`legend-item-btn${isMuted ? ' is-muted' : ''}${isFocused ? ' is-focused' : ''}`}
+                  onMouseEnter={() => setHoveredSlice(it.label)}
+                  onMouseLeave={() => setHoveredSlice(null)}
                   onClick={() => emitDatumClick(it.label, it.raw, cols[primaryY] ?? 'value', it.row)}
                   onContextMenu={(e) => {
                     e.preventDefault();
@@ -725,7 +831,7 @@ export function ChartRenderer({
       };
     });
     let allocated = rawQuotas.reduce((s, q) => s + q.count, 0);
-    const byRem = [...rawQuotas].sort((a, b) => b.rem - a.rem);
+    const byRem = rawQuotas.toSorted((a, b) => b.rem - a.rem);
     let rCursor = 0;
     while (allocated < 100 && byRem.length > 0) {
       byRem[rCursor % byRem.length].count += 1;
@@ -916,7 +1022,13 @@ export function ChartRenderer({
       const maxCell = Math.max(1e-6, ...allVals.map((v) => Math.abs(v)));
 
       return (
-        <div className="heatmap-matrix-wrap chart-fade-panel" data-reloading={loading ? 'true' : undefined}>
+        <div
+          className="heatmap-matrix-wrap chart-fade-panel"
+          tabIndex={0}
+          role="region"
+          aria-label={`${widget.title} matrix`}
+          data-reloading={loading ? 'true' : undefined}
+        >
           <table className="heatmap-matrix-table" role="grid" aria-label={widget.title}>
             <thead>
               <tr>
@@ -1208,8 +1320,8 @@ export function ChartRenderer({
     });
     const visiblePts = ptsRaw.filter((p) => !mutedSeries.has(p.grp));
 
-    const padL = cfg?.plotPaddingLeft ?? (cfg?.showYAxis === false ? 18 : 56);
-    const padR = cfg?.plotPaddingRight ?? (cfg?.yAxisPosition === 'right' ? 56 : 20);
+    const padL = cfg?.plotPaddingLeft ?? (cfg?.showYAxis === false ? 18 : 60);
+    const padR = cfg?.plotPaddingRight ?? (cfg?.yAxisPosition === 'right' ? 60 : 20);
     const padT = cfg?.plotPaddingTop ?? 18;
     const padB = cfg?.plotPaddingBottom ?? (cfg?.xAxisTitle ? 44 : 32);
     const plotW = Math.max(100, W - padL - padR);
@@ -1218,18 +1330,28 @@ export function ChartRenderer({
     const xVals = visiblePts.map((p) => p.xVal);
     const yVals = visiblePts.map((p) => p.yVal);
     const xScale = createNumericScale(
-      [xVals.length ? Math.min(...xVals) : 0, xVals.length ? Math.max(...xVals) * 1.05 : 10],
-      { startFromZero: false, scale: cfg?.xAxisScale === 'log' || cfg?.xAxisScale === 'sqrt' ? cfg.xAxisScale : 'linear' },
+      xVals.length ? xVals : [0, 10],
+      {
+        startFromZero: false,
+        tickCount: 5,
+        scale: cfg?.xAxisScale === 'log' || cfg?.xAxisScale === 'sqrt' ? cfg.xAxisScale : 'linear',
+      },
     );
-    const yLo = cfg?.yMin ?? (cfg?.startFromZero ? Math.min(0, ...(yVals.length ? yVals : [0])) : Math.min(...(yVals.length ? yVals : [0])) * 0.92);
-    const yHi = cfg?.yMax ?? Math.max(1, ...(yVals.length ? yVals : [1])) * 1.08;
-    const yScale = createNumericScale([yLo, yHi], { startFromZero: false, scale: cfg?.yAxisScale ?? 'linear' });
+    const yTickCnt = Math.max(2, Math.min(10, cfg?.yTickCount ?? 5));
+    const yScale = createNumericScale(yVals.length ? yVals : [0, 1], {
+      startFromZero: Boolean(cfg?.startFromZero),
+      minOverride: cfg?.yMin,
+      maxOverride: cfg?.yMax,
+      tickCount: yTickCnt,
+      scale: cfg?.yAxisScale ?? 'linear',
+    });
     const maxSize = Math.max(1e-6, ...visiblePts.map((p) => p.sizeVal));
 
     const xOf = (v: number) => padL + xScale.norm(v) * plotW;
     const yOf = (v: number) => padT + (1 - yScale.norm(v)) * plotH;
-    const yTickCnt = Math.max(2, Math.min(10, cfg?.yTickCount ?? 4));
-    const gridDash = strokeDashForStyle(cfg?.gridStyle ?? 'dashed');
+    const gridDash = strokeDashForStyle(cfg?.gridStyle ?? 'solid');
+    const gridOpacity = cfg?.gridOpacity ?? 0.2;
+    const yAxisFmt = cfg?.yAxisFormat ?? widget.format ?? 'compact';
 
     const reg =
       cfg?.showTrendline && visiblePts.length >= 2
@@ -1241,22 +1363,22 @@ export function ChartRenderer({
         ? visiblePts.reduce((s, p) => s + p.yVal, 0) / visiblePts.length
         : null;
 
-    const legendEntries = groupNames.map((g, gi) => ({
+    const legendEntries: LegendEntry[] = groupNames.map((g, gi) => ({
       name: g,
       color: resolveSeriesColor(gi, cfg, widget.color),
+      swatch: 'dot',
     }));
 
     return wrapComposite(
       <div ref={stageRef} className="chart-stage">
         <svg viewBox={`0 0 ${W} ${H}`} style={{ height: H }} className="chart-svg cartesian-svg" role="img" aria-label={widget.title}>
           {cfg?.showPlotBorder && (
-            <rect x={padL} y={padT} width={plotW} height={plotH} fill="none" stroke="var(--md-outline-variant)" />
+            <rect x={padL} y={padT} width={plotW} height={plotH} fill="none" stroke="var(--md-outline-variant)" strokeOpacity={0.45} />
           )}
-          {/* Horizontal Grid & Y-Axis Ticks */}
-          {Array.from({ length: yTickCnt }, (_, ti) => {
-            const t = ti / Math.max(1, yTickCnt - 1);
-            const val = yScale.min + (yScale.max - yScale.min) * t;
+          {/* Horizontal Nice Grid & Y-Axis Ticks */}
+          {yScale.ticks.map((val, ti) => {
             const gy = yOf(val);
+            const isBase = ti === 0 || Math.abs(val) < 1e-9;
             return (
               <g key={`yt-${ti}`}>
                 {cfg?.showHorizontalGrid !== false && (
@@ -1265,27 +1387,27 @@ export function ChartRenderer({
                     y1={gy}
                     x2={W - padR}
                     y2={gy}
-                    stroke="var(--md-outline-variant)"
-                    strokeDasharray={ti === 0 ? undefined : gridDash}
-                    strokeOpacity={cfg?.gridOpacity ?? 0.5}
+                    stroke={isBase ? 'var(--md-outline)' : 'var(--md-outline-variant)'}
+                    strokeDasharray={isBase ? undefined : gridDash}
+                    strokeOpacity={isBase ? 0.42 : gridOpacity}
+                    shapeRendering="crispEdges"
                   />
                 )}
                 {cfg?.showYAxis !== false && cfg?.showYTicks !== false && (
                   <text
-                    x={cfg?.yAxisPosition === 'right' ? W - padR + 8 : padL - 8}
-                    y={gy + 4}
+                    x={cfg?.yAxisPosition === 'right' ? W - padR + 8 : padL - 10}
+                    y={gy + 3.5}
                     textAnchor={cfg?.yAxisPosition === 'right' ? 'start' : 'end'}
                     className="axis-tick"
                   >
-                    {formatMetricValue(val, cfg?.yAxisFormat ?? 'compact')}
+                    {formatAxisTick(val, yAxisFmt, undefined, fmtOpts)}
                   </text>
                 )}
               </g>
             );
           })}
-          {/* Vertical Grid & X-Axis Ticks */}
-          {[0, 0.25, 0.5, 0.75, 1].map((t, xi) => {
-            const xv = xScale.min + (xScale.max - xScale.min) * t;
+          {/* Vertical Grid & X-Axis Nice Ticks */}
+          {xScale.ticks.map((xv, xi) => {
             const gx = xOf(xv);
             return (
               <g key={`xt-${xi}`}>
@@ -1297,12 +1419,13 @@ export function ChartRenderer({
                     y2={padT + plotH}
                     stroke="var(--md-outline-variant)"
                     strokeDasharray={gridDash}
-                    strokeOpacity={cfg?.gridOpacity ?? 0.45}
+                    strokeOpacity={gridOpacity}
+                    shapeRendering="crispEdges"
                   />
                 )}
                 {cfg?.showXAxis !== false && cfg?.showXTicks !== false && (
                   <text x={gx} y={padT + plotH + 18} textAnchor="middle" className="axis-tick">
-                    {xNumCol >= 0 ? formatMetricValue(xv, 'compact') : items[Math.round(t * Math.max(0, items.length - 1))]?.label.slice(0, 10)}
+                    {xNumCol >= 0 ? formatAxisTick(xv, 'compact') : items[Math.round((xi / Math.max(1, xScale.ticks.length - 1)) * Math.max(0, items.length - 1))]?.label.slice(0, 10)}
                   </text>
                 )}
               </g>
@@ -1448,13 +1571,17 @@ export function ChartRenderer({
   }
 
   // =========================================================================
-  // 11. Histogram (Binned Continuous Distribution — Holistics #11)
+  // 11. Histogram (Binned Continuous Distribution — Nice Ticks + Flat Base)
   // =========================================================================
   if (widget.kind === 'histogram') {
     const valCol = yIndices[0] ?? 0;
     const rawValues = rows.map((r) => toFiniteNum(r[valCol])).filter((n) => Number.isFinite(n));
     const bins = computeHistogramBins(rows, valCol, cfg?.binCount ?? 8);
-    const maxCount = Math.max(1, cfg?.yMax ?? Math.max(...bins.map((b) => b.count)));
+    const histScale = createNumericScale(bins.map((b) => b.count), {
+      startFromZero: true,
+      maxOverride: cfg?.yMax,
+      tickCount: cfg?.yTickCount ?? 4,
+    });
     const padL = cfg?.plotPaddingLeft ?? 46;
     const padR = cfg?.plotPaddingRight ?? 16;
     const padT = cfg?.plotPaddingTop ?? 16;
@@ -1462,75 +1589,86 @@ export function ChartRenderer({
     const plotW = Math.max(100, W - padL - padR);
     const plotH = Math.max(80, H - padT - padB);
     const slotW = plotW / Math.max(1, bins.length);
-    const gap = Math.max(1, (cfg?.barGap ?? 0.06) * slotW);
-    const col = resolveSeriesColor(0, cfg, widget.color ?? 'blue');
+    const gap = Math.max(2, (cfg?.barGap ?? 0.08) * slotW);
+    const col = resolveSeriesColor(0, cfg, widget.color);
     const meanVal = rawValues.length ? rawValues.reduce((a, b) => a + b, 0) / rawValues.length : 0;
     const minDomain = bins[0]?.x0 ?? 0;
     const maxDomain = bins[bins.length - 1]?.x1 ?? 1;
+    const gridDash = strokeDashForStyle(cfg?.gridStyle ?? 'solid');
 
     return wrapComposite(
       <div ref={stageRef} className="chart-stage">
         <svg viewBox={`0 0 ${W} ${H}`} style={{ height: H }} className="chart-svg cartesian-svg" role="img" aria-label={widget.title}>
-          {[0, 0.5, 1].map((t) => {
-            const gy = padT + plotH * (1 - t);
+          {histScale.ticks.map((tv, ti) => {
+            const gy = padT + (1 - histScale.norm(tv)) * plotH;
+            const isBase = ti === 0;
             return (
-              <g key={t}>
+              <g key={ti}>
                 {cfg?.showHorizontalGrid !== false && (
                   <line
                     x1={padL}
                     y1={gy}
                     x2={W - padR}
                     y2={gy}
-                    stroke="var(--md-outline-variant)"
-                    strokeDasharray={t === 0 ? undefined : strokeDashForStyle(cfg?.gridStyle ?? 'dashed')}
-                    strokeOpacity={cfg?.gridOpacity ?? 0.5}
+                    stroke={isBase ? 'var(--md-outline)' : 'var(--md-outline-variant)'}
+                    strokeDasharray={isBase ? undefined : gridDash}
+                    strokeOpacity={isBase ? 0.42 : (cfg?.gridOpacity ?? 0.2)}
+                    shapeRendering="crispEdges"
                   />
                 )}
                 {cfg?.showYAxis !== false && (
-                  <text x={padL - 8} y={gy + 4} textAnchor="end" className="axis-tick">
-                    {Math.round(maxCount * t)}
+                  <text x={padL - 10} y={gy + 3.5} textAnchor="end" className="axis-tick">
+                    {Math.round(tv)}
                   </text>
                 )}
               </g>
             );
           })}
           {bins.map((b, bi) => {
-            const bh = (b.count / maxCount) * plotH;
+            const bh = histScale.norm(b.count) * plotH;
             const bx = padL + bi * slotW + gap / 2;
             const bw = Math.max(3, slotW - gap);
             const by = padT + plotH - bh;
+            const isDim = hoveredCatIdx !== null && hoveredCatIdx !== bi;
             return (
               <g
                 key={bi}
                 className="chart-hit"
+                style={{ opacity: isDim ? 0.45 : 1, transition: 'opacity 140ms ease' }}
                 onClick={() => emitDatumClick(`Bin ${b.label}`, b.count, 'frequency', [b.label, b.count])}
-                onMouseEnter={() =>
+                onMouseEnter={() => {
+                  setHoveredCatIdx(bi);
                   handleHover({
                     x: bx + bw / 2,
                     y: by,
                     title: `Range ${b.label}`,
-                    detail: `${b.count} observations (${Math.round((b.count / Math.max(1, rawValues.length)) * 100)}%)`,
-                  })
-                }
-                onMouseLeave={() => handleHover(null)}
+                    rows: [
+                      {
+                        label: 'Observations',
+                        value: `${b.count} (${Math.round((b.count / Math.max(1, rawValues.length)) * 100)}%)`,
+                        color: col,
+                      },
+                    ],
+                  });
+                }}
+                onMouseLeave={() => {
+                  setHoveredCatIdx(null);
+                  handleHover(null);
+                }}
               >
-                <rect
-                  x={bx}
-                  y={by}
-                  width={bw}
-                  height={Math.max(1, bh)}
-                  rx={cfg?.barRadius ?? 2}
+                <path
+                  d={roundedBarPath(bx, by, bw, Math.max(1, bh), cfg?.barRadius ?? 4, 'top')}
                   fill={cfg?.colorBy === 'category' ? resolveSeriesColor(bi, cfg, widget.color) : col}
-                  fillOpacity={cfg?.fillOpacity ?? 0.85}
+                  fillOpacity={cfg?.fillOpacity ?? 0.88}
                 />
                 {cfg?.showDataLabels && b.count > 0 && (
-                  <text x={bx + bw / 2} y={by - 4} textAnchor="middle" className="axis-tick" style={{ fontSize: cfg?.dataLabelFontSize ?? 10 }}>
+                  <text x={bx + bw / 2} y={by - 5} textAnchor="middle" className="axis-tick" style={{ fontSize: cfg?.dataLabelFontSize ?? 10.5, fontWeight: 600 }}>
                     {b.count}
                   </text>
                 )}
                 {cfg?.showXAxis !== false && (bi % Math.max(1, Math.ceil(bins.length / 6)) === 0 || bi === bins.length - 1) && (
-                  <text x={bx + bw / 2} y={padT + plotH + 17} textAnchor="middle" className="axis-tick">
-                    {formatMetricValue(b.x0, widget.format)}
+                  <text x={bx + bw / 2} y={padT + plotH + 18} textAnchor="middle" className="axis-tick">
+                    {formatAxisTick(b.x0, widget.format)}
                   </text>
                 )}
               </g>
@@ -1558,8 +1696,8 @@ export function ChartRenderer({
   }
 
   // =========================================================================
-  // 12. Unified Multi-Series Cartesian Engine:
-  //     bar, column, horizontal_bar, grouped_bar, stacked_bar, line, area
+  // 12. Unified Multi-Series & Dual-Axis Cartesian Engine:
+  //     bar, column, horizontal_bar, grouped_bar, stacked_bar, line, area, combo
   // =========================================================================
   const pivoted = pivotMultiSeries(rows, cols, xIdx, seriesIdx, yIndices, cfg);
   const categories = pivoted.categories;
@@ -1567,58 +1705,136 @@ export function ChartRenderer({
   const activeSeries = allSeries.filter((s) => !mutedSeries.has(s.name));
   const seriesToPlot = activeSeries.length > 0 ? activeSeries : allSeries.slice(0, 1);
 
+  const isCombo = widget.kind === 'combo';
   const isLineOrArea = widget.kind === 'line' || widget.kind === 'area';
   const isHorizontalBar =
     !isLineOrArea &&
+    !isCombo &&
     (cfg?.orientation === 'horizontal' ||
       (cfg?.orientation !== 'vertical' && widget.kind === 'horizontal_bar'));
 
+  // Resolve Secondary (Right / Y2) Axis series assignment
+  const explicitSecondary = (cfg?.secondaryYFields ?? []).map((s) => s.trim().toLowerCase());
+  const secondaryNameSet = new Set<string>();
+  if (!isHorizontalBar && allSeries.length > 0) {
+    if (explicitSecondary.length > 0) {
+      for (const s of allSeries) {
+        if (explicitSecondary.includes(s.name.toLowerCase())) {
+          secondaryNameSet.add(s.name);
+        }
+      }
+    } else if (isCombo && allSeries.length >= 2) {
+      for (const s of allSeries.slice(1)) secondaryNameSet.add(s.name);
+    } else if (cfg?.showY2Axis && allSeries.length >= 2) {
+      secondaryNameSet.add(allSeries[allSeries.length - 1].name);
+    }
+  }
+
+  const isSeriesY2 = (name: string) => secondaryNameSet.has(name);
+  const y1SeriesAll = allSeries.filter((s) => !isSeriesY2(s.name));
+  const y2SeriesAll = allSeries.filter((s) => isSeriesY2(s.name));
+  const y1SeriesToPlot = seriesToPlot.filter((s) => !isSeriesY2(s.name));
+  const y2SeriesToPlot = seriesToPlot.filter((s) => isSeriesY2(s.name));
+  const hasY2 = !isHorizontalBar && (y2SeriesAll.length > 0 || Boolean(cfg?.showY2Axis));
+
+  const secondaryType = cfg?.secondarySeriesType ?? (isLineOrArea ? 'dashed_line' : 'line');
+  const y1Fmt = cfg?.yAxisFormat ?? widget.format ?? 'compact';
+  const y2Fmt = cfg?.y2AxisFormat ?? 'compact';
+  const y2FmtOpts = { decimals: cfg?.y2Decimals };
+  const formatSeriesVal = (val: number, isY2: boolean) =>
+    isY2
+      ? formatMetricValue(val, y2Fmt, cfg?.y2Unit, y2FmtOpts)
+      : formatMetricValue(val, widget.format ?? y1Fmt, widget.unit, fmtOpts);
+
   const effectiveStackMode: 'none' | 'stacked' | 'percent_100' =
     cfg?.stackMode ??
-    (widget.kind === 'stacked_bar' && seriesToPlot.length > 1 ? 'stacked' : 'none');
+    (widget.kind === 'stacked_bar' && y1SeriesToPlot.length > 1 ? 'stacked' : 'none');
 
-  const legendEntries = allSeries.map((s, si) => {
-    const sumVal = s.values.reduce((a, b) => a + b, 0);
+  const swatchForSeries = (isY2: boolean): LegendEntry['swatch'] => {
+    if (isY2) {
+      if (secondaryType === 'bar') return 'bar';
+      if (secondaryType === 'dashed_line') return 'dashed';
+      return 'line';
+    }
+    if (isLineOrArea) return cfg?.lineStyle === 'dashed' ? 'dashed' : 'line';
+    return 'bar';
+  };
+
+  const legendEntries: LegendEntry[] = allSeries.map((s, si) => {
+    const onY2 = isSeriesY2(s.name);
+    const latestOrSum =
+      isLineOrArea || isCombo || onY2
+        ? (s.values[s.values.length - 1] ?? 0)
+        : s.values.reduce((a, b) => a + b, 0);
     return {
       name: s.name,
+      displayName: humanizeColumnName(s.name),
       color: resolveSeriesColor(si, cfg, allSeries.length === 1 ? widget.color : undefined),
-      valueText: formatMetricValue(sumVal, widget.format, widget.unit, fmtOpts),
+      valueText: formatSeriesVal(latestOrSum, onY2),
+      swatch: swatchForSeries(onY2),
+      ...(hasY2 ? { axisTag: onY2 ? 'R' : 'L' } : {}),
     };
   });
 
-  // Compute domain across categories & series
+  // Compute primary (Y1) domain totals
+  const y1ForDomain = y1SeriesToPlot.length > 0 ? y1SeriesToPlot : seriesToPlot;
   const catStackPosTotals = categories.map((_, ci) =>
-    seriesToPlot.reduce((s, ser) => s + Math.max(0, ser.values[ci] ?? 0), 0),
+    y1ForDomain.reduce((s, ser) => s + Math.max(0, ser.values[ci] ?? 0), 0),
   );
   const catStackNegTotals = categories.map((_, ci) =>
-    seriesToPlot.reduce((s, ser) => s + Math.min(0, ser.values[ci] ?? 0), 0),
+    y1ForDomain.reduce((s, ser) => s + Math.min(0, ser.values[ci] ?? 0), 0),
   );
-  const flatValues = seriesToPlot.flatMap((s) => s.values);
+  const flatY1Values = y1ForDomain.flatMap((s) => s.values);
+  const flatY2Values = (y2SeriesToPlot.length > 0 ? y2SeriesToPlot : y2SeriesAll).flatMap((s) => s.values);
 
-  let rawMin = 0;
-  let rawMax = 100;
-  if (effectiveStackMode === 'percent_100') {
-    rawMin = 0;
-    rawMax = 100;
-  } else if (effectiveStackMode === 'stacked' && seriesToPlot.length > 1) {
-    rawMin = Math.min(0, ...catStackNegTotals);
-    rawMax = Math.max(1e-6, ...catStackPosTotals);
-  } else {
-    const minData = flatValues.length ? Math.min(...flatValues) : 0;
-    const maxData = flatValues.length ? Math.max(...flatValues) : 1;
-    const shouldZeroBase = cfg?.startFromZero ?? !isLineOrArea;
-    rawMin = shouldZeroBase ? Math.min(0, minData) : minData - Math.abs(maxData - minData) * 0.08;
-    rawMax = Math.max(rawMin + 1e-6, maxData * (isLineOrArea ? 1.06 : 1.04));
-  }
-  const domainMin = cfg?.yMin ?? rawMin;
-  const domainMax = cfg?.yMax ?? rawMax;
-  const valScale = createNumericScale([domainMin, domainMax], { startFromZero: false, scale: cfg?.yAxisScale ?? 'linear' });
+  const yTickCnt = Math.max(2, Math.min(10, cfg?.yTickCount ?? (H < 195 ? 4 : 5)));
+  const shouldY1ZeroBase = cfg?.startFromZero ?? !isLineOrArea;
 
-  // Peak & Trough indices for highlightMaxMin
+  const y1DomainValues =
+    effectiveStackMode === 'percent_100'
+      ? [0, 100]
+      : effectiveStackMode === 'stacked' && y1ForDomain.length > 1
+        ? [...catStackNegTotals, ...catStackPosTotals]
+        : flatY1Values;
+
+  const dualScales = hasY2
+    ? createDualAxisScales(
+        y1DomainValues,
+        flatY2Values.length > 0 ? flatY2Values : [0, 100],
+        {
+          startFromZero: effectiveStackMode !== 'none' ? true : shouldY1ZeroBase,
+          minOverride: effectiveStackMode === 'percent_100' ? 0 : cfg?.yMin,
+          maxOverride: effectiveStackMode === 'percent_100' ? 100 : cfg?.yMax,
+          tickCount: yTickCnt,
+          scale: cfg?.yAxisScale ?? 'linear',
+        },
+        {
+          startFromZero: cfg?.y2StartFromZero ?? (secondaryType === 'bar'),
+          minOverride: cfg?.y2Min,
+          maxOverride: cfg?.y2Max,
+          tickCount: yTickCnt,
+          scale: cfg?.y2AxisScale ?? 'linear',
+        },
+      )
+    : null;
+
+  const valScale = dualScales
+    ? dualScales.left
+    : createNumericScale(y1DomainValues, {
+        startFromZero: effectiveStackMode !== 'none' ? true : shouldY1ZeroBase,
+        minOverride: effectiveStackMode === 'percent_100' ? 0 : cfg?.yMin,
+        maxOverride: effectiveStackMode === 'percent_100' ? 100 : cfg?.yMax,
+        tickCount: yTickCnt,
+        scale: cfg?.yAxisScale ?? 'linear',
+      });
+
+  const y2Scale = dualScales ? dualScales.right : null;
+
+  // Peak & Trough indices for highlightMaxMin (across Y1 primary series)
   let peakPt: { ci: number; si: number; val: number } | null = null;
   let troughPt: { ci: number; si: number; val: number } | null = null;
   if (cfg?.highlightMaxMin) {
-    seriesToPlot.forEach((ser, si) => {
+    y1ForDomain.forEach((ser, si) => {
       ser.values.forEach((v, ci) => {
         if (!peakPt || v > peakPt.val) peakPt = { ci, si, val: v };
         if (!troughPt || v < troughPt.val) troughPt = { ci, si, val: v };
@@ -1627,39 +1843,41 @@ export function ChartRenderer({
   }
 
   const avgMetric =
-    cfg?.showAverageLine && flatValues.length > 0
-      ? flatValues.reduce((a, b) => a + b, 0) / flatValues.length
+    cfg?.showAverageLine && flatY1Values.length > 0
+      ? flatY1Values.reduce((a, b) => a + b, 0) / flatY1Values.length
       : null;
 
-  const gridDash = strokeDashForStyle(cfg?.gridStyle ?? 'dashed');
-  const yTickCnt = Math.max(2, Math.min(12, cfg?.yTickCount ?? 3));
+  const gridDash = strokeDashForStyle(cfg?.gridStyle ?? (designPreset === 'flourish' ? 'dotted' : 'solid'));
+  const gridOpacity = cfg?.gridOpacity ?? (designPreset === 'minimal' ? 0.14 : 0.2);
 
   // -------------------------------------------------------------------------
   // 12A. Horizontal Bar / Stacked Horizontal / Grouped Horizontal SVG
   // -------------------------------------------------------------------------
   if (isHorizontalBar) {
-    const dynH = cfg?.chartHeight ?? Math.max(200, Math.min(440, categories.length * 32 + 44));
-    const maxLabelChars = Math.min(20, Math.max(6, ...categories.map((c) => Math.min(c.length, cfg?.xTickTruncate ?? 16))));
-    const padL = cfg?.plotPaddingLeft ?? (cfg?.showYAxis === false ? 16 : maxLabelChars * 6.8 + 18);
-    const padR = cfg?.plotPaddingRight ?? (cfg?.showDataLabels !== false ? 58 : 22);
+    const dynH = cfg?.chartHeight ?? Math.max(210, Math.min(460, categories.length * 34 + 48));
+    const maxLabelChars = Math.min(22, Math.max(6, ...categories.map((c) => Math.min(c.length, cfg?.xTickTruncate ?? 18))));
+    const padL = cfg?.plotPaddingLeft ?? (cfg?.showYAxis === false ? 16 : maxLabelChars * 6.9 + 18);
+    const padR = cfg?.plotPaddingRight ?? (cfg?.showDataLabels !== false ? 66 : 22);
     const padT = cfg?.plotPaddingTop ?? 12;
-    const padB = cfg?.plotPaddingBottom ?? (cfg?.xAxisTitle ? 40 : 28);
+    const padB = cfg?.plotPaddingBottom ?? (cfg?.xAxisTitle ? 42 : 30);
     const plotW = Math.max(90, W - padL - padR);
     const plotH = Math.max(70, dynH - padT - padB);
+    const hTickMax = Math.max(2, Math.min(valScale.ticks.length, Math.floor(plotW / 58) + 1));
+    const hTickStep = valScale.ticks.length <= hTickMax ? 1 : Math.ceil((valScale.ticks.length - 1) / Math.max(1, hTickMax - 1));
     const xOfVal = (v: number) => padL + valScale.norm(v) * plotW;
     const zeroX = xOfVal(Math.max(valScale.min, Math.min(valScale.max, 0)));
     const rowSlotH = plotH / Math.max(1, categories.length);
-    const barGapRatio = cfg?.barGap ?? 0.24;
+    const barGapRatio = cfg?.barGap ?? 0.28;
 
     return wrapComposite(
       <div ref={stageRef} className="chart-stage">
         <svg viewBox={`0 0 ${W} ${dynH}`} style={{ height: dynH }} className="chart-svg cartesian-svg" role="img" aria-label={widget.title}>
-          {cfg?.showPlotBorder && <rect x={padL} y={padT} width={plotW} height={plotH} fill="none" stroke="var(--md-outline-variant)" />}
-          {/* Value Gridlines & Bottom Ticks */}
-          {Array.from({ length: yTickCnt }, (_, ti) => {
-            const t = ti / Math.max(1, yTickCnt - 1);
-            const v = valScale.min + (valScale.max - valScale.min) * t;
+          {cfg?.showPlotBorder && <rect x={padL} y={padT} width={plotW} height={plotH} fill="none" stroke="var(--md-outline-variant)" strokeOpacity={0.45} />}
+          {/* Value Nice Gridlines & Collision-Free Bottom Ticks */}
+          {valScale.ticks.map((v, ti) => {
             const gx = xOfVal(v);
+            const isZero = Math.abs(v) < 1e-9 || ti === 0;
+            const showTickText = ti === 0 || ti === valScale.ticks.length - 1 || ti % hTickStep === 0;
             return (
               <g key={`hgrid-${ti}`}>
                 {(cfg?.showVerticalGrid ?? cfg?.showHorizontalGrid !== false) && (
@@ -1668,40 +1886,62 @@ export function ChartRenderer({
                     y1={padT}
                     x2={gx}
                     y2={padT + plotH}
-                    stroke="var(--md-outline-variant)"
-                    strokeDasharray={ti === 0 ? undefined : gridDash}
-                    strokeOpacity={cfg?.gridOpacity ?? 0.5}
+                    stroke={isZero ? 'var(--md-outline)' : 'var(--md-outline-variant)'}
+                    strokeDasharray={isZero ? undefined : gridDash}
+                    strokeOpacity={isZero ? 0.42 : gridOpacity}
+                    shapeRendering="crispEdges"
                   />
                 )}
-                {cfg?.showXAxis !== false && cfg?.showXTicks !== false && (
-                  <text x={gx} y={padT + plotH + 17} textAnchor="middle" className="axis-tick">
+                {showTickText && cfg?.showXAxis !== false && cfg?.showXTicks !== false && (
+                  <text
+                    x={gx}
+                    y={padT + plotH + 18}
+                    textAnchor={ti === 0 ? 'start' : ti === valScale.ticks.length - 1 ? 'end' : 'middle'}
+                    className="axis-tick"
+                  >
                     {effectiveStackMode === 'percent_100'
                       ? `${Math.round(v)}%`
-                      : formatMetricValue(v, cfg?.yAxisFormat ?? 'compact')}
+                      : formatAxisTick(v, y1Fmt, undefined, fmtOpts)}
                   </text>
                 )}
               </g>
             );
           })}
 
-          {/* Bars */}
+          {/* Horizontal Bars with Flat Left Baseline & Smooth Right Tip */}
           {categories.map((cat, ci) => {
             const yTopSlot = padT + ci * rowSlotH;
-            const usableH = Math.min(cfg?.barMaxWidth ?? 36, rowSlotH * (1 - barGapRatio));
+            const usableH = Math.min(cfg?.barMaxWidth ?? 30, rowSlotH * (1 - barGapRatio));
             const bandY = yTopSlot + (rowSlotH - usableH) / 2;
             const catTot = Math.max(1e-6, catStackPosTotals[ci]);
             let stackCursor = zeroX;
+            const isHoveredRow = hoveredCatIdx === ci;
+            const isDimmedRow = hoveredCatIdx !== null && !isHoveredRow;
 
             return (
-              <g key={`${cat}-${ci}`}>
+              <g
+                key={`${cat}-${ci}`}
+                style={{ opacity: isDimmedRow ? 0.42 : 1, transition: 'opacity 150ms ease' }}
+              >
+                {isHoveredRow && (
+                  <rect
+                    x={padL}
+                    y={yTopSlot + 1}
+                    width={plotW}
+                    height={Math.max(4, rowSlotH - 2)}
+                    rx={6}
+                    fill="var(--md-on-surface)"
+                    fillOpacity={0.04}
+                  />
+                )}
                 {cfg?.showYAxis !== false && (
                   <text
-                    x={padL - 8}
+                    x={padL - 10}
                     y={yTopSlot + rowSlotH / 2 + 4}
                     textAnchor="end"
-                    className="axis-tick"
+                    className={`axis-tick${isHoveredRow ? ' is-active' : ''}`}
                   >
-                    {truncateText(cat, cfg?.xTickTruncate ?? 18)}
+                    {truncateText(cat, cfg?.xTickTruncate ?? 19)}
                   </text>
                 )}
                 {seriesToPlot.map((ser, si) => {
@@ -1717,63 +1957,79 @@ export function ChartRenderer({
                   let bw = 2;
                   let by = bandY;
                   let bh = usableH;
+                  let tipSide: 'right' | 'left' = rawV >= 0 ? 'right' : 'left';
+                  let segRadius = cfg?.barRadius ?? 5;
 
                   if (effectiveStackMode !== 'none' && seriesToPlot.length > 1) {
                     const segW = Math.abs(xOfVal(plotV) - zeroX);
                     bx = stackCursor;
                     bw = Math.max(1, segW);
                     stackCursor += segW;
+                    if (si < seriesToPlot.length - 1) segRadius = 0;
                   } else {
                     const subH = usableH / seriesToPlot.length;
                     by = bandY + si * subH;
-                    bh = Math.max(3, subH - (seriesToPlot.length > 1 ? 1.5 : 0));
+                    bh = Math.max(3, subH - (seriesToPlot.length > 1 ? 2 : 0));
                     const targetX = xOfVal(plotV);
                     bx = Math.min(zeroX, targetX);
                     bw = Math.max(2, Math.abs(targetX - zeroX));
+                    tipSide = targetX >= zeroX ? 'right' : 'left';
                   }
 
-                  const fmt = formatMetricValue(rawV, widget.format, widget.unit, fmtOpts);
                   const showLbl = cfg?.showDataLabels !== false && (seriesToPlot.length === 1 || effectiveStackMode === 'none');
+                  const isSeriesDim = hoveredSeries !== null && hoveredSeries !== ser.name;
 
                   return (
                     <g
                       key={ser.name}
                       className="chart-hit"
+                      style={{ opacity: isSeriesDim ? 0.35 : 1, transition: 'opacity 150ms ease' }}
                       onClick={() =>
                         emitDatumClick(
-                          seriesToPlot.length > 1 ? `${cat} · ${ser.name}` : cat,
+                          seriesToPlot.length > 1 ? `${cat} · ${humanizeColumnName(ser.name)}` : cat,
                           rawV,
                           ser.name,
                           ser.rows[ci] ?? [cat, rawV],
                         )
                       }
-                      onMouseEnter={() =>
+                      onMouseEnter={() => {
+                        setHoveredCatIdx(ci);
                         handleHover({
                           x: bx + bw,
                           y: by + bh / 2,
-                          title: seriesToPlot.length > 1 ? `${cat} · ${ser.name}` : cat,
-                          detail: effectiveStackMode === 'percent_100' ? `${fmt} (${Math.round(plotV)}%)` : fmt,
-                        })
-                      }
-                      onMouseLeave={() => handleHover(null)}
+                          title: cat,
+                          rows: seriesToPlot.map((sItem) => {
+                            const sIdx = Math.max(0, allSeries.findIndex((a) => a.name === sItem.name));
+                            const sVal = sItem.values[ci] ?? 0;
+                            return {
+                              label: humanizeColumnName(sItem.name),
+                              value: formatMetricValue(sVal, widget.format, widget.unit, fmtOpts),
+                              color:
+                                cfg?.colorBy === 'category' && seriesToPlot.length === 1
+                                  ? resolveSeriesColor(ci, cfg, widget.color)
+                                  : resolveSeriesColor(sIdx, cfg, seriesToPlot.length === 1 ? widget.color : undefined),
+                            };
+                          }),
+                        });
+                      }}
+                      onMouseLeave={() => {
+                        setHoveredCatIdx(null);
+                        handleHover(null);
+                      }}
                     >
-                      <rect
-                        x={bx}
-                        y={by}
-                        width={bw}
-                        height={bh}
-                        rx={cfg?.barRadius ?? 5}
+                      <path
+                        d={roundedBarPath(bx, by, bw, bh, segRadius, tipSide)}
                         fill={col}
-                        fillOpacity={cfg?.fillOpacity ?? 0.9}
+                        fillOpacity={cfg?.fillOpacity ?? 0.92}
                       />
                       {showLbl && (
                         <text
-                          x={cfg?.dataLabelPosition === 'inside' && bw > 44 ? bx + bw - 6 : bx + bw + 6}
+                          x={cfg?.dataLabelPosition === 'inside' && bw > 46 ? bx + bw - 7 : bx + bw + 7}
                           y={by + bh / 2 + 3.5}
-                          textAnchor={cfg?.dataLabelPosition === 'inside' && bw > 44 ? 'end' : 'start'}
-                          fill={cfg?.dataLabelPosition === 'inside' && bw > 44 ? '#ffffff' : undefined}
-                          className={cfg?.dataLabelPosition === 'inside' && bw > 44 ? undefined : 'axis-tick'}
-                          style={{ fontSize: cfg?.dataLabelFontSize ?? 10.5, fontWeight: 600 }}
+                          textAnchor={cfg?.dataLabelPosition === 'inside' && bw > 46 ? 'end' : 'start'}
+                          fill={cfg?.dataLabelPosition === 'inside' && bw > 46 ? '#ffffff' : undefined}
+                          className={cfg?.dataLabelPosition === 'inside' && bw > 46 ? undefined : 'axis-tick data-label-val'}
+                          style={{ fontSize: cfg?.dataLabelFontSize ?? 11, fontWeight: 600 }}
                         >
                           {formatDataLabelText(cat, rawV, catStackPosTotals.reduce((a, b) => a + b, 0), widget)}
                         </text>
@@ -1786,23 +2042,28 @@ export function ChartRenderer({
           })}
 
           {avgMetric !== null && effectiveStackMode === 'none' && (
-            <line
-              x1={xOfVal(avgMetric)}
-              y1={padT}
-              x2={xOfVal(avgMetric)}
-              y2={padT + plotH}
-              stroke="var(--c-orange-accent)"
-              strokeWidth={1.6}
-              strokeDasharray="5 3"
-            />
+            <g>
+              <line
+                x1={xOfVal(avgMetric)}
+                y1={padT}
+                x2={xOfVal(avgMetric)}
+                y2={padT + plotH}
+                stroke="var(--c-orange-accent)"
+                strokeWidth={1.5}
+                strokeDasharray="5 3"
+              />
+              <text x={xOfVal(avgMetric) + 5} y={padT + 11} className="axis-tick" style={{ fill: 'var(--c-orange-accent)', fontWeight: 600 }}>
+                Avg {formatAxisTick(avgMetric, y1Fmt, undefined, fmtOpts)}
+              </text>
+            </g>
           )}
           {cfg?.referenceLines?.map((rl) => {
             const rx = xOfVal(toFiniteNum(rl.value));
             const rlCol = rl.color ?? 'var(--c-red-accent)';
             return (
               <g key={rl.id}>
-                <line x1={rx} y1={padT} x2={rx} y2={padT + plotH} stroke={rlCol} strokeWidth={1.6} strokeDasharray={strokeDashForStyle(rl.style ?? 'dashed')} />
-                {rl.label && <text x={rx + 4} y={padT + 11} className="axis-tick" style={{ fill: rlCol, fontWeight: 600 }}>{rl.label}</text>}
+                <line x1={rx} y1={padT} x2={rx} y2={padT + plotH} stroke={rlCol} strokeWidth={1.5} strokeDasharray={strokeDashForStyle(rl.style ?? 'dashed')} />
+                {rl.label && <text x={rx + 5} y={padT + 11} className="axis-tick" style={{ fill: rlCol, fontWeight: 600 }}>{rl.label}</text>}
               </g>
             );
           })}
@@ -1819,65 +2080,267 @@ export function ChartRenderer({
   }
 
   // -------------------------------------------------------------------------
-  // 12B. Vertical Cartesian Engine:
-  //      bar, column, grouped_bar, stacked_bar, line, area
+  // 12B. Vertical Cartesian & Dual-Axis Combo Engine:
+  //      bar, column, grouped_bar, stacked_bar, line, area, combo (+ Y2)
   // -------------------------------------------------------------------------
-  const directLabelsRightPad = isLineOrArea && cfg?.directLineLabels ? 74 : 0;
+  const y1ColorIdx = y1SeriesAll.length > 0 ? Math.max(0, allSeries.findIndex((s) => s.name === y1SeriesAll[0].name)) : 0;
+  const y2ColorIdx = y2SeriesAll.length > 0 ? Math.max(1, allSeries.findIndex((s) => s.name === y2SeriesAll[0].name)) : 1;
+  const y1AxisAccent = resolveSeriesColor(y1ColorIdx, cfg, allSeries.length === 1 ? widget.color : undefined);
+  const y2AxisAccent = resolveSeriesColor(y2ColorIdx, cfg, undefined);
+
+  const formattedY1Ticks = valScale.ticks.map((v) =>
+    effectiveStackMode === 'percent_100' ? `${Math.round(v)}%` : formatAxisTick(v, y1Fmt, undefined, fmtOpts),
+  );
+  const formattedY2Ticks = y2Scale
+    ? y2Scale.ticks.map((v) => formatAxisTick(v, y2Fmt, cfg?.y2Unit, y2FmtOpts))
+    : [];
+
+  const maxY1Chars = Math.max(3, ...formattedY1Ticks.map((t) => t.length));
+  const maxY2Chars = Math.max(3, ...formattedY2Ticks.map((t) => t.length));
+  const autoLeftPad = Math.min(76, Math.max(46, Math.round(maxY1Chars * 6.8 + 16)));
+  const autoRightPad = hasY2 ? Math.min(78, Math.max(48, Math.round(maxY2Chars * 6.8 + 18))) : 16;
+
+  const hasBarGeometry = !isLineOrArea || (hasY2 && secondaryType === 'bar');
+  const barSeriesList = seriesToPlot.filter((s) => {
+    const onY2 = isSeriesY2(s.name);
+    return onY2 ? secondaryType === 'bar' : !isLineOrArea;
+  });
+  const lineAreaSeriesList = seriesToPlot.filter((s) => {
+    const onY2 = isSeriesY2(s.name);
+    return onY2 ? secondaryType !== 'bar' : isLineOrArea;
+  });
+
+  const showDirectLabels = !hasY2 && lineAreaSeriesList.length > 0 && Boolean(cfg?.directLineLabels);
+  const directLabelsRightPad = showDirectLabels ? 98 : 0;
   const rotDeg = cfg?.xTickRotation ?? 0;
   const extraRotPad = rotDeg !== 0 ? 18 : 0;
-  const padL = cfg?.plotPaddingLeft ?? (cfg?.showYAxis === false ? 18 : cfg?.yAxisPosition === 'right' ? 18 : 54);
-  const padR = cfg?.plotPaddingRight ?? (cfg?.yAxisPosition === 'right' ? 54 : 16) + directLabelsRightPad;
-  const padT = cfg?.plotPaddingTop ?? 16;
-  const padB = cfg?.plotPaddingBottom ?? 32 + extraRotPad + (cfg?.xAxisTitle ? 14 : 0);
+
+  const hasTopAxisHeaders = Boolean(cfg?.yAxisTitle || (hasY2 && cfg?.y2AxisTitle));
+  const leftAxisOnRight = !hasY2 && cfg?.yAxisPosition === 'right';
+  const padL = cfg?.plotPaddingLeft ?? (cfg?.showYAxis === false ? 18 : leftAxisOnRight ? 18 : autoLeftPad);
+  const padR =
+    cfg?.plotPaddingRight ??
+    (leftAxisOnRight ? autoLeftPad : autoRightPad) + directLabelsRightPad;
+  const padT = cfg?.plotPaddingTop ?? (hasTopAxisHeaders ? 28 : 16);
+  const padB = cfg?.plotPaddingBottom ?? 32 + extraRotPad + (cfg?.xAxisTitle ? 16 : 0);
   const plotW = Math.max(100, W - padL - padR);
   const plotH = Math.max(80, H - padT - padB);
 
   const yOfVal = (v: number) => padT + (1 - valScale.norm(v)) * plotH;
+  const y2OfVal = (v: number) => (y2Scale ? padT + (1 - y2Scale.norm(v)) * plotH : yOfVal(v));
   const zeroY = yOfVal(Math.max(valScale.min, Math.min(valScale.max, 0)));
+  const zeroY2 = y2Scale ? y2OfVal(Math.max(y2Scale.min, Math.min(y2Scale.max, 0))) : zeroY;
 
-  const maxXTicks = cfg?.xTickMaxCount ?? Math.max(3, Math.floor(plotW / 72));
-  const xTickStep = categories.length <= maxXTicks ? 1 : Math.ceil(categories.length / maxXTicks);
   const slotW = plotW / Math.max(1, categories.length);
+  const autoMaxXTicks =
+    hasBarGeometry && categories.length <= 6 && slotW >= 36
+      ? categories.length
+      : Math.max(3, Math.floor(plotW / (hasBarGeometry ? 54 : 68)));
+  const maxXTicks = cfg?.xTickMaxCount ?? autoMaxXTicks;
+  const xTickStep = categories.length <= maxXTicks ? 1 : Math.ceil(categories.length / maxXTicks);
+  const autoXTrunc = hasBarGeometry
+    ? Math.max(6, Math.min(14, Math.floor((slotW * xTickStep - 6) / 6.3)))
+    : 11;
   const xCenterOf = (ci: number) =>
-    isLineOrArea
+    !hasBarGeometry
       ? padL + (categories.length <= 1 ? plotW / 2 : (ci / (categories.length - 1)) * plotW)
       : padL + (ci + 0.5) * slotW;
 
   const regLine =
-    cfg?.showTrendline && categories.length >= 2 && seriesToPlot[0]
-      ? computeLinearRegression(seriesToPlot[0].values.map((v, i) => ({ x: i, y: v })))
+    cfg?.showTrendline && categories.length >= 2 && y1ForDomain[0]
+      ? computeLinearRegression(y1ForDomain[0].values.map((v, i) => ({ x: i, y: v })))
       : null;
+
+  // Precompute all line/area series paths and points (supports both Y1 and Y2)
+  const curveMode = cfg?.curveType ?? 'monotone';
+  const computedLines = (() => {
+    const cumBelowY1 = new Array(categories.length).fill(0);
+    return lineAreaSeriesList.map((ser, localIdx) => {
+      const fullSi = Math.max(0, allSeries.findIndex((a) => a.name === ser.name));
+      const onY2 = isSeriesY2(ser.name);
+      const col = resolveSeriesColor(fullSi, cfg, allSeries.length === 1 ? widget.color : undefined);
+      const isArea = onY2 ? secondaryType === 'area' : widget.kind === 'area';
+      const defaultLineStyle =
+        onY2 && secondaryType === 'dashed_line'
+          ? 'dashed'
+          : !onY2 && localIdx > 0 && !widget.seriesField && !hasY2
+            ? 'solid'
+            : 'solid';
+      const dash = strokeDashForStyle(onY2 ? (secondaryType === 'dashed_line' ? 'dashed' : 'solid') : (cfg?.lineStyle ?? defaultLineStyle));
+      const scaleFn = onY2 ? y2OfVal : yOfVal;
+      const baseDomainMin = onY2 && y2Scale ? Math.max(y2Scale.min, 0) : Math.max(valScale.min, 0);
+
+      const pts = categories.map((cat, ci) => {
+        const rawV = ser.values[ci] ?? 0;
+        const tot = Math.max(1e-6, catStackPosTotals[ci]);
+        let plotTop = rawV;
+        let plotBot = baseDomainMin;
+        if (!onY2 && effectiveStackMode === 'stacked' && lineAreaSeriesList.length > 1) {
+          plotBot = cumBelowY1[ci];
+          plotTop = cumBelowY1[ci] + Math.max(0, rawV);
+          cumBelowY1[ci] = plotTop;
+        } else if (!onY2 && effectiveStackMode === 'percent_100' && lineAreaSeriesList.length > 1) {
+          plotBot = cumBelowY1[ci];
+          plotTop = cumBelowY1[ci] + (Math.max(0, rawV) / tot) * 100;
+          cumBelowY1[ci] = plotTop;
+        }
+        return {
+          x: xCenterOf(ci),
+          y: scaleFn(plotTop),
+          yBot: scaleFn(plotBot),
+          rawV,
+          cat,
+          ci,
+        };
+      });
+
+      const linePath = buildCurvePath(pts, curveMode);
+      const revBot = pts.toReversed().map((p) => ({ x: p.x, y: p.yBot }));
+      const areaPath =
+        pts.length > 1
+          ? !onY2 && effectiveStackMode !== 'none' && lineAreaSeriesList.length > 1
+            ? `${linePath} ${buildCurvePath(revBot, curveMode).replace(/^M/, 'L')} Z`
+            : `${linePath} L ${pts[pts.length - 1].x.toFixed(1)} ${(padT + plotH).toFixed(1)} L ${pts[0].x.toFixed(1)} ${(padT + plotH).toFixed(1)} Z`
+          : '';
+
+      return { ser, fullSi, onY2, col, isArea, dash, pts, linePath, areaPath };
+    });
+  })();
+
+  // Collision-free vertical targets for Direct End-of-Line Labels (FT / Economist pattern)
+  const directLabelYMap = showDirectLabels
+    ? resolveDirectLabelPositions(
+        computedLines
+          .filter((l) => l.pts.length > 0)
+          .map((l) => ({ id: l.ser.name, y: l.pts[l.pts.length - 1].y })),
+        padT + 8,
+        padT + plotH - 6,
+        15,
+      )
+    : null;
+
+  const triggerColumnHover = (ci: number) => {
+    setHoveredCatIdx(ci);
+    const cat = categories[ci];
+    const xPos = xCenterOf(ci);
+    const tipRows: HoverTipRow[] = seriesToPlot.map((ser) => {
+      const fullSi = Math.max(0, allSeries.findIndex((a) => a.name === ser.name));
+      const onY2 = isSeriesY2(ser.name);
+      const rawV = ser.values[ci] ?? 0;
+      const col =
+        cfg?.colorBy === 'category' && seriesToPlot.length === 1 && !isLineOrArea
+          ? resolveSeriesColor(ci, cfg, widget.color)
+          : resolveSeriesColor(fullSi, cfg, allSeries.length === 1 ? widget.color : undefined);
+      const valStr =
+        !onY2 && effectiveStackMode === 'percent_100'
+          ? `${formatSeriesVal(rawV, false)} (${Math.round((Math.max(0, rawV) / Math.max(1e-6, catStackPosTotals[ci])) * 100)}%)`
+          : formatSeriesVal(rawV, onY2);
+      return {
+        label: humanizeColumnName(ser.name),
+        value: valStr,
+        color: col,
+        ...(hasY2 ? { axisTag: onY2 ? ('R' as const) : ('L' as const) } : {}),
+      };
+    });
+
+    // Anchor tooltip neatly above the highest visible point in this column
+    const yCandidates: number[] = [];
+    for (const ln of computedLines) {
+      if (ln.pts[ci]) yCandidates.push(ln.pts[ci].y);
+    }
+    for (const bs of barSeriesList) {
+      const onY2 = isSeriesY2(bs.name);
+      const v = bs.values[ci] ?? 0;
+      yCandidates.push(onY2 ? y2OfVal(v) : yOfVal(v));
+    }
+    const anchorY = yCandidates.length > 0 ? Math.min(...yCandidates) : padT + 24;
+
+    handleHover({
+      x: xPos,
+      y: Math.max(padT + 14, anchorY),
+      title: cat,
+      rows: tipRows,
+    });
+  };
+
+  const clearColumnHover = () => {
+    setHoveredCatIdx(null);
+    handleHover(null);
+  };
 
   return wrapComposite(
     <div ref={stageRef} className="chart-stage">
-      <svg viewBox={`0 0 ${W} ${H}`} style={{ height: H }} className="chart-svg cartesian-svg" role="img" aria-label={widget.title}>
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
+        style={{ height: H }}
+        className="chart-svg cartesian-svg"
+        role="img"
+        aria-label={widget.title}
+        onMouseLeave={clearColumnHover}
+      >
         <defs>
           {seriesToPlot.map((ser) => {
             const fullSi = Math.max(0, allSeries.findIndex((a) => a.name === ser.name));
+            const onY2 = isSeriesY2(ser.name);
+            const isAreaGrad = onY2 ? secondaryType === 'area' : widget.kind === 'area';
             const col = resolveSeriesColor(fullSi, cfg, allSeries.length === 1 ? widget.color : undefined);
             return (
               <linearGradient key={ser.name} id={`${areaGradId}-${fullSi}`} x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor={col} stopOpacity={cfg?.fillOpacity ?? (widget.kind === 'area' ? 0.32 : 0.92)} />
-                <stop offset="100%" stopColor={col} stopOpacity={widget.kind === 'area' ? 0.03 : 0.45} />
+                <stop offset="0%" stopColor={col} stopOpacity={cfg?.fillOpacity ?? (isAreaGrad ? 0.24 : 0.94)} />
+                <stop offset="75%" stopColor={col} stopOpacity={isAreaGrad ? 0.05 : 0.78} />
+                <stop offset="100%" stopColor={col} stopOpacity={isAreaGrad ? 0.01 : 0.62} />
               </linearGradient>
             );
           })}
         </defs>
 
         {cfg?.showPlotBorder && (
-          <rect x={padL} y={padT} width={plotW} height={plotH} fill="none" stroke="var(--md-outline-variant)" />
+          <rect x={padL} y={padT} width={plotW} height={plotH} fill="none" stroke="var(--md-outline-variant)" strokeOpacity={0.45} />
         )}
 
-        {/* Reference Bands */}
+        {/* Horizontal Top Axis Headers (FT / Datawrapper style — never forces neck-tilting!) */}
+        {cfg?.yAxisTitle && cfg?.showYAxis !== false && (
+          <g>
+            {hasY2 && (
+              <rect x={padL} y={padT - 19} width={10} height={3} rx={1.5} fill={y1AxisAccent} />
+            )}
+            <text
+              x={leftAxisOnRight ? W - padR : hasY2 ? padL + 15 : padL}
+              y={padT - 14}
+              textAnchor={leftAxisOnRight ? 'end' : 'start'}
+              className="axis-header-text"
+              style={hasY2 ? { fill: y1AxisAccent } : undefined}
+            >
+              {cfg.yAxisTitle}
+            </text>
+          </g>
+        )}
+        {hasY2 && (cfg?.y2AxisTitle || y2SeriesAll[0]) && (
+          <g>
+            <rect x={W - padR - 10} y={padT - 19} width={10} height={3} rx={1.5} fill={y2AxisAccent} />
+            <text
+              x={W - padR - 15}
+              y={padT - 14}
+              textAnchor="end"
+              className="axis-header-text"
+              style={{ fill: y2AxisAccent }}
+            >
+              {cfg?.y2AxisTitle || humanizeColumnName(y2SeriesAll[0].name)}
+            </text>
+          </g>
+        )}
+
+        {/* Reference Bands (supports x, y, and y2 axes!) */}
         {cfg?.referenceBands?.map((b) => {
           const bCol = b.color ?? 'var(--c-teal-accent)';
-          const byTop = yOfVal(Math.max(b.from, b.to));
-          const byBot = yOfVal(Math.min(b.from, b.to));
+          const yMap = b.axis === 'y2' && y2Scale ? y2OfVal : yOfVal;
+          const byTop = yMap(Math.max(b.from, b.to));
+          const byBot = yMap(Math.min(b.from, b.to));
           return (
             <g key={b.id}>
-              <rect x={padL} y={byTop} width={plotW} height={Math.max(2, byBot - byTop)} fill={bCol} fillOpacity={0.12} />
+              <rect x={padL} y={byTop} width={plotW} height={Math.max(2, byBot - byTop)} fill={bCol} fillOpacity={b.opacity ?? 0.1} rx={2} />
               {b.label && (
-                <text x={padL + 6} y={byTop + 12} className="axis-tick" style={{ fill: bCol, fontSize: 10, fontWeight: 600 }}>
+                <text x={padL + 8} y={byTop + 13} className="axis-tick" style={{ fill: bCol, fontSize: 10, fontWeight: 600 }}>
                   {b.label}
                 </text>
               )}
@@ -1885,11 +2348,11 @@ export function ChartRenderer({
           );
         })}
 
-        {/* Horizontal Gridlines & Y-Axis Ticks */}
-        {Array.from({ length: yTickCnt }, (_, ti) => {
-          const t = ti / Math.max(1, yTickCnt - 1);
-          const val = valScale.min + (valScale.max - valScale.min) * t;
+        {/* Synchronized Horizontal Hairline Gridlines + Left (Y1) & Right (Y2) Nice Ticks */}
+        {valScale.ticks.map((val, ti) => {
           const gy = yOfVal(val);
+          const isZeroLine = Math.abs(val) < 1e-9 || (ti === 0 && valScale.min >= 0);
+          const y2TickLabel = formattedY2Ticks[ti];
           return (
             <g key={`yg-${ti}`}>
               {cfg?.showHorizontalGrid !== false && (
@@ -1898,26 +2361,46 @@ export function ChartRenderer({
                   y1={gy}
                   x2={W - padR}
                   y2={gy}
-                  stroke="var(--md-outline-variant)"
-                  strokeDasharray={ti === 0 ? undefined : gridDash}
-                  strokeOpacity={ti === 0 ? 0.75 : (cfg?.gridOpacity ?? 0.5)}
+                  stroke={isZeroLine ? 'var(--md-outline)' : 'var(--md-outline-variant)'}
+                  strokeWidth={isZeroLine ? 1.15 : 1}
+                  strokeDasharray={isZeroLine ? undefined : gridDash}
+                  strokeOpacity={isZeroLine ? 0.42 : gridOpacity}
+                  shapeRendering="crispEdges"
                 />
               )}
               {cfg?.showYAxis !== false && cfg?.showYTicks !== false && (
                 <text
-                  x={cfg?.yAxisPosition === 'right' ? W - padR + 8 : padL - 8}
-                  y={gy + 4}
-                  textAnchor={cfg?.yAxisPosition === 'right' ? 'start' : 'end'}
+                  x={leftAxisOnRight ? W - padR + 10 : padL - 10}
+                  y={gy + 3.5}
+                  textAnchor={leftAxisOnRight ? 'start' : 'end'}
                   className="axis-tick"
+                  style={hasY2 ? { fill: y1AxisAccent, opacity: 0.9 } : undefined}
                 >
-                  {effectiveStackMode === 'percent_100'
-                    ? `${Math.round(val)}%`
-                    : formatMetricValue(val, cfg?.yAxisFormat ?? 'compact')}
+                  {formattedY1Ticks[ti]}
+                </text>
+              )}
+              {hasY2 && y2TickLabel !== undefined && cfg?.showYTicks !== false && (
+                <text
+                  x={W - padR + 10}
+                  y={gy + 3.5}
+                  textAnchor="start"
+                  className="axis-tick axis-tick-y2"
+                  style={{ fill: y2AxisAccent, opacity: 0.92 }}
+                >
+                  {y2TickLabel}
                 </text>
               )}
             </g>
           );
         })}
+
+        {/* Subtle Dual-Axis Edge Guide Ticks (visual anchor without heavy chartjunk box) */}
+        {hasY2 && (
+          <>
+            <line x1={padL} y1={padT} x2={padL} y2={padT + plotH} stroke={y1AxisAccent} strokeOpacity={0.22} strokeWidth={1.25} shapeRendering="crispEdges" />
+            <line x1={W - padR} y1={padT} x2={W - padR} y2={padT + plotH} stroke={y2AxisAccent} strokeOpacity={0.28} strokeWidth={1.25} shapeRendering="crispEdges" />
+          </>
+        )}
 
         {/* Optional Vertical Gridlines */}
         {cfg?.showVerticalGrid &&
@@ -1933,259 +2416,129 @@ export function ChartRenderer({
                 y2={padT + plotH}
                 stroke="var(--md-outline-variant)"
                 strokeDasharray={gridDash}
-                strokeOpacity={cfg?.gridOpacity ?? 0.42}
+                strokeOpacity={gridOpacity}
+                shapeRendering="crispEdges"
               />
             );
           })}
 
-        {/* LINE & AREA SERIES */}
-        {isLineOrArea &&
-          (() => {
-            const cumBelow = new Array(categories.length).fill(0);
-            return seriesToPlot.map((ser, si) => {
-              const fullSi = Math.max(0, allSeries.findIndex((a) => a.name === ser.name));
-              const col = resolveSeriesColor(fullSi, cfg, allSeries.length === 1 ? widget.color : undefined);
-              const dash = strokeDashForStyle(cfg?.lineStyle ?? (si > 0 && !widget.seriesField ? 'dashed' : 'solid'));
+        {/* Interactive Hover Column Wash (Bar/Combo) or Crisp Vertical Crosshair (Line/Area) */}
+        {hoveredCatIdx !== null && categories[hoveredCatIdx] !== undefined && (
+          hasBarGeometry ? (
+            <rect
+              x={padL + hoveredCatIdx * slotW + 2}
+              y={padT}
+              width={Math.max(4, slotW - 4)}
+              height={plotH}
+              rx={6}
+              fill="var(--md-on-surface)"
+              fillOpacity={0.045}
+              style={{ pointerEvents: 'none' }}
+            />
+          ) : (
+            <line
+              x1={xCenterOf(hoveredCatIdx)}
+              y1={padT}
+              x2={xCenterOf(hoveredCatIdx)}
+              y2={padT + plotH}
+              stroke="var(--md-on-surface-variant)"
+              strokeWidth={1}
+              strokeDasharray="3 3"
+              strokeOpacity={0.5}
+              style={{ pointerEvents: 'none' }}
+            />
+          )
+        )}
 
-              const topPts = categories.map((cat, ci) => {
-                const rawV = ser.values[ci] ?? 0;
-                const tot = Math.max(1e-6, catStackPosTotals[ci]);
-                let plotTop = rawV;
-                let plotBot = Math.max(valScale.min, 0);
-                if (effectiveStackMode === 'stacked' && seriesToPlot.length > 1) {
-                  plotBot = cumBelow[ci];
-                  plotTop = cumBelow[ci] + Math.max(0, rawV);
-                  cumBelow[ci] = plotTop;
-                } else if (effectiveStackMode === 'percent_100' && seriesToPlot.length > 1) {
-                  plotBot = cumBelow[ci];
-                  plotTop = cumBelow[ci] + (Math.max(0, rawV) / tot) * 100;
-                  cumBelow[ci] = plotTop;
-                }
-                return {
-                  x: xCenterOf(ci),
-                  y: yOfVal(plotTop),
-                  yBot: yOfVal(plotBot),
-                  rawV,
-                  cat,
-                  ci,
-                };
-              });
-
-              const curve = cfg?.curveType ?? 'linear';
-              const linePath = buildCurvePath(topPts, curve);
-              const revBot = [...topPts].reverse().map((p) => ({ x: p.x, y: p.yBot }));
-              const areaPath =
-                topPts.length > 1
-                  ? effectiveStackMode !== 'none' && seriesToPlot.length > 1
-                    ? `${linePath} ${buildCurvePath(revBot, curve).replace(/^M/, 'L')} Z`
-                    : `${linePath} L ${topPts[topPts.length - 1].x.toFixed(1)} ${(padT + plotH).toFixed(1)} L ${topPts[0].x.toFixed(1)} ${(padT + plotH).toFixed(1)} Z`
-                  : '';
-
-              const showPts = cfg?.showMarkers !== false;
-              const mShape = cfg?.markerShape ?? 'circle';
-              const mSize = cfg?.markerSize ?? 4.25;
-              const lastPt = topPts[topPts.length - 1];
-
-              return (
-                <g key={ser.name}>
-                  {widget.kind === 'area' && areaPath && (
-                    <path
-                      d={areaPath}
-                      fill={
-                        cfg?.gradientFill !== false && effectiveStackMode === 'none'
-                          ? `url(#${areaGradId}-${fullSi})`
-                          : col
-                      }
-                      fillOpacity={
-                        cfg?.gradientFill !== false && effectiveStackMode === 'none'
-                          ? 1
-                          : (cfg?.fillOpacity ?? 0.34)
-                      }
-                    />
-                  )}
-                  {topPts.length > 1 && (
-                    <path
-                      d={linePath}
-                      fill="none"
-                      stroke={col}
-                      strokeWidth={cfg?.strokeWidth ?? 2.5}
-                      strokeDasharray={dash}
-                      strokeLinejoin="round"
-                      strokeLinecap="round"
-                    />
-                  )}
-                  {topPts.map((pt) => {
-                    const fmt = formatMetricValue(pt.rawV, widget.format, widget.unit, fmtOpts);
-                    const isPeak = peakPt?.ci === pt.ci && peakPt?.si === si;
-                    const isTrough = troughPt?.ci === pt.ci && troughPt?.si === si;
-                    return (
-                      <g
-                        key={pt.ci}
-                        className="chart-hit"
-                        onClick={() =>
-                          emitDatumClick(
-                            seriesToPlot.length > 1 ? `${pt.cat} · ${ser.name}` : pt.cat,
-                            pt.rawV,
-                            ser.name,
-                            ser.rows[pt.ci] ?? [pt.cat, pt.rawV],
-                          )
-                        }
-                        onMouseEnter={() =>
-                          handleHover({
-                            x: pt.x,
-                            y: pt.y,
-                            title: seriesToPlot.length > 1 ? `${pt.cat} · ${ser.name}` : pt.cat,
-                            detail: fmt,
-                          })
-                        }
-                        onMouseLeave={() => handleHover(null)}
-                      >
-                        {/* Invisible generous hit target even when markers are hidden */}
-                        <circle cx={pt.x} cy={pt.y} r={9} fill="transparent" />
-                        {showPts &&
-                          (mShape === 'circle' ? (
-                            <circle
-                              cx={pt.x}
-                              cy={pt.y}
-                              r={mSize}
-                              fill={col}
-                              stroke="var(--md-surface-container-lowest)"
-                              strokeWidth={2}
-                            />
-                          ) : (
-                            <path
-                              d={markerSvgPath(mShape, pt.x, pt.y, mSize)}
-                              fill={col}
-                              stroke="var(--md-surface-container-lowest)"
-                              strokeWidth={1.5}
-                            />
-                          ))}
-                        {(isPeak || isTrough) && (
-                          <circle
-                            cx={pt.x}
-                            cy={pt.y}
-                            r={mSize + 4}
-                            fill="none"
-                            stroke={isPeak ? 'var(--c-green-accent)' : 'var(--c-red-accent)'}
-                            strokeWidth={2}
-                          />
-                        )}
-                        {cfg?.showDataLabels && (
-                          <text
-                            x={pt.x}
-                            y={pt.y - mSize - 5}
-                            textAnchor="middle"
-                            className="axis-tick"
-                            style={{ fontSize: cfg?.dataLabelFontSize ?? 10, fontWeight: 600 }}
-                          >
-                            {formatDataLabelText(pt.cat, pt.rawV, catStackPosTotals.reduce((a, b) => a + b, 0), widget)}
-                          </text>
-                        )}
-                      </g>
-                    );
-                  })}
-                  {cfg?.directLineLabels && lastPt && (
-                    <text
-                      x={lastPt.x + 7}
-                      y={lastPt.y + 4}
-                      className="axis-tick"
-                      style={{ fill: col, fontWeight: 700, fontSize: 10.5 }}
-                    >
-                      {truncateText(ser.name, 11)}
-                    </text>
-                  )}
-                </g>
-              );
-            });
-          })()}
-
-        {/* VERTICAL BAR / COLUMN / GROUPED / STACKED SERIES */}
-        {!isLineOrArea &&
+        {/* LAYER 1: VERTICAL BAR / COLUMN / GROUPED / STACKED SERIES (rendered beneath overlay lines!) */}
+        {barSeriesList.length > 0 &&
           categories.map((cat, ci) => {
             const cx = xCenterOf(ci);
-            const barGapRatio = cfg?.barGap ?? 0.24;
-            const groupW = Math.min(cfg?.barMaxWidth ?? 56, slotW * (1 - barGapRatio));
+            const barGapRatio = cfg?.barGap ?? 0.28;
+            const groupW = Math.min(cfg?.barMaxWidth ?? 52, slotW * (1 - barGapRatio));
             const catTot = Math.max(1e-6, catStackPosTotals[ci]);
             let posStackVal = 0;
             let negStackVal = 0;
+            const isRowDimmed = hoveredCatIdx !== null && hoveredCatIdx !== ci;
 
             return (
-              <g key={`barcat-${cat}-${ci}`}>
-                {seriesToPlot.map((ser, si) => {
+              <g
+                key={`barcat-${cat}-${ci}`}
+                style={{ opacity: isRowDimmed ? 0.45 : 1, transition: 'opacity 140ms ease' }}
+              >
+                {barSeriesList.map((ser, si) => {
                   const fullSi = Math.max(0, allSeries.findIndex((a) => a.name === ser.name));
+                  const onY2 = isSeriesY2(ser.name);
                   const rawV = ser.values[ci] ?? 0;
                   const col =
-                    cfg?.colorBy === 'category' && seriesToPlot.length === 1
+                    cfg?.colorBy === 'category' && barSeriesList.length === 1 && !hasY2
                       ? resolveSeriesColor(ci, cfg, widget.color)
-                      : resolveSeriesColor(fullSi, cfg, seriesToPlot.length === 1 ? widget.color : undefined);
+                      : resolveSeriesColor(fullSi, cfg, allSeries.length === 1 ? widget.color : undefined);
+                  const isSeriesDim = hoveredSeries !== null && hoveredSeries !== ser.name;
 
                   let bx = cx - groupW / 2;
                   let bw = groupW;
-                  let by = zeroY;
+                  let by = onY2 ? zeroY2 : zeroY;
                   let bh = 2;
                   let pctShare = 0;
+                  let tipSide: 'top' | 'bottom' = rawV >= 0 ? 'top' : 'bottom';
+                  let barRad = cfg?.barRadius ?? 5;
 
-                  if (effectiveStackMode !== 'none' && seriesToPlot.length > 1) {
+                  const scaleFn = onY2 ? y2OfVal : yOfVal;
+                  const baseZeroY = onY2 ? zeroY2 : zeroY;
+
+                  if (!onY2 && effectiveStackMode !== 'none' && barSeriesList.length > 1) {
                     if (effectiveStackMode === 'percent_100') {
                       pctShare = (Math.max(0, rawV) / catTot) * 100;
                       const nextStack = posStackVal + pctShare;
-                      by = yOfVal(nextStack);
-                      bh = Math.max(1, yOfVal(posStackVal) - by);
+                      by = scaleFn(nextStack);
+                      bh = Math.max(1, scaleFn(posStackVal) - by);
                       posStackVal = nextStack;
                     } else if (rawV >= 0) {
                       const nextStack = posStackVal + rawV;
-                      by = yOfVal(nextStack);
-                      bh = Math.max(1, yOfVal(posStackVal) - by);
+                      by = scaleFn(nextStack);
+                      bh = Math.max(1, scaleFn(posStackVal) - by);
                       posStackVal = nextStack;
                     } else {
                       const nextStack = negStackVal + rawV;
-                      by = yOfVal(negStackVal);
-                      bh = Math.max(1, yOfVal(nextStack) - by);
+                      by = scaleFn(negStackVal);
+                      bh = Math.max(1, scaleFn(nextStack) - by);
                       negStackVal = nextStack;
+                      tipSide = 'bottom';
                     }
+                    if (si < barSeriesList.length - 1) barRad = 0;
                   } else {
-                    const subW = groupW / seriesToPlot.length;
+                    const subW = groupW / barSeriesList.length;
                     bx = cx - groupW / 2 + si * subW;
-                    bw = Math.max(2, subW - (seriesToPlot.length > 1 ? 2 : 0));
-                    const targetY = yOfVal(rawV);
-                    by = Math.min(zeroY, targetY);
-                    bh = Math.max(2, Math.abs(zeroY - targetY));
+                    bw = Math.max(3, subW - (barSeriesList.length > 1 ? 2.5 : 0));
+                    const targetY = scaleFn(rawV);
+                    by = Math.min(baseZeroY, targetY);
+                    bh = Math.max(2, Math.abs(baseZeroY - targetY));
+                    tipSide = targetY <= baseZeroY ? 'top' : 'bottom';
                   }
 
-                  const fmt = formatMetricValue(rawV, widget.format, widget.unit, fmtOpts);
-                  const isPeak = peakPt?.ci === ci && peakPt?.si === si;
-                  const isTrough = troughPt?.ci === ci && troughPt?.si === si;
+                  const isPeak = !onY2 && peakPt?.ci === ci && peakPt?.si === si;
+                  const isTrough = !onY2 && troughPt?.ci === ci && troughPt?.si === si;
 
                   return (
                     <g
                       key={ser.name}
                       className="chart-hit"
+                      style={{ opacity: isSeriesDim ? 0.25 : 1, transition: 'opacity 140ms ease' }}
                       onClick={() =>
                         emitDatumClick(
-                          seriesToPlot.length > 1 ? `${cat} · ${ser.name}` : cat,
+                          allSeries.length > 1 ? `${cat} · ${humanizeColumnName(ser.name)}` : cat,
                           rawV,
                           ser.name,
                           ser.rows[ci] ?? [cat, rawV],
                         )
                       }
-                      onMouseEnter={() =>
-                        handleHover({
-                          x: bx + bw / 2,
-                          y: by,
-                          title: seriesToPlot.length > 1 ? `${cat} · ${ser.name}` : cat,
-                          detail: effectiveStackMode === 'percent_100' ? `${fmt} (${Math.round(pctShare)}%)` : fmt,
-                        })
-                      }
-                      onMouseLeave={() => handleHover(null)}
+                      onMouseEnter={() => triggerColumnHover(ci)}
                     >
-                      <rect
-                        x={bx}
-                        y={by}
-                        width={bw}
-                        height={bh}
-                        rx={cfg?.barRadius ?? 5}
+                      <path
+                        d={roundedBarPath(bx, by, bw, bh, barRad, tipSide)}
                         fill={cfg?.gradientFill ? `url(#${areaGradId}-${fullSi})` : col}
-                        fillOpacity={cfg?.fillOpacity ?? 0.9}
+                        fillOpacity={cfg?.fillOpacity ?? (hasY2 && lineAreaSeriesList.length > 0 ? 0.84 : 0.92)}
                         stroke={
                           isPeak
                             ? 'var(--c-green-accent)'
@@ -2195,13 +2548,13 @@ export function ChartRenderer({
                         }
                         strokeWidth={isPeak || isTrough ? 2 : undefined}
                       />
-                      {cfg?.showDataLabels && bh > 8 && (
+                      {cfg?.showDataLabels && bh > 10 && (
                         <text
                           x={bx + bw / 2}
                           y={
                             cfg.dataLabelPosition === 'inside' || cfg.dataLabelPosition === 'center'
                               ? by + bh / 2 + 4
-                              : by - 5
+                              : by - 6
                           }
                           textAnchor="middle"
                           fill={
@@ -2212,13 +2565,15 @@ export function ChartRenderer({
                           className={
                             cfg.dataLabelPosition === 'inside' || cfg.dataLabelPosition === 'center'
                               ? undefined
-                              : 'axis-tick'
+                              : 'axis-tick data-label-val'
                           }
-                          style={{ fontSize: cfg?.dataLabelFontSize ?? 10, fontWeight: 600 }}
+                          style={{ fontSize: cfg?.dataLabelFontSize ?? 10.5, fontWeight: 600 }}
                         >
                           {effectiveStackMode === 'percent_100'
                             ? `${Math.round(pctShare)}%`
-                            : formatDataLabelText(cat, rawV, catStackPosTotals.reduce((a, b) => a + b, 0), widget)}
+                            : onY2
+                              ? formatSeriesVal(rawV, true)
+                              : formatDataLabelText(cat, rawV, catStackPosTotals.reduce((a, b) => a + b, 0), widget)}
                         </text>
                       )}
                     </g>
@@ -2228,22 +2583,223 @@ export function ChartRenderer({
             );
           })}
 
+        {/* LAYER 2: LINE & AREA SERIES (primary trends + secondary dual-axis overlays ON TOP) */}
+        {computedLines.map(({ ser, fullSi, onY2, col, isArea, dash, pts, linePath, areaPath }, li) => {
+          const isSeriesDim = hoveredSeries !== null && hoveredSeries !== ser.name;
+          // Editorial best practice (FT / Stripe / Apple): keep curves clean without noisy dots at every point
+          // unless user explicitly opts in (`showMarkers: true`), while always surfacing the final endpoint dot + active hover dots!
+          const showAllMarkers = cfg?.showMarkers === true;
+          const mShape = cfg?.markerShape ?? 'circle';
+          const mSize = cfg?.markerSize ?? 4;
+          const lastPt = pts[pts.length - 1];
+          const hoveredPt = hoveredCatIdx !== null ? pts[hoveredCatIdx] : null;
+          const labelY = directLabelYMap?.get(ser.name) ?? lastPt?.y ?? padT;
+
+          return (
+            <g
+              key={ser.name}
+              style={{ opacity: isSeriesDim ? 0.2 : 1, transition: 'opacity 160ms ease' }}
+            >
+              {isArea && areaPath && (
+                <path
+                  d={areaPath}
+                  fill={
+                    cfg?.gradientFill !== false && effectiveStackMode === 'none'
+                      ? `url(#${areaGradId}-${fullSi})`
+                      : col
+                  }
+                  fillOpacity={
+                    cfg?.gradientFill !== false && effectiveStackMode === 'none'
+                      ? 1
+                      : (cfg?.fillOpacity ?? 0.24)
+                  }
+                  style={{ pointerEvents: 'none' }}
+                />
+              )}
+              {pts.length > 1 && (
+                <>
+                  {/* Subtle halo behind secondary combo line so it stays razor-sharp when crossing bars */}
+                  {onY2 && barSeriesList.length > 0 && (
+                    <path
+                      d={linePath}
+                      fill="none"
+                      stroke="var(--md-surface-container-lowest)"
+                      strokeWidth={(cfg?.strokeWidth ?? 2.6) + 2.4}
+                      strokeLinejoin="round"
+                      strokeLinecap="round"
+                      strokeOpacity={0.85}
+                      style={{ pointerEvents: 'none' }}
+                    />
+                  )}
+                  <path
+                    d={linePath}
+                    fill="none"
+                    stroke={col}
+                    strokeWidth={cfg?.strokeWidth ?? (onY2 ? 2.6 : 2.5)}
+                    strokeDasharray={dash}
+                    strokeLinejoin="round"
+                    strokeLinecap="round"
+                    style={{ pointerEvents: 'none' }}
+                  />
+                </>
+              )}
+
+              {/* Explicit Point Markers (only when requested or peak/trough/data-labels) */}
+              {pts.map((pt) => {
+                const isPeak = !onY2 && peakPt?.ci === pt.ci && peakPt?.si === li;
+                const isTrough = !onY2 && troughPt?.ci === pt.ci && troughPt?.si === li;
+                const isLast = pt.ci === pts.length - 1;
+                const showThisMarker = showAllMarkers || (isLast && cfg?.showMarkers !== false && hoveredCatIdx === null);
+                return (
+                  <g key={pt.ci} style={{ pointerEvents: 'none' }}>
+                    {showThisMarker &&
+                      (mShape === 'circle' || !showAllMarkers ? (
+                        <>
+                          {isLast && !showAllMarkers && (
+                            <circle cx={pt.x} cy={pt.y} r={mSize + 3.5} fill={col} fillOpacity={0.18} />
+                          )}
+                          <circle
+                            cx={pt.x}
+                            cy={pt.y}
+                            r={isLast && !showAllMarkers ? 4 : mSize}
+                            fill={col}
+                            stroke="var(--md-surface-container-lowest)"
+                            strokeWidth={2}
+                          />
+                        </>
+                      ) : (
+                        <path
+                          d={markerSvgPath(mShape, pt.x, pt.y, mSize)}
+                          fill={col}
+                          stroke="var(--md-surface-container-lowest)"
+                          strokeWidth={1.5}
+                        />
+                      ))}
+                    {(isPeak || isTrough) && (
+                      <circle
+                        cx={pt.x}
+                        cy={pt.y}
+                        r={mSize + 4.5}
+                        fill="none"
+                        stroke={isPeak ? 'var(--c-green-accent)' : 'var(--c-red-accent)'}
+                        strokeWidth={2}
+                      />
+                    )}
+                    {cfg?.showDataLabels && (
+                      <text
+                        x={pt.x}
+                        y={pt.y - mSize - 6}
+                        textAnchor="middle"
+                        className="axis-tick data-label-val"
+                        style={{ fontSize: cfg?.dataLabelFontSize ?? 10, fontWeight: 600, fill: onY2 ? col : undefined }}
+                      >
+                        {onY2
+                          ? formatSeriesVal(pt.rawV, true)
+                          : formatDataLabelText(pt.cat, pt.rawV, catStackPosTotals.reduce((a, b) => a + b, 0), widget)}
+                      </text>
+                    )}
+                  </g>
+                );
+              })}
+
+              {/* Elevated Active Halo Dot on Crosshair Hover */}
+              {hoveredPt && (
+                <g style={{ pointerEvents: 'none' }}>
+                  <circle cx={hoveredPt.x} cy={hoveredPt.y} r={8.5} fill={col} fillOpacity={0.18} />
+                  <circle
+                    cx={hoveredPt.x}
+                    cy={hoveredPt.y}
+                    r={4.5}
+                    fill={col}
+                    stroke="var(--md-surface-container-lowest)"
+                    strokeWidth={2.2}
+                  />
+                </g>
+              )}
+
+              {/* Collision-Free Direct End-of-Line Labels (FT / Datawrapper style) */}
+              {showDirectLabels && lastPt && (
+                <g style={{ pointerEvents: 'none' }}>
+                  {Math.abs(labelY - lastPt.y) > 4 && (
+                    <line
+                      x1={lastPt.x + 5}
+                      y1={lastPt.y}
+                      x2={lastPt.x + 12}
+                      y2={labelY}
+                      stroke={col}
+                      strokeOpacity={0.45}
+                      strokeWidth={1}
+                    />
+                  )}
+                  <text
+                    x={lastPt.x + 14}
+                    y={labelY + 3.5}
+                    className="axis-tick direct-line-label"
+                    style={{ fill: col, fontWeight: 650, fontSize: 10.5 }}
+                  >
+                    {truncateText(humanizeColumnName(ser.name), 10)} · {formatAxisTick(lastPt.rawV, onY2 ? y2Fmt : y1Fmt, undefined, onY2 ? y2FmtOpts : fmtOpts)}
+                  </text>
+                </g>
+              )}
+            </g>
+          );
+        })}
+
+        {/* Full-Column Invisible Interaction Overlay (effortless hover tracking & SQL click-to-inspect!) */}
+        {categories.map((cat, ci) => {
+          const cx = xCenterOf(ci);
+          const colX = !hasBarGeometry
+            ? ci === 0
+              ? padL
+              : (xCenterOf(ci - 1) + cx) / 2
+            : padL + ci * slotW;
+          const colEnd = !hasBarGeometry
+            ? ci === categories.length - 1
+              ? padL + plotW
+              : (cx + xCenterOf(ci + 1)) / 2
+            : padL + (ci + 1) * slotW;
+          const primaryClickSeries = seriesToPlot[0];
+          const primaryRaw = primaryClickSeries?.values[ci] ?? 0;
+          return (
+            <rect
+              key={`hitcol-${ci}`}
+              x={colX}
+              y={padT}
+              width={Math.max(4, colEnd - colX)}
+              height={plotH}
+              fill="transparent"
+              className="chart-hit-col"
+              onMouseEnter={() => triggerColumnHover(ci)}
+              onClick={() =>
+                primaryClickSeries &&
+                emitDatumClick(
+                  allSeries.length > 1 ? `${cat} · ${humanizeColumnName(primaryClickSeries.name)}` : cat,
+                  primaryRaw,
+                  primaryClickSeries.name,
+                  primaryClickSeries.rows[ci] ?? [cat, primaryRaw],
+                )
+              }
+            />
+          );
+        })}
+
         {/* X-Axis Tick Labels */}
         {cfg?.showXAxis !== false &&
           cfg?.showXTicks !== false &&
           categories.map((cat, ci) => {
             if (ci % xTickStep !== 0 && ci !== categories.length - 1) return null;
             const lx = xCenterOf(ci);
-            const ly = padT + plotH + 18;
-            const textStr = truncateText(cat, cfg?.xTickTruncate ?? 11);
+            const ly = padT + plotH + 19;
+            const textStr = truncateText(cat, cfg?.xTickTruncate ?? autoXTrunc);
+            const isHoveredTick = hoveredCatIdx === ci;
             const anchor =
               rotDeg < 0
                 ? 'end'
                 : rotDeg > 0
                   ? 'start'
-                  : isLineOrArea && ci === 0 && categories.length > 3
+                  : !hasBarGeometry && ci === 0 && categories.length > 3
                     ? 'start'
-                    : isLineOrArea && ci === categories.length - 1 && categories.length > 3
+                    : !hasBarGeometry && ci === categories.length - 1 && categories.length > 3
                       ? 'end'
                       : 'middle';
             return (
@@ -2253,7 +2809,7 @@ export function ChartRenderer({
                 y={ly}
                 textAnchor={anchor}
                 transform={rotDeg !== 0 ? `rotate(${rotDeg} ${lx} ${ly})` : undefined}
-                className="axis-tick"
+                className={`axis-tick${isHoveredTick ? ' is-active' : ''}`}
               >
                 {textStr}
               </text>
@@ -2268,52 +2824,76 @@ export function ChartRenderer({
             x2={xCenterOf(categories.length - 1)}
             y2={yOfVal(regLine.slope * (categories.length - 1) + regLine.intercept)}
             stroke="var(--md-on-surface-variant)"
-            strokeWidth={1.8}
+            strokeWidth={1.6}
             strokeDasharray="6 4"
+            strokeOpacity={0.78}
+            style={{ pointerEvents: 'none' }}
           />
         )}
 
         {/* Average Line */}
         {avgMetric !== null && effectiveStackMode === 'none' && (
-          <g>
+          <g style={{ pointerEvents: 'none' }}>
             <line
               x1={padL}
               y1={yOfVal(avgMetric)}
               x2={W - padR}
               y2={yOfVal(avgMetric)}
               stroke="var(--c-orange-accent)"
-              strokeWidth={1.6}
+              strokeWidth={1.4}
               strokeDasharray="5 3"
             />
             <text
-              x={W - padR - 4}
-              y={yOfVal(avgMetric) - 4}
+              x={W - padR - 5}
+              y={yOfVal(avgMetric) - 5}
               textAnchor="end"
               className="axis-tick"
               style={{ fill: 'var(--c-orange-accent)', fontWeight: 600 }}
             >
-              Avg {formatMetricValue(avgMetric, widget.format, widget.unit, fmtOpts)}
+              Avg {formatAxisTick(avgMetric, y1Fmt, undefined, fmtOpts)}
             </text>
           </g>
         )}
 
-        {/* Custom Reference Lines */}
+        {/* Custom Reference Lines (supports x, y left, and y2 right!) */}
         {cfg?.referenceLines?.map((rl) => {
-          const rlCol = rl.color ?? 'var(--c-red-accent)';
-          const ry = yOfVal(toFiniteNum(rl.value));
+          const rlCol = rl.color ?? (rl.axis === 'y2' ? y2AxisAccent : 'var(--c-red-accent)');
+          const dash = strokeDashForStyle(rl.style ?? 'dashed');
+          if (rl.axis === 'x') {
+            const catIdx = categories.indexOf(String(rl.value));
+            if (catIdx < 0) return null;
+            const rx = xCenterOf(catIdx);
+            return (
+              <g key={rl.id} style={{ pointerEvents: 'none' }}>
+                <line x1={rx} y1={padT} x2={rx} y2={padT + plotH} stroke={rlCol} strokeWidth={1.5} strokeDasharray={dash} />
+                {rl.label && (
+                  <text x={rx + 5} y={padT + 12} className="axis-tick" style={{ fill: rlCol, fontWeight: 600 }}>
+                    {rl.label}
+                  </text>
+                )}
+              </g>
+            );
+          }
+          const ry = rl.axis === 'y2' && y2Scale ? y2OfVal(toFiniteNum(rl.value)) : yOfVal(toFiniteNum(rl.value));
           return (
-            <g key={rl.id}>
+            <g key={rl.id} style={{ pointerEvents: 'none' }}>
               <line
                 x1={padL}
                 y1={ry}
                 x2={W - padR}
                 y2={ry}
                 stroke={rlCol}
-                strokeWidth={1.6}
-                strokeDasharray={strokeDashForStyle(rl.style ?? 'dashed')}
+                strokeWidth={1.5}
+                strokeDasharray={dash}
               />
               {rl.label && (
-                <text x={W - padR - 4} y={ry - 4} textAnchor="end" className="axis-tick" style={{ fill: rlCol, fontWeight: 600 }}>
+                <text
+                  x={rl.axis === 'y2' ? padL + 6 : W - padR - 6}
+                  y={ry - 5}
+                  textAnchor={rl.axis === 'y2' ? 'start' : 'end'}
+                  className="axis-tick"
+                  style={{ fill: rlCol, fontWeight: 600 }}
+                >
                   {rl.label}
                 </text>
               )}
@@ -2329,58 +2909,50 @@ export function ChartRenderer({
               ? xCenterOf(targetIdx)
               : padL + (ann.xRatio ?? 0.5) * plotW;
           const ay =
-            targetIdx >= 0 && seriesToPlot[0]
-              ? yOfVal(seriesToPlot[0].values[targetIdx] ?? 0) - 18
+            targetIdx >= 0 && y1ForDomain[0]
+              ? yOfVal(y1ForDomain[0].values[targetIdx] ?? 0) - 20
               : padT + (ann.yRatio ?? 0.22) * plotH;
           const aCol = ann.color ?? 'var(--c-purple-accent)';
+          const boxW = Math.min(138, Math.max(76, ann.text.length * 6.2 + 18));
+          const boxX = Math.max(padL, Math.min(W - padR - boxW, ax - boxW / 2));
+          const boxY = Math.max(padT, ay - 13);
           return (
-            <g key={ann.id}>
+            <g key={ann.id} style={{ pointerEvents: 'none' }}>
               {targetIdx >= 0 && (
-                <line x1={ax} y1={ay + 8} x2={ax} y2={ay + 18} stroke={aCol} strokeWidth={1.5} />
+                <line x1={ax} y1={boxY + 21} x2={ax} y2={ay + 18} stroke={aCol} strokeWidth={1.3} strokeDasharray="2 2" />
               )}
               <rect
-                x={Math.max(4, Math.min(W - 116, ax - 56))}
-                y={Math.max(2, ay - 12)}
-                width={112}
-                height={20}
+                x={boxX}
+                y={boxY}
+                width={boxW}
+                height={21}
                 rx={6}
-                fill="var(--md-surface-container-highest)"
+                fill="var(--md-surface-container-lowest)"
                 stroke={aCol}
                 strokeWidth={1.2}
               />
               <text
-                x={Math.max(60, Math.min(W - 60, ax))}
-                y={Math.max(15, ay + 1)}
+                x={boxX + boxW / 2}
+                y={boxY + 14}
                 textAnchor="middle"
                 className="axis-tick"
-                style={{ fill: 'var(--md-on-surface)', fontWeight: 600, fontSize: 9.5 }}
+                style={{ fill: 'var(--md-on-surface)', fontWeight: 600, fontSize: 10 }}
               >
-                {truncateText(ann.text, 18)}
+                {truncateText(ann.text, 20)}
               </text>
             </g>
           );
         })}
 
-        {/* Axis Titles */}
+        {/* X-Axis Title */}
         {cfg?.xAxisTitle && (
           <text x={padL + plotW / 2} y={H - 5} textAnchor="middle" className="axis-title-text">
             {cfg.xAxisTitle}
           </text>
         )}
-        {cfg?.yAxisTitle && (
-          <text
-            x={13}
-            y={padT + plotH / 2}
-            textAnchor="middle"
-            transform={`rotate(-90 13 ${padT + plotH / 2})`}
-            className="axis-title-text"
-          >
-            {cfg.yAxisTitle}
-          </text>
-        )}
       </svg>
     </div>,
     legendEntries,
-    allSeries.length > 1,
+    allSeries.length > 1 || hasY2,
   );
 }

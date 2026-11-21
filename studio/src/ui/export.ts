@@ -100,6 +100,10 @@ export function markdownToHtml(text: string, width: number): string {
       }
       case 'table':
         return tableHtml(b.header, b.rows, tableSize(b.header, b.rows, width).colWidths);
+      case 'diagram':
+        return `<div style="margin:6px 0;padding:8px 12px;border:1px dashed #8e918f;border-radius:6px;background:#f8f9fa;font-size:12px;color:#5f6368;">` +
+          `<b>Architecture Diagram:</b> ${esc(b.caption ?? 'See diagram tab')}` +
+          (b.focus?.length ? ` (${esc(b.focus.join(', '))})` : '') + '</div>';
     }
   }).join('');
 }
@@ -133,7 +137,7 @@ function diagramXml(scene: Scene, index: number, name: string): string {
     const b = gid != null && findGroup(scene, gid) != null ? bounds.get(gid) : undefined;
     return b != null ? { x: b.x, y: b.y, parent: 'g_' + gid } : { x: 0, y: 0, parent: '1' };
   };
-  const groups = [...scene.groups].sort((a, b) => groupDepth(scene, a) - groupDepth(scene, b));
+  const groups = scene.groups.toSorted((a, b) => groupDepth(scene, a) - groupDepth(scene, b));
   for (const g of groups) {
     const b = bounds.get(g.id);
     if (b == null) continue;

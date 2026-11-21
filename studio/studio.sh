@@ -174,6 +174,44 @@ server_up() {
 	curl -s -o /dev/null --max-time 2 "$URL"
 }
 
+port_pids() {
+	lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true
+}
+
+# Stops whatever is listening on $PORT (usually an earlier studio left running),
+# so a fresh start always gets the port
+free_port() {
+	if ! command -v lsof >/dev/null 2>&1; then
+		if server_up; then
+			echo "Port $PORT is already in use. Stop the other server or use PORT=<port> ./studio.sh" >&2
+			exit 1
+		fi
+		return 0
+	fi
+	local pids
+	pids="$(port_pids)"
+	[[ -z "$pids" ]] && return 0
+	echo "Port $PORT is in use; stopping the process(es) holding it:"
+	# shellcheck disable=SC2086
+	ps -o pid=,command= -p $(echo $pids | tr ' ' ',') 2>/dev/null | sed 's/^/  /' || true
+	# shellcheck disable=SC2086
+	kill $pids 2>/dev/null || true
+	for _ in $(seq 1 20); do
+		[[ -z "$(port_pids)" ]] && return 0
+		sleep 0.25
+	done
+	pids="$(port_pids)"
+	if [[ -n "$pids" ]]; then
+		# shellcheck disable=SC2086
+		kill -9 $pids 2>/dev/null || true
+		sleep 0.5
+	fi
+	if [[ -n "$(port_pids)" ]]; then
+		echo "Could not free port $PORT. Stop it by hand or use PORT=<port> ./studio.sh" >&2
+		exit 1
+	fi
+}
+
 start_app() {
 	local open_flag="--open"
 	if [[ "${1:-}" == "--no-open" ]]; then
@@ -183,10 +221,7 @@ start_app() {
 		echo "No Gemini API key found. Paste it now, or press Enter to add it later with ./studio.sh key."
 		save_key || echo "Starting without a key: voice stays off until you run ./studio.sh key."
 	fi
-	if server_up; then
-		echo "Port $PORT is already in use. Stop the other server or use PORT=<port> ./studio.sh" >&2
-		exit 1
-	fi
+	free_port
 	echo "Voice Whiteboard — Dashboards & Motion Studio: $URL  (Ctrl+C to stop)"
 	# shellcheck disable=SC2086
 	exec npx vite --host 127.0.0.1 --port "$PORT" --strictPort $open_flag

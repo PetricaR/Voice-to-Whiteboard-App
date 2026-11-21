@@ -25,6 +25,7 @@ import {
 import type { CreateDashboardRequest } from '../../engine/dashboard';
 import { DiagramStore } from '../../engine/store';
 import { Icon, IconButton, useStudio } from '../context';
+import { HAS_NATIVE_SWITCH } from '../domTransitions';
 
 /** Renders per-project sync progress ported from DS Data Catalog (`SourceSync.tsx`). */
 function SyncProgressList({
@@ -510,6 +511,7 @@ export function BigQueryCatalogPanel({
         table_id: tbl.table_id,
         limit: 1000,
         sample: false,
+        latest: true,
       });
       const colTypes: Record<string, string> = {};
       const colDescs: Record<string, string> = {};
@@ -526,6 +528,8 @@ export function BigQueryCatalogPanel({
         description: tbl.description || `Loaded from BigQuery \`${tbl.full_name}\` (${res.row_count} rows).`,
         columnTypes: colTypes,
         columnDescriptions: colDescs,
+        sourceTable: tbl.full_name,
+        sourceRowCount: tbl.row_count,
       });
       onLocalTableLoaded?.(meta);
       if (!silent) {
@@ -573,7 +577,9 @@ export function BigQueryCatalogPanel({
     if (canAskGemini) {
       agent
         .sendText(
-          `Create a live BigQuery dashboard exploring \`${tbl.full_name}\` using data source "${connectorId}" with KPI headlines, visual breakdowns, and sample rows.`,
+          `Build the first live dashboard on the BigQuery table \`${tbl.full_name}\` (data source "${connectorId}"). ` +
+            'Inspect its schema first and work out what one row is, which columns are time, measures and dimensions, ' +
+            'and how each measure adds up; then chart what matters in it.',
         )
         .catch(() => undefined);
       onCloseModal();
@@ -990,7 +996,9 @@ export function BigQueryCatalogPanel({
                 <label className="bq-switch" title={s.is_active ? 'Included in Sync All' : 'Paused'}>
                   <input
                     type="checkbox"
-                    role="switch"
+                    {...({ switch: '' } as Record<string, string>)}
+                    role={HAS_NATIVE_SWITCH ? undefined : 'switch'}
+                    data-switch-fallback={HAS_NATIVE_SWITCH ? undefined : ''}
                     aria-label={`${s.display_name || s.project_id} is active`}
                     disabled={!canManageSources}
                     checked={s.is_active}
@@ -1294,7 +1302,12 @@ export function BigQueryCatalogPanel({
                                   )}
                                   {previewData && previewData.rows.length > 0 && (
                                     <>
-                                      <div className="bq-preview-table-wrap" tabIndex={0}>
+                                      <div
+                                        className="bq-preview-table-wrap"
+                                        tabIndex={0}
+                                        role="region"
+                                        aria-label={`Preview rows for ${tbl.table_id}`}
+                                      >
                                         <table className="bq-preview-table">
                                           <thead>
                                             <tr>

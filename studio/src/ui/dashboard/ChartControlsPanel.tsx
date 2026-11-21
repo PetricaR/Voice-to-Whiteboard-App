@@ -9,6 +9,7 @@ import {
   CARD_BACKGROUNDS,
   CARD_BORDERS,
   CARD_PADDINGS,
+  CHART_DESIGN_PRESETS,
   CHART_ORIENTATIONS,
   CHART_PALETTES,
   COL_SPANS,
@@ -20,15 +21,18 @@ import {
   LINE_STYLES,
   MAP_SCOPES,
   MARKER_SHAPES,
+  SECONDARY_SERIES_TYPES,
   SORT_MODES,
   STACK_MODES,
   TITLE_SIZES,
   VALUE_FORMATS,
   type ChartAnnotation,
+  type ChartDesignPreset,
   type ChartElementConfig,
   type ChartReferenceBand,
   type ChartReferenceLine,
   type DashboardWidget,
+  type SecondarySeriesType,
   type ValueFormat,
   type WidgetKind,
 } from '../../engine/dashboard';
@@ -54,9 +58,11 @@ export function ChartControlsPanel({
   // Drafts for adding reference lines, bands, and annotations
   const [newRefVal, setNewRefVal] = useState('100');
   const [newRefLabel, setNewRefLabel] = useState('Target');
+  const [newRefAxis, setNewRefAxis] = useState<'y' | 'y2'>('y');
   const [newBandFrom, setNewBandFrom] = useState('0');
   const [newBandTo, setNewBandTo] = useState('100');
   const [newBandLabel, setNewBandLabel] = useState('SLA Zone');
+  const [newBandAxis, setNewBandAxis] = useState<'y' | 'y2'>('y');
   const [newAnnText, setNewAnnText] = useState('Key milestone');
   const [newAnnTarget, setNewAnnTarget] = useState('');
 
@@ -126,14 +132,14 @@ export function ChartControlsPanel({
           </div>
         </div>
 
-        {/* Searchable 48-Chart Type Selector */}
+        {/* Searchable Chart Type Selector */}
         <section className="ctrl-section">
           <div className="ctrl-section-head">
-            <h3>48 Chart Types (Holistics Taxonomy)</h3>
+            <h3>{CHART_CATALOG.length} Chart Types</h3>
             <input
               type="search"
               className="ctrl-input compact"
-              placeholder="Filter 48 chart types…"
+              placeholder={`Filter ${CHART_CATALOG.length} chart types…`}
               value={kindFilter}
               onChange={(e) => setKindFilter(e.target.value)}
             />
@@ -546,7 +552,7 @@ export function ChartControlsPanel({
                 min={2}
                 max={12}
                 className="ctrl-input"
-                value={cfg.yTickCount ?? 3}
+                value={cfg.yTickCount ?? 5}
                 onChange={(e) => patchConfig({ yTickCount: Number(e.target.value) })}
               />
             </label>
@@ -554,7 +560,7 @@ export function ChartControlsPanel({
               <span>Y Tick Format</span>
               <select
                 className="ctrl-select"
-                value={cfg.yAxisFormat ?? 'compact'}
+                value={cfg.yAxisFormat ?? widget.format ?? 'compact'}
                 onChange={(e) => patchConfig({ yAxisFormat: e.target.value as ValueFormat })}
               >
                 {VALUE_FORMATS.map((f) => (
@@ -563,6 +569,149 @@ export function ChartControlsPanel({
                   </option>
                 ))}
               </select>
+            </label>
+          </div>
+        </section>
+
+        {/* Secondary Y-Axis (Right / Dual-Axis & Combo) */}
+        <section className="ctrl-section">
+          <div className="ctrl-section-head">
+            <h3>Second Y-Axis (Right / Dual-Axis)</h3>
+            <span className="ctrl-hint">Color-matched synced grid</span>
+          </div>
+          <div className="ctrl-row-checks">
+            <label className="ctrl-check">
+              <input
+                type="checkbox"
+                checked={Boolean(cfg.showY2Axis) || (cfg.secondaryYFields?.length ?? 0) > 0 || widget.kind === 'combo'}
+                onChange={(e) => patchConfig({ showY2Axis: e.target.checked })}
+              />
+              <span>Enable Right Y2 Axis</span>
+            </label>
+            <label className="ctrl-check">
+              <input
+                type="checkbox"
+                checked={cfg.y2StartFromZero ?? false}
+                onChange={(e) => patchConfig({ y2StartFromZero: e.target.checked })}
+              />
+              <span>Y2 Zero Baseline</span>
+            </label>
+          </div>
+
+          {availableColumns.length > 0 && (
+            <div className="ctrl-field">
+              <span>Assign Columns / Series to Right Axis (Y2)</span>
+              <div className="ctrl-chip-wrap">
+                {availableColumns
+                  .filter((col) => col !== widget.xField)
+                  .map((col) => {
+                    const selected = cfg.secondaryYFields?.includes(col) ?? false;
+                    return (
+                      <button
+                        key={col}
+                        type="button"
+                        className={`ctrl-mini-chip${selected ? ' active' : ''}`}
+                        onClick={() => {
+                          const cur = cfg.secondaryYFields ?? [];
+                          const next = selected ? cur.filter((c) => c !== col) : [...cur, col];
+                          patchConfig({
+                            secondaryYFields: next.length > 0 ? next : undefined,
+                            ...(next.length > 0 ? { showY2Axis: true } : {}),
+                          });
+                        }}
+                      >
+                        {col} {selected ? '→ R' : ''}
+                      </button>
+                    );
+                  })}
+              </div>
+            </div>
+          )}
+
+          <div className="ctrl-grid-2">
+            <label className="ctrl-field full">
+              <span>Right Y2 Axis Title</span>
+              <input
+                type="text"
+                className="ctrl-input"
+                placeholder="e.g. Net Dollar Retention (%)"
+                value={cfg.y2AxisTitle ?? ''}
+                onChange={(e) => patchConfig({ y2AxisTitle: e.target.value })}
+              />
+            </label>
+            <label className="ctrl-field">
+              <span>Y2 Series Geometry</span>
+              <select
+                className="ctrl-select"
+                value={cfg.secondarySeriesType ?? 'line'}
+                onChange={(e) => patchConfig({ secondarySeriesType: e.target.value as SecondarySeriesType })}
+              >
+                {SECONDARY_SERIES_TYPES.map((st) => (
+                  <option key={st} value={st}>
+                    {st.replace('_', ' ')}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="ctrl-field">
+              <span>Y2 Tick Format</span>
+              <select
+                className="ctrl-select"
+                value={cfg.y2AxisFormat ?? 'compact'}
+                onChange={(e) => patchConfig({ y2AxisFormat: e.target.value as ValueFormat })}
+              >
+                {VALUE_FORMATS.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="ctrl-field">
+              <span>Y2 Scale</span>
+              <select
+                className="ctrl-select"
+                value={cfg.y2AxisScale ?? 'linear'}
+                onChange={(e) => patchConfig({ y2AxisScale: e.target.value as 'linear' | 'log' | 'sqrt' })}
+              >
+                <option value="linear">Linear</option>
+                <option value="log">Logarithmic (log10)</option>
+                <option value="sqrt">Square Root (sqrt)</option>
+              </select>
+            </label>
+            <label className="ctrl-field">
+              <span>Y2 Unit Suffix</span>
+              <input
+                type="text"
+                className="ctrl-input"
+                placeholder="e.g. %, ms, pts"
+                value={cfg.y2Unit ?? ''}
+                onChange={(e) => patchConfig({ y2Unit: e.target.value })}
+              />
+            </label>
+            <label className="ctrl-field">
+              <span>Y2 Min Override</span>
+              <input
+                type="number"
+                className="ctrl-input"
+                placeholder="Auto"
+                value={cfg.y2Min ?? ''}
+                onChange={(e) =>
+                  patchConfig({ y2Min: e.target.value === '' ? undefined : Number(e.target.value) })
+                }
+              />
+            </label>
+            <label className="ctrl-field">
+              <span>Y2 Max Override</span>
+              <input
+                type="number"
+                className="ctrl-input"
+                placeholder="Auto"
+                value={cfg.y2Max ?? ''}
+                onChange={(e) =>
+                  patchConfig({ y2Max: e.target.value === '' ? undefined : Number(e.target.value) })
+                }
+              />
             </label>
           </div>
         </section>
@@ -601,7 +750,7 @@ export function ChartControlsPanel({
               <span>Grid Line Style</span>
               <select
                 className="ctrl-select"
-                value={cfg.gridStyle ?? 'dashed'}
+                value={cfg.gridStyle ?? 'solid'}
                 onChange={(e) => patchConfig({ gridStyle: e.target.value as ChartElementConfig['gridStyle'] })}
               >
                 {LINE_STYLES.map((s) => (
@@ -612,13 +761,13 @@ export function ChartControlsPanel({
               </select>
             </label>
             <label className="ctrl-field">
-              <span>Grid Opacity ({Math.round((cfg.gridOpacity ?? 0.5) * 100)}%)</span>
+              <span>Grid Opacity ({Math.round((cfg.gridOpacity ?? 0.2) * 100)}%)</span>
               <input
                 type="range"
                 min={0.05}
                 max={1}
                 step={0.05}
-                value={cfg.gridOpacity ?? 0.5}
+                value={cfg.gridOpacity ?? 0.2}
                 onChange={(e) => patchConfig({ gridOpacity: Number(e.target.value) })}
               />
             </label>
@@ -690,13 +839,36 @@ export function ChartControlsPanel({
   if (tab === 'style') {
     return (
       <div className="chart-controls-stack">
-        {/* Palettes & Color Encoding */}
+        {/* Design System Presets & Color Palettes */}
         <section className="ctrl-section">
           <div className="ctrl-section-head">
-            <h3>Color Palette &amp; Fills</h3>
+            <h3>Design System Preset &amp; Palette</h3>
             <button type="button" className="text-btn small" onClick={resetAllConfig}>
               <Icon name="restart_alt" size={15} /> Reset Styling
             </button>
+          </div>
+
+          <div className="ctrl-preset-grid">
+            {CHART_DESIGN_PRESETS.map((preset) => {
+              const meta: Record<ChartDesignPreset, { label: string; sub: string }> = {
+                editorial: { label: 'Editorial', sub: 'FT · Economist' },
+                stripe: { label: 'Product', sub: 'Stripe · Linear' },
+                flourish: { label: 'Storytelling', sub: 'Flourish · Vivid' },
+                minimal: { label: 'Minimal', sub: 'Tufte · Ultra-clean' },
+              };
+              const active = (cfg.designPreset ?? 'editorial') === preset;
+              return (
+                <button
+                  key={preset}
+                  type="button"
+                  className={`ctrl-preset-btn${active ? ' active' : ''}`}
+                  onClick={() => patchConfig({ designPreset: preset })}
+                >
+                  <strong>{meta[preset].label}</strong>
+                  <small>{meta[preset].sub}</small>
+                </button>
+              );
+            })}
           </div>
 
           <div className="ctrl-palette-grid">
@@ -706,7 +878,7 @@ export function ChartControlsPanel({
                 <button
                   key={pal}
                   type="button"
-                  className={`ctrl-palette-btn${(cfg.palette ?? 'brand') === pal ? ' active' : ''}`}
+                  className={`ctrl-palette-btn${(cfg.palette ?? 'editorial') === pal ? ' active' : ''}`}
                   onClick={() => patchConfig({ palette: pal })}
                 >
                   <span className="palette-dots">
@@ -796,7 +968,7 @@ export function ChartControlsPanel({
               <span>Curve Interpolation</span>
               <select
                 className="ctrl-select"
-                value={cfg.curveType ?? 'linear'}
+                value={cfg.curveType ?? 'monotone'}
                 onChange={(e) => patchConfig({ curveType: e.target.value as ChartElementConfig['curveType'] })}
               >
                 {CURVE_TYPES.map((c) => (
@@ -861,10 +1033,10 @@ export function ChartControlsPanel({
             <label className="ctrl-check">
               <input
                 type="checkbox"
-                checked={cfg.showMarkers !== false}
+                checked={cfg.showMarkers === true}
                 onChange={(e) => patchConfig({ showMarkers: e.target.checked })}
               />
-              <span>Show Point Markers</span>
+              <span>Show All Point Markers</span>
             </label>
             <label className="ctrl-check">
               <input
@@ -1166,7 +1338,7 @@ export function ChartControlsPanel({
               <span>Card Border</span>
               <select
                 className="ctrl-select"
-                value={cfg.cardBorder ?? 'subtle'}
+                value={cfg.cardBorder ?? 'default'}
                 onChange={(e) => patchConfig({ cardBorder: e.target.value as ChartElementConfig['cardBorder'] })}
               >
                 {CARD_BORDERS.map((b) => (
@@ -1358,7 +1530,7 @@ export function ChartControlsPanel({
             <span>Legend Position</span>
             <select
               className="ctrl-select"
-              value={cfg.legendPosition ?? 'bottom'}
+              value={cfg.legendPosition ?? 'top'}
               onChange={(e) =>
                 patchConfig({ legendPosition: e.target.value as ChartElementConfig['legendPosition'] })
               }
@@ -1429,6 +1601,15 @@ export function ChartControlsPanel({
             </div>
           ))}
           <div className="ctrl-inline-add">
+            <select
+              className="ctrl-select compact"
+              aria-label="Reference line axis"
+              value={newRefAxis}
+              onChange={(e) => setNewRefAxis(e.target.value as 'y' | 'y2')}
+            >
+              <option value="y">Left Y1</option>
+              <option value="y2">Right Y2</option>
+            </select>
             <input
               type="number"
               className="ctrl-input compact"
@@ -1452,7 +1633,7 @@ export function ChartControlsPanel({
                 patchConfig({
                   referenceLines: [
                     ...refLines,
-                    { id: `rl_${Date.now()}`, value: n, label: newRefLabel.trim() || undefined, axis: 'y', style: 'dashed' },
+                    { id: `rl_${Date.now()}`, value: n, label: newRefLabel.trim() || undefined, axis: newRefAxis, style: 'dashed' },
                   ],
                 });
               }}
@@ -1468,7 +1649,7 @@ export function ChartControlsPanel({
           {refBands.map((rb) => (
             <div key={rb.id} className="ctrl-list-item">
               <span>
-                <strong>{rb.label || 'Band'}</strong>: {rb.from} → {rb.to}
+                <strong>{rb.label || 'Band'}</strong>: {rb.from} → {rb.to} ({rb.axis ?? 'y'})
               </span>
               <button
                 type="button"
@@ -1480,6 +1661,15 @@ export function ChartControlsPanel({
             </div>
           ))}
           <div className="ctrl-inline-add">
+            <select
+              className="ctrl-select compact"
+              aria-label="Reference band axis"
+              value={newBandAxis}
+              onChange={(e) => setNewBandAxis(e.target.value as 'y' | 'y2')}
+            >
+              <option value="y">Left Y1</option>
+              <option value="y2">Right Y2</option>
+            </select>
             <input
               type="number"
               className="ctrl-input compact"
@@ -1511,7 +1701,7 @@ export function ChartControlsPanel({
                 patchConfig({
                   referenceBands: [
                     ...refBands,
-                    { id: `rb_${Date.now()}`, from: f, to: t, label: newBandLabel.trim() || undefined, axis: 'y' },
+                    { id: `rb_${Date.now()}`, from: f, to: t, label: newBandLabel.trim() || undefined, axis: newBandAxis },
                   ],
                 });
               }}

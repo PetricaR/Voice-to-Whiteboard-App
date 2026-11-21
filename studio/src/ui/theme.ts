@@ -50,6 +50,14 @@ function schemeVars(seed: string, dark: boolean): string {
     const faint = TonalPalette.fromHueAndChroma(hue, Math.min(chroma, 16));
     vars.push(`--c-${name}-tint: ${hexFromArgb(faint.tone(dark ? 13 : 97))};`);
   }
+  // Accessible (>= 4.5:1) provider badge tones for light and dark surfaces
+  vars.push(`--provider-gcp: ${dark ? '#8ab4f8' : '#1a56db'};`);
+  vars.push(`--provider-aws: ${dark ? '#fbbf24' : '#b45309'};`);
+  vars.push(`--provider-azure: ${dark ? '#60a5fa' : '#0369a1'};`);
+  vars.push(`--provider-k8s: ${dark ? '#93c5fd' : '#1d4ed8'};`);
+  // Accessible (>= 3:1) scrollbar thumb against both track and surface (including overlay scrollbars)
+  vars.push(`--scrollbar-thumb: ${dark ? '#8e9099' : '#74777f'};`);
+  vars.push(`--scrollbar-track: transparent;`);
   vars.push(`color-scheme: ${dark ? 'dark' : 'light'};`);
   return vars.join('\n  ');
 }

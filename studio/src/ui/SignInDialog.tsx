@@ -6,9 +6,10 @@
 import { useEffect, useRef, useState } from 'react';
 import { signInWithGoogle } from '../voice/liveToken';
 import { Icon, IconButton, useStudio } from './context';
+import { closeTopLayerElement, useDialogLightDismiss } from './domTransitions';
 import { renderGoogleButton } from './googleSignIn';
 
-function prefersDark(mode: string): boolean {
+function resolveDark(mode: string): boolean {
   if (mode === 'dark') return true;
   if (mode === 'light') return false;
   return window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
@@ -20,18 +21,41 @@ export function SignInDialog({ open, onClose }: { open: boolean; onClose: () => 
   const buttonRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [darkScheme, setDarkScheme] = useState(() => resolveDark(settings.themeMode));
   const clientId = auth.required && auth.configured ? auth.clientId : null;
+
+  // Keep Google Sign-In button theme synchronized with both manual theme & live OS preference changes
+  useEffect(() => {
+    setDarkScheme(resolveDark(settings.themeMode));
+    if (settings.themeMode !== 'system' || typeof window.matchMedia !== 'function') return;
+    const mq = window.matchMedia('(prefers-color-scheme: dark)');
+    const onChange = (e: MediaQueryListEvent) => setDarkScheme(e.matches);
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  }, [settings.themeMode]);
 
   useEffect(() => {
     const d = ref.current;
     if (d == null) return;
-    if (open && !d.open) {
-      setError(null);
-      d.showModal();
-    } else if (!open && d.open) {
-      d.close();
+    if (open) {
+      d.removeAttribute('data-closing');
+      if (!d.open) {
+        setError(null);
+        d.showModal();
+      }
+      return;
     }
+    if (!d.open) return;
+    let cancelled = false;
+    void closeTopLayerElement(d, () => {
+      if (!cancelled && d.open) d.close();
+    }, 240);
+    return () => {
+      cancelled = true;
+    };
   }, [open]);
+
+  useDialogLightDismiss(ref, onClose);
 
   useEffect(() => {
     const el = buttonRef.current;
@@ -51,16 +75,26 @@ export function SignInDialog({ open, onClose }: { open: boolean; onClose: () => 
       } finally {
         if (!cancelled) setBusy(false);
       }
-    }, prefersDark(settings.themeMode)).catch((e: unknown) => {
+    }, darkScheme).catch((e: unknown) => {
       if (!cancelled) setError(e instanceof Error ? e.message : String(e));
     });
     return () => {
       cancelled = true;
     };
-  }, [open, clientId, settings.themeMode, refreshLiveKey, onClose, notify]);
+  }, [open, clientId, darkScheme, refreshLiveKey, onClose, notify]);
 
   return (
-    <dialog ref={ref} className="dialog sign-in-dialog" closedby="any" onClose={onClose} aria-labelledby="sign-in-title">
+    <dialog
+      ref={ref}
+      className="dialog sign-in-dialog"
+      closedby="any"
+      onCancel={(e) => {
+        e.preventDefault();
+        onClose();
+      }}
+      onClose={onClose}
+      aria-labelledby="sign-in-title"
+    >
       <header className="dialog-header">
         <h2 id="sign-in-title">Sign in to talk</h2>
         <IconButton icon="close" label="Close" onClick={onClose} />

@@ -1,25 +1,86 @@
 /**
- * The documentation tab of a page: its chapters as a book. The table of
- * contents on the left is the book's menu (numbered chapters, and the
- * sections of the open chapter); one chapter is shown at a time, with the
- * previous and next chapter at its end (← and → turn the pages). Gemini
- * writes the chapters (write_text, write_table) and this view opens at the
- * chapter it wrote; chapters can also be written, edited, reordered and
- * deleted by hand.
+ * The documentation tab of a page: a publication-grade technical reference
+ * guide with chapter-by-chapter and continuous full-guide reading modes.
+ * Features a sticky reading-progress & export bar, responsive 3-column
+ * editorial layout (left chapters TOC, centered article, right "On this page"
+ * + stack rail on wide viewports), embedded full & subsystem-focused vector
+ * architecture diagrams, syntax-highlighted code blocks, and print/PDF support.
  */
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { bookOutline, type BookChapter } from '../engine/book';
-import { hasDiagram, type DBlock } from '../engine/types';
+import { googleDocsApi, type GoogleDocsMcpStatus } from '../data/googleDocsClient';
+import {
+  blockHasDiagramEmbed,
+  bookOutline,
+  bookToMarkdown,
+  bookToStandaloneHtml,
+  sceneHasFullDiagramEmbed,
+  type BookChapter,
+} from '../engine/book';
+import { hasDiagram, type DBlock, type Scene } from '../engine/types';
 import { addChapter, chapterSource, parseTableSource } from './chapters';
 import { Icon, IconButton, useStudio, useWorkspaceRevision } from './context';
+import { DiagramFigure } from './DiagramFigure';
+import { download, fileName } from './export';
+import type { IconName } from './icons';
 import { Markdown, TableView } from './Markdown';
 import { Thumbnail } from './Thumbnail';
 import './docs.css';
 
-const ARTICLE_WIDTH = 720;
+const ARTICLE_WIDTH = 780;
+const WIDE_RAIL_PX = 1180;
 const HIGHLIGHT_MS = 2600;
 
 type Flash = 'added' | 'updated';
+type ReadMode = 'chapter' | 'full';
+
+function chapterBadge(block: DBlock, chapter: BookChapter): { label: string; icon: IconName; tone: string } {
+  const id = block.id.toLowerCase();
+  const title = chapter.title.toLowerCase();
+  const body = (block.text ?? '').toLowerCase();
+  if (id.startsWith('lld_') || body.includes('## low-level design') || body.includes('## implementation guidelines')) {
+    return { label: 'Low-Level Design & Code', icon: 'code', tone: 'blue' };
+  }
+  if (id === 'overview' || title.includes('overview') || title.includes('topology') || title.includes('introduction')) {
+    return { label: 'System Architecture', icon: 'account_tree', tone: 'teal' };
+  }
+  if (id === 'runtime' || title.includes('runtime') || title.includes('execution flow')) {
+    return { label: 'Runtime Flows', icon: 'timeline', tone: 'purple' };
+  }
+  if (id === 'decisions' || title.includes('decision') || body.includes('## adr-')) {
+    return { label: 'Architecture Decisions', icon: 'fact_check', tone: 'purple' };
+  }
+  if (id === 'risks' || title.includes('risk')) {
+    return { label: 'Risk Register', icon: 'shield', tone: 'orange' };
+  }
+  if (id === 'rollout' || title.includes('roadmap') || title.includes('rollout') || title.includes('next step')) {
+    return { label: 'Rollout & Verification', icon: 'rocket_launch', tone: 'green' };
+  }
+  if (id === 'runbook' || title.includes('runbook')) {
+    return { label: 'Operations Runbook', icon: 'build', tone: 'orange' };
+  }
+  if (id === 'references' || id === 'sources' || title.includes('official google') || title.includes('reference')) {
+    return { label: 'Official Google Docs', icon: 'library_books', tone: 'green' };
+  }
+  if (block.kind === 'table') {
+    return { label: 'Reference Matrix', icon: 'table_chart', tone: 'teal' };
+  }
+  return { label: 'Reference Guide', icon: 'article', tone: 'blue' };
+}
+
+function extractStackItems(scene: Scene): { tech: string; nodeId: string; label: string }[] {
+  const seen = new Set<string>();
+  const out: { tech: string; nodeId: string; label: string }[] = [];
+  for (const n of scene.nodes) {
+    const tech = n.tech?.trim();
+    if (!tech) continue;
+    const key = tech.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ tech, nodeId: n.id, label: n.label });
+    if (out.length >= 8) break;
+  }
+  return out;
+}
 
 function ChapterEditor({ block, chapter, onDone }: {
   block: DBlock;
@@ -67,7 +128,7 @@ function ChapterEditor({ block, chapter, onDone }: {
         <span className="hint">
           {table
             ? 'One row per line, cells separated by |; the first line is the header.'
-            : 'Markdown: “## ” starts a section (listed in the contents), “- ” a bullet, **bold**, `code`.'}
+            : 'Markdown: “## ” section, ```lang code, > [!WARNING] callout, {{diagram}} or {{diagram: id1, id2 | Caption}}.'}
           {' '}⌘↵ saves, Esc cancels.
         </span>
         <button type="button" className="text-btn" onClick={() => onDone(null)}>Cancel</button>
@@ -77,34 +138,109 @@ function ChapterEditor({ block, chapter, onDone }: {
   );
 }
 
-/** What the "Document this diagram" button asks Gemini (the prompt picks the outline for the diagram type). */
-const DOCUMENT_REQUEST = 'Document this diagram.';
+/** What the "Full architecture docs" button asks Gemini. */
+const FULL_DOC_REQUEST =
+  'Write full documentation for this architecture grounded strictly in the latest official Google documentation via Google Developer Knowledge MCP (search_google_docs and get_google_docs): insert the entire architecture diagram, then document each section as low-level design architecture followed by concrete implementation guidelines with production code, verification steps, and official Google documentation links.';
+const BRIEF_DOC_REQUEST =
+  'Write a short summary documentation for this diagram grounded in official Google documentation via Google Developer Knowledge MCP with official reference links.';
 
-function EmptyBook({ onAdd }: { onAdd: (kind: 'text' | 'table') => void }) {
-  const { store, agent, ensureCanTalk, toggleVoice } = useStudio();
+function mcpPillMeta(status: GoogleDocsMcpStatus | null): { tone: 'ready' | 'warn' | 'muted'; label: string; title: string } {
+  if (status == null) {
+    return {
+      tone: 'muted',
+      label: 'Google Docs MCP',
+      title: 'Official Google Developer Knowledge MCP (developerknowledge.googleapis.com/mcp) — open Settings to inspect status',
+    };
+  }
+  if (status.lastErrorCode === 'api-disabled' || status.lastErrorCode === 'auth-required') {
+    return {
+      tone: 'warn',
+      label: status.lastErrorCode === 'api-disabled' ? 'Enable Google Docs API' : 'Google Docs MCP setup',
+      title: status.lastError ?? 'Official Google Developer Knowledge MCP needs setup — click to configure in Settings',
+    };
+  }
+  if (status.configured) {
+    const via = status.authMode === 'api-key'
+      ? 'API key'
+      : status.authMode === 'adc'
+        ? (status.projectId ? `ADC · ${status.projectId}` : 'ADC')
+        : 'OAuth token';
+    return {
+      tone: 'ready',
+      label: status.verified ? 'Official Google Docs MCP' : `Google Docs MCP (${via})`,
+      title: `Grounded via official Google Developer Knowledge MCP (${status.endpoint}) using ${via}. Click to test or configure in Settings.`,
+    };
+  }
+  return {
+    tone: 'warn',
+    label: 'Google Docs MCP setup',
+    title: status.setupHint ?? 'Set DEVELOPERKNOWLEDGE_API_KEY or sign in with gcloud ADC — click to configure in Settings',
+  };
+}
+
+function EmptyBook({ onAdd, mcpStatus }: { onAdd: (kind: 'text' | 'table') => void; mcpStatus: GoogleDocsMcpStatus | null }) {
+  const { store, agent, ensureCanTalk, toggleVoice, openSettings } = useStudio();
   const canDocument = hasDiagram(store.scene);
-  const writeDocs = () => {
-    if (ensureCanTalk()) agent.sendText(DOCUMENT_REQUEST).catch(() => undefined);
+  const mcp = mcpPillMeta(mcpStatus);
+  const sendDocRequest = (prompt: string) => {
+    if (ensureCanTalk()) agent.sendText(prompt).catch(() => undefined);
   };
   return (
     <div className="doc-empty">
-      <div className="doc-empty-icon"><Icon name="menu_book" size={32} /></div>
-      <h1>No documentation yet</h1>
+      <div className="doc-empty-badges">
+        <div className="doc-empty-badge">
+          <Icon name="menu_book" size={16} />
+          <span>Architecture Reference Guide</span>
+        </div>
+        <button type="button" className={`doc-mcp-pill tone-${mcp.tone}`} onClick={openSettings} title={mcp.title}>
+          <Icon name={mcp.tone === 'ready' ? 'verified_user' : 'warning'} size={14} />
+          <span>{mcp.label}</span>
+        </button>
+      </div>
+      <h1>Document your architecture like a production guide</h1>
       <p>
-        Say “document this architecture” and Gemini writes it here as a book that follows arc42 and the
-        C4 model: goals, context, building blocks, runtime flows, deployment, cross-cutting concepts,
-        decision records (ADRs) and risks, one chapter each, with a table of contents.
+        Ask Gemini for full documentation and it queries Google’s official Developer Knowledge MCP
+        for the latest authoritative Google docs, embeds your live architecture diagram, and documents
+        every architectural layer from Low-Level Design mechanics straight into concrete implementation
+        guidelines, code snippets, callouts, ADRs, verification steps, and official citations.
       </p>
+      <div className="doc-empty-grid" aria-hidden="true">
+        <div className="doc-empty-card">
+          <Icon name="account_tree" size={18} />
+          <strong>Embedded Architecture</strong>
+          <span>Full topology &amp; focused subsystem diagrams inline</span>
+        </div>
+        <div className="doc-empty-card">
+          <Icon name="layers" size={18} />
+          <strong>Low-Level Design</strong>
+          <span>Protocols, pooling, locking, indexes &amp; trade-off tables</span>
+        </div>
+        <div className="doc-empty-card">
+          <Icon name="code" size={18} />
+          <strong>Implementation Code</strong>
+          <span>Idiomatic SQL, TypeScript, Python &amp; IaC snippets</span>
+        </div>
+        <div className="doc-empty-card">
+          <Icon name="rocket_launch" size={18} />
+          <strong>ADRs &amp; Rollout Plan</strong>
+          <span>Decision records, risk register &amp; verification stages</span>
+        </div>
+      </div>
       <div className="doc-empty-actions">
         {canDocument && (
-          <button type="button" className="filled-btn doc-generate" onClick={writeDocs}>
-            <Icon name="article" size={20} /> Document this diagram
-          </button>
+          <>
+            <button type="button" className="filled-btn doc-generate" onClick={() => sendDocRequest(FULL_DOC_REQUEST)}>
+              <Icon name="article" size={19} /> Full architecture docs
+            </button>
+            <button type="button" className="tonal-btn" onClick={() => sendDocRequest(BRIEF_DOC_REQUEST)}>
+              <Icon name="description" size={18} /> Brief summary
+            </button>
+          </>
         )}
         <button type="button" className={canDocument ? 'tonal-btn' : 'filled-btn'} onClick={toggleVoice}>
-          <Icon name="mic" size={20} /> Start talking
+          <Icon name="mic" size={19} /> Start talking
         </button>
-        <button type="button" className="tonal-btn" onClick={() => onAdd('text')}><Icon name="note_add" size={18} /> Write a chapter</button>
+        <button type="button" className="text-btn" onClick={() => onAdd('text')}><Icon name="note_add" size={18} /> Write a chapter</button>
         <button type="button" className="text-btn" onClick={() => onAdd('table')}><Icon name="table_chart" size={18} /> Add a table</button>
       </div>
     </div>
@@ -112,7 +248,7 @@ function EmptyBook({ onAdd }: { onAdd: (kind: 'text' | 'table') => void }) {
 }
 
 export function DocView() {
-  const { workspace, store, notify } = useStudio();
+  const { workspace, store, agent, notify, openSettings } = useStudio();
   useWorkspaceRevision(workspace);
   const page = workspace.active;
   const scene = store.scene;
@@ -123,39 +259,82 @@ export function DocView() {
   const prev = index > 0 ? chapters[index - 1] : undefined;
   const next = index >= 0 && index < chapters.length - 1 ? chapters[index + 1] : undefined;
   const words = chapters.reduce((n, c) => n + c.words, 0);
+  const diagramExists = hasDiagram(scene);
+  const hasFullEmbed = useMemo(() => sceneHasFullDiagramEmbed(scene), [scene]);
+  const stackItems = useMemo(() => extractStackItems(scene), [scene]);
 
+  const [readMode, setReadMode] = useState<ReadMode>('chapter');
+  const [visibleChapter, setVisibleChapter] = useState<string | null>(null);
   const [editing, setEditing] = useState<string | null>(null);
   const [section, setSection] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [flash, setFlash] = useState<Map<string, Flash>>(new Map());
   const [tocOpen, setTocOpen] = useState(false);
-  const mainRef = useRef<HTMLElement>(null);
+  const [filter, setFilter] = useState('');
+  const [progress, setProgress] = useState(0);
+  const [copiedMd, setCopiedMd] = useState(false);
+  const [wideRail, setWideRail] = useState(false);
+  const [mcpStatus, setMcpStatus] = useState<GoogleDocsMcpStatus | null>(null);
+
+  const rootRef = useRef<HTMLDivElement>(null);
+  const mainRef = useRef<HTMLDivElement>(null);
+
+  // Check official Google Developer Knowledge MCP status on mount
+  useEffect(() => {
+    let active = true;
+    googleDocsApi.status().then((s) => {
+      if (active) setMcpStatus(s);
+    }).catch(() => undefined);
+    return () => { active = false; };
+  }, []);
+
+  // Measure the doc view container to enable the right-hand "On this page" rail on wide layouts
+  useEffect(() => {
+    const el = rootRef.current;
+    if (el == null || typeof ResizeObserver === 'undefined') return;
+    const update = () => setWideRail(el.clientWidth >= WIDE_RAIL_PX);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [chapters.length]);
+
+  const openDiagram = useCallback((focusNodeId?: string) => {
+    workspace.showView('diagram');
+    if (focusNodeId) {
+      store.setSelection([focusNodeId]);
+      requestAnimationFrame(() => {
+        agent.view?.focus([focusNodeId]);
+      });
+    }
+  }, [workspace, store, agent]);
 
   const open = useCallback((id: string, anchor?: string) => {
     workspace.showView('doc', { chapter: id });
-    setPending(anchor ?? null);
+    setPending(anchor ?? (readMode === 'full' ? `doc-ch-${id}` : null));
     setTocOpen(false);
-  }, [workspace]);
+  }, [workspace, readMode]);
 
   // The open chapter is also the selection ("rewrite this chapter")
   useEffect(() => {
     if (current != null && page.chapter !== current.id) workspace.showView('doc', { chapter: current.id });
   }, [current, page, workspace]);
 
-  // A new chapter starts at its top; a section link scrolls to the section
+  // A new chapter starts at its top; a section/chapter link scrolls to it
   useEffect(() => {
     const main = mainRef.current;
     if (main == null) return;
     if (pending != null) {
       document.getElementById(pending)?.scrollIntoView({ block: 'start', behavior: 'smooth' });
-      setSection(pending);
+      if (!pending.startsWith('doc-ch-')) setSection(pending);
       setPending(null);
-    } else {
+    } else if (readMode === 'chapter') {
       main.scrollTo({ top: 0 });
       setSection(null);
+      setProgress(0);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current?.id, pending]);
+  }, [current?.id, pending, readMode]);
 
   // Highlight what was just written; a chapter added by hand opens in the editor
   const last = store.lastChange;
@@ -174,16 +353,16 @@ export function DocView() {
     return () => clearTimeout(t);
   }, [last, store]);
 
-  // ← and → turn the pages, Enter edits the open chapter
+  // ← and → turn the pages in chapter mode, Enter edits the open chapter
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || e.keyCode === 229 || e.metaKey || e.ctrlKey || e.altKey) return;
       const target = e.target as HTMLElement;
       if (target.closest('input, textarea, select, [contenteditable="true"], dialog, [role="tab"], [role="menu"]')) return;
-      if (e.key === 'ArrowLeft' && prev != null) {
+      if (readMode === 'chapter' && e.key === 'ArrowLeft' && prev != null) {
         e.preventDefault();
         open(prev.id);
-      } else if (e.key === 'ArrowRight' && next != null) {
+      } else if (readMode === 'chapter' && e.key === 'ArrowRight' && next != null) {
         e.preventDefault();
         open(next.id);
       } else if (e.key === 'Enter' && current != null && editing == null && !target.closest('button, a')) {
@@ -193,19 +372,33 @@ export function DocView() {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [prev, next, current, editing, open]);
+  }, [prev, next, current, editing, open, readMode]);
 
-  // The section being read is marked in the contents
+  // Scroll-spy for reading progress, active chapter (in full guide), and active section
   const onScroll = useCallback(() => {
     const main = mainRef.current;
     if (main == null || current == null) return;
-    const top = main.getBoundingClientRect().top + 96;
+    const maxScroll = Math.max(0, main.scrollHeight - main.clientHeight);
+    setProgress(maxScroll > 16 ? Math.min(1, Math.max(0, main.scrollTop / maxScroll)) : 0);
+    const top = main.getBoundingClientRect().top + 124;
+    if (readMode === 'full') {
+      let activeCh: string | null = chapters[0]?.id ?? null;
+      for (const sec of main.querySelectorAll<HTMLElement>('.doc-full-chapter')) {
+        if (sec.getBoundingClientRect().top <= top + 24) {
+          activeCh = sec.dataset.chapterId ?? activeCh;
+        }
+      }
+      setVisibleChapter(activeCh);
+    }
+    const selector = readMode === 'full'
+      ? '.doc-article [id*="-h"]'
+      : `.doc-article [id^="${CSS.escape(current.id)}-h"]`;
     let active: string | null = null;
-    for (const h of main.querySelectorAll<HTMLElement>(`.doc-article [id^="${CSS.escape(current.id)}-h"]`)) {
+    for (const h of main.querySelectorAll<HTMLElement>(selector)) {
       if (h.getBoundingClientRect().top <= top) active = h.id;
     }
     setSection(active);
-  }, [current]);
+  }, [current, readMode, chapters]);
 
   const add = (kind: 'text' | 'table') => {
     addChapter(workspace, store, kind);
@@ -219,7 +412,8 @@ export function DocView() {
   };
 
   const remove = (c: BookChapter) => {
-    const neighbour = next ?? prev;
+    const idx = chapters.indexOf(c);
+    const neighbour = chapters[idx + 1] ?? chapters[idx - 1];
     const r = store.edit({ remove_blocks: [c.id] }, { source: 'manual', label: `Deleted the chapter “${c.title}”` });
     if (!r.ok) return;
     if (neighbour != null) workspace.showView('doc', { chapter: neighbour.id });
@@ -249,42 +443,196 @@ export function DocView() {
     }
   };
 
+  const copyMarkdown = () => {
+    const md = bookToMarkdown(scene, { includeDiagram: true });
+    if (!navigator.clipboard?.writeText) {
+      download(fileName(scene, 'md').replace(/\.md$/, '-documentation.md'), md, 'text/markdown');
+      return;
+    }
+    navigator.clipboard.writeText(md).then(() => {
+      setCopiedMd(true);
+      notify('Copied full documentation Markdown (with Mermaid diagrams)');
+      setTimeout(() => setCopiedMd(false), 1800);
+    }).catch(() => undefined);
+  };
+
+  const exportHtml = () => {
+    const name = fileName(scene, 'html').replace(/\.html$/, '-documentation.html');
+    download(name, bookToStandaloneHtml(scene), 'text/html');
+    notify('Exported standalone HTML reference guide');
+  };
+
+  const printDoc = () => {
+    window.print();
+  };
+
+  const filteredChapters = useMemo(() => {
+    const q = filter.trim().toLowerCase();
+    if (!q) return chapters;
+    return chapters.filter((c) =>
+      c.title.toLowerCase().includes(q) ||
+      c.sections.some((s) => s.text.toLowerCase().includes(q)),
+    );
+  }, [chapters, filter]);
+
   if (current == null || block == null) {
     return (
-      <div className="doc-view empty" role="region" aria-label="Documentation">
-        <main className="doc-main" ref={mainRef}>
-          <EmptyBook onAdd={add} />
-        </main>
+      <div ref={rootRef} className="doc-view empty" role="region" aria-label="Documentation">
+        <div className="doc-main" ref={mainRef}>
+          <EmptyBook onAdd={add} mcpStatus={mcpStatus} />
+        </div>
       </div>
     );
   }
 
+  const activeChapter = readMode === 'full'
+    ? (chapters.find((c) => c.id === visibleChapter) ?? chapters[0])
+    : current;
   const flashOf = flash.get(current.id);
+  const autoEmbedInChapter1 = diagramExists && index === 0 && !blockHasDiagramEmbed(block);
+  const showRightRail = wideRail && (activeChapter.sections.length > 0 || stackItems.length > 0);
+  const currentBadge = chapterBadge(block, current);
+  const currentReadMins = Math.max(1, Math.round(current.words / 200));
+  const mcp = mcpPillMeta(mcpStatus);
+
+  const renderSectionList = (c: BookChapter, extraClass = '') => {
+    if (c.sections.length === 0) return null;
+    let n = 0;
+    return (
+      <ol className={`toc-sections ${extraClass}`.trim()} aria-label={`Sections of ${c.title}`}>
+        {c.sections.map((s) => {
+          const anchor = `${c.id}-h${s.heading}`;
+          const numbered = s.level <= 2;
+          if (numbered) n++;
+          return (
+            <li key={anchor}>
+              <button
+                type="button"
+                className={`toc-section level-${numbered ? 2 : 3}${section === anchor ? ' active' : ''}`}
+                aria-current={section === anchor ? 'location' : undefined}
+                onClick={() => open(c.id, anchor)}
+              >
+                {numbered && <span className="toc-num">{c.number}.{n}</span>}
+                <span className="toc-title">{s.text}</span>
+              </button>
+            </li>
+          );
+        })}
+      </ol>
+    );
+  };
+
+  const renderChapterBody = (b: DBlock, c: BookChapter, showAutoDiagram: boolean) => (
+    <>
+      {editing === c.id ? (
+        <ChapterEditor key={c.id} block={b} chapter={c} onDone={(v) => save(b, c, v)} />
+      ) : (
+        <>
+          {showAutoDiagram && (
+            <DiagramFigure
+              scene={scene}
+              caption={`${scene.title || 'System'} — Full Architecture`}
+              onOpenDiagram={openDiagram}
+            />
+          )}
+          {b.kind === 'table' ? (
+            <div className="md">
+              <TableView columns={b.columns ?? []} rows={b.rows ?? []} maxWidth={ARTICLE_WIDTH} />
+            </div>
+          ) : (
+            <Markdown
+              text={b.text ?? ''}
+              width={ARTICLE_WIDTH}
+              anchor={c.id}
+              skipFirstHeading={c.skipFirstHeading}
+              scene={scene}
+              onOpenDiagram={openDiagram}
+              chapterNumber={c.number}
+            />
+          )}
+        </>
+      )}
+    </>
+  );
 
   return (
-    <div className="doc-view" role="region" aria-label="Documentation" data-toc-open={tocOpen || undefined}>
+    <div
+      ref={rootRef}
+      className={`doc-view${showRightRail ? ' with-rail' : ''}`}
+      role="region"
+      aria-label="Documentation"
+      data-toc-open={tocOpen || undefined}
+    >
       <nav className="doc-toc" aria-label="Contents">
         <div className="doc-cover">
-          {hasDiagram(scene) && (
-            <button type="button" className="doc-cover-figure" onClick={() => workspace.showView('diagram')}
-              aria-label="Show the diagram" data-tooltip="Show the diagram">
+          {diagramExists && (
+            <button type="button" className="doc-cover-figure" onClick={() => openDiagram()}
+              aria-label="Show the diagram" data-tooltip="Open diagram canvas">
               <Thumbnail scene={scene} />
               <span className="doc-cover-open"><Icon name="account_tree" size={14} /> Diagram</span>
             </button>
           )}
           <div className="doc-cover-text">
-            <span className="doc-eyebrow">Documentation</span>
+            <span className="doc-eyebrow">Reference guide</span>
             <h2 className="doc-book-title">{scene.title || 'Untitled diagram'}</h2>
             <span className="doc-book-meta">
               {chapters.length} {chapters.length === 1 ? 'chapter' : 'chapters'} · {Math.max(1, Math.round(words / 200))} min read
             </span>
           </div>
+          {chapters.length > 1 && (
+            <div className="doc-mode-switch" role="group" aria-label="Reading mode">
+              <button
+                type="button"
+                className={`doc-mode-btn${readMode === 'chapter' ? ' active' : ''}`}
+                aria-pressed={readMode === 'chapter'}
+                onClick={() => setReadMode('chapter')}
+              >
+                Chapters
+              </button>
+              <button
+                type="button"
+                className={`doc-mode-btn${readMode === 'full' ? ' active' : ''}`}
+                aria-pressed={readMode === 'full'}
+                onClick={() => {
+                  setReadMode('full');
+                  setVisibleChapter(chapters[0]?.id ?? null);
+                  setSection(null);
+                  setProgress(0);
+                  mainRef.current?.scrollTo({ top: 0 });
+                }}
+              >
+                Full guide
+              </button>
+            </div>
+          )}
         </div>
-        <div className="doc-toc-head" id="doc-contents">Contents</div>
+
+        {chapters.length >= 3 && (
+          <search className="doc-toc-search">
+            <Icon name="find_in_page" size={15} className="doc-toc-search-icon" />
+            <input
+              type="search"
+              value={filter}
+              onChange={(e) => setFilter(e.target.value)}
+              placeholder="Filter chapters…"
+              aria-label="Filter chapters"
+            />
+            {filter && (
+              <button type="button" className="doc-toc-search-clear" aria-label="Clear filter" onClick={() => setFilter('')}>
+                <Icon name="close" size={14} />
+              </button>
+            )}
+          </search>
+        )}
+
+        <div className="doc-toc-head" id="doc-contents">
+          <span>Contents</span>
+          <span className="doc-toc-count">{filteredChapters.length}</span>
+        </div>
         <ol className="doc-toc-list" aria-labelledby="doc-contents">
-          {chapters.map((c) => {
-            const active = c.id === current.id;
-            let n = 0;
+          {filteredChapters.map((c) => {
+            const active = c.id === activeChapter.id;
+            const showInlineSections = !showRightRail && (readMode === 'full' ? c.sections.length > 0 : (active && c.sections.length > 0));
             return (
               <li key={c.id}>
                 <button
@@ -295,86 +643,237 @@ export function DocView() {
                 >
                   <span className="toc-num">{c.number}</span>
                   <span className="toc-title">{c.title}</span>
-                  {c.kind === 'table' && <Icon name="table_chart" size={16} className="toc-kind" />}
+                  {c.kind === 'table' && <Icon name="table_chart" size={15} className="toc-kind" />}
                 </button>
-                {active && c.sections.length > 0 && (
-                  <ol className="toc-sections" aria-label={`Sections of ${c.title}`}>
-                    {c.sections.map((s) => {
-                      const anchor = `${c.id}-h${s.heading}`;
-                      const numbered = s.level <= 2;
-                      if (numbered) n++;
-                      return (
-                        <li key={anchor}>
-                          <button
-                            type="button"
-                            className={`toc-section level-${numbered ? 2 : 3}${section === anchor ? ' active' : ''}`}
-                            aria-current={section === anchor ? 'location' : undefined}
-                            onClick={() => open(c.id, anchor)}
-                          >
-                            {numbered && <span className="toc-num">{c.number}.{n}</span>}
-                            <span className="toc-title">{s.text}</span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ol>
-                )}
+                {showInlineSections && renderSectionList(c)}
               </li>
             );
           })}
+          {filteredChapters.length === 0 && (
+            <li className="doc-toc-empty">No matching chapters</li>
+          )}
         </ol>
         <div className="doc-toc-actions">
-          <button type="button" className="text-btn" onClick={() => add('text')}><Icon name="note_add" size={18} /> Chapter</button>
-          <button type="button" className="text-btn" onClick={() => add('table')}><Icon name="table_chart" size={18} /> Table</button>
+          <button type="button" className="text-btn" onClick={() => add('text')}><Icon name="note_add" size={17} /> Chapter</button>
+          <button type="button" className="text-btn" onClick={() => add('table')}><Icon name="table_chart" size={17} /> Table</button>
         </div>
       </nav>
       {tocOpen && <div className="doc-scrim" onClick={() => setTocOpen(false)} aria-hidden="true" />}
-      <main className="doc-main" ref={mainRef} onScroll={onScroll}>
-        <button type="button" className="doc-toc-toggle tonal-btn" aria-expanded={tocOpen} onClick={() => setTocOpen(!tocOpen)}>
-          <Icon name="toc" size={18} /> Contents
-        </button>
-        <article
-          key={current.id}
-          className={`doc-article${flashOf ? ` flash-${flashOf}` : ''}`}
-          aria-labelledby="chapter-title"
-        >
-          <header className="chapter-head">
-            <span className="doc-eyebrow">Chapter {current.number} of {chapters.length}</span>
-            <h1 id="chapter-title" className="chapter-title">{current.title}</h1>
-            {editing !== current.id && (
-              <div className="chapter-actions" role="toolbar" aria-label="Chapter actions">
-                <IconButton icon="edit" label="Edit the chapter" shortcut="Enter" onClick={() => setEditing(current.id)} />
-                <IconButton icon="arrow_upward" label="Move up" disabled={prev == null} onClick={() => move(current, -1)} />
-                <IconButton icon="arrow_downward" label="Move down" disabled={next == null} onClick={() => move(current, 1)} />
-                <IconButton icon="delete" label="Delete the chapter" onClick={() => remove(current)} />
-              </div>
-            )}
-          </header>
-          {editing === current.id ? (
-            <ChapterEditor key={current.id} block={block} chapter={current} onDone={(v) => save(block, current, v)} />
-          ) : block.kind === 'table' ? (
-            <div className="md">
-              <TableView columns={block.columns ?? []} rows={block.rows ?? []} maxWidth={ARTICLE_WIDTH} />
+
+      <div className="doc-stage">
+        <header className="doc-topbar" aria-label="Document toolbar">
+          <div className="doc-topbar-left">
+            <button type="button" className="doc-toc-toggle tonal-btn" aria-expanded={tocOpen} onClick={() => setTocOpen(!tocOpen)}>
+              <Icon name="toc" size={17} /> Contents
+            </button>
+            <div className="doc-crumb" title={`${scene.title || 'Documentation'} / ${activeChapter.title}`}>
+              <span className="doc-crumb-book">{scene.title || 'Documentation'}</span>
+              <span className="doc-crumb-sep" aria-hidden="true">/</span>
+              <span className="doc-crumb-ch">
+                {readMode === 'full' ? 'Full guide' : `${activeChapter.number}. ${activeChapter.title}`}
+              </span>
             </div>
-          ) : (
-            <Markdown text={block.text ?? ''} width={ARTICLE_WIDTH} anchor={current.id} skipFirstHeading={current.skipFirstHeading} />
-          )}
-          <footer className="chapter-nav" aria-label="Turn the page">
-            {prev != null ? (
-              <button type="button" className="chapter-link prev" onClick={() => open(prev.id)}>
-                <span className="chapter-link-label"><Icon name="arrow_back" size={16} /> Previous</span>
-                <span className="chapter-link-title">{prev.number}. {prev.title}</span>
-              </button>
-            ) : <span />}
-            {next != null && (
-              <button type="button" className="chapter-link next" onClick={() => open(next.id)}>
-                <span className="chapter-link-label">Next <Icon name="arrow_forward" size={16} /></span>
-                <span className="chapter-link-title">{next.number}. {next.title}</span>
-              </button>
+          </div>
+          <div className="doc-topbar-actions">
+            <button type="button" className={`doc-mcp-pill compact tone-${mcp.tone}`} onClick={openSettings} title={mcp.title} aria-label={mcp.label}>
+              <Icon name={mcp.tone === 'ready' ? 'verified_user' : 'warning'} size={13} />
+              <span>{mcp.label}</span>
+            </button>
+            <button type="button" className={`doc-util-btn${copiedMd ? ' copied' : ''}`} onClick={copyMarkdown} title="Copy full Markdown with Mermaid diagrams">
+              <Icon name={copiedMd ? 'check' : 'content_copy'} size={14} />
+              <span>{copiedMd ? 'Copied' : 'Copy MD'}</span>
+            </button>
+            <button type="button" className="doc-util-btn" onClick={exportHtml} title="Download standalone HTML guide with embedded SVG diagrams">
+              <Icon name="download" size={14} />
+              <span>HTML</span>
+            </button>
+            <button type="button" className="doc-util-btn" onClick={printDoc} title="Print or save as PDF">
+              <Icon name="article" size={14} />
+              <span>Print</span>
+            </button>
+          </div>
+          <div className="doc-progress-track" aria-hidden="true">
+            <div className="doc-progress-bar" style={{ transform: `scaleX(${progress.toFixed(4)})` }} />
+          </div>
+        </header>
+
+        <div className="doc-main" ref={mainRef} onScroll={onScroll}>
+          <div className="doc-main-inner">
+            {readMode === 'full' ? (
+              <article className="doc-article doc-article-full" aria-labelledby="doc-full-title">
+                <header className="doc-full-hero">
+                  <div className="doc-meta-row">
+                    <span className="doc-pill pill-blue">
+                      <Icon name="menu_book" size={13} />
+                      Architecture &amp; Low-Level Guide
+                    </span>
+                    <span className="doc-meta-dot">·</span>
+                    <span className="doc-meta-item">{chapters.length} {chapters.length === 1 ? 'chapter' : 'chapters'}</span>
+                    <span className="doc-meta-dot">·</span>
+                    <span className="doc-meta-item">{Math.max(1, Math.round(words / 200))} min read</span>
+                    {diagramExists && (
+                      <>
+                        <span className="doc-meta-dot">·</span>
+                        <span className="doc-meta-item">{scene.nodes.length} components</span>
+                      </>
+                    )}
+                  </div>
+                  <h1 id="doc-full-title" className="chapter-title doc-hero-title">{scene.title || 'Architecture Documentation'}</h1>
+                  {scene.subtitle && <p className="doc-full-subtitle">{scene.subtitle}</p>}
+                  {stackItems.length > 0 && (
+                    <div className="doc-stack-chips" aria-label="Technologies in architecture">
+                      {stackItems.map((item) => (
+                        <button
+                          key={item.tech}
+                          type="button"
+                          className="doc-stack-chip"
+                          title={`Inspect ${item.label} (${item.tech}) on canvas`}
+                          onClick={() => openDiagram(item.nodeId)}
+                        >
+                          {item.tech}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </header>
+                {diagramExists && !hasFullEmbed && (
+                  <DiagramFigure
+                    scene={scene}
+                    caption={`${scene.title || 'System'} — Full Architecture`}
+                    onOpenDiagram={openDiagram}
+                  />
+                )}
+                {chapters.map((c, ci) => {
+                  const b = scene.blocks.find((x) => x.id === c.id);
+                  if (b == null) return null;
+                  const chFlash = flash.get(c.id);
+                  const badge = chapterBadge(b, c);
+                  return (
+                    <section
+                      key={c.id}
+                      id={`doc-ch-${c.id}`}
+                      data-chapter-id={c.id}
+                      className={`doc-full-chapter${chFlash ? ` flash-${chFlash}` : ''}`}
+                    >
+                      <header className="chapter-head">
+                        <div className="chapter-head-top">
+                          <div className="doc-meta-row">
+                            <span className="doc-chapter-num-chip">Chapter {c.number}</span>
+                            <span className={`doc-pill pill-${badge.tone}`}>
+                              <Icon name={badge.icon} size={13} />
+                              {badge.label}
+                            </span>
+                            <span className="doc-meta-item">{Math.max(1, Math.round(c.words / 200))} min</span>
+                          </div>
+                          {editing !== c.id && (
+                            <div className="chapter-actions" role="toolbar" aria-label={`Actions for ${c.title}`}>
+                              <IconButton icon="edit" label="Edit the chapter" onClick={() => setEditing(c.id)} />
+                              <IconButton icon="arrow_upward" label="Move up" disabled={ci === 0} onClick={() => move(c, -1)} />
+                              <IconButton icon="arrow_downward" label="Move down" disabled={ci === chapters.length - 1} onClick={() => move(c, 1)} />
+                              <IconButton icon="delete" label="Delete the chapter" onClick={() => remove(c)} />
+                            </div>
+                          )}
+                        </div>
+                        <h2 className="chapter-title chapter-title-full">{c.number}. {c.title}</h2>
+                      </header>
+                      {renderChapterBody(b, c, false)}
+                    </section>
+                  );
+                })}
+              </article>
+            ) : (
+              <article
+                key={current.id}
+                className={`doc-article${flashOf ? ` flash-${flashOf}` : ''}`}
+                aria-labelledby="chapter-title"
+              >
+                <header className="chapter-head">
+                  <div className="chapter-head-top">
+                    <div className="doc-meta-row">
+                      <span className="doc-chapter-num-chip">Chapter {current.number} of {chapters.length}</span>
+                      <span className={`doc-pill pill-${currentBadge.tone}`}>
+                        <Icon name={currentBadge.icon} size={13} />
+                        {currentBadge.label}
+                      </span>
+                      <span className="doc-meta-dot">·</span>
+                      <span className="doc-meta-item">{currentReadMins} min read</span>
+                    </div>
+                    {editing !== current.id && (
+                      <div className="chapter-actions" role="toolbar" aria-label="Chapter actions">
+                        <IconButton icon="edit" label="Edit the chapter" shortcut="Enter" onClick={() => setEditing(current.id)} />
+                        <IconButton icon="arrow_upward" label="Move up" disabled={prev == null} onClick={() => move(current, -1)} />
+                        <IconButton icon="arrow_downward" label="Move down" disabled={next == null} onClick={() => move(current, 1)} />
+                        <IconButton icon="delete" label="Delete the chapter" onClick={() => remove(current)} />
+                      </div>
+                    )}
+                  </div>
+                  <h1 id="chapter-title" className="chapter-title">{current.title}</h1>
+                  {index === 0 && stackItems.length > 0 && (
+                    <div className="doc-stack-chips" aria-label="Technologies in architecture">
+                      {stackItems.map((item) => (
+                        <button
+                          key={item.tech}
+                          type="button"
+                          className="doc-stack-chip"
+                          title={`Inspect ${item.label} (${item.tech}) on canvas`}
+                          onClick={() => openDiagram(item.nodeId)}
+                        >
+                          {item.tech}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </header>
+                {renderChapterBody(block, current, autoEmbedInChapter1)}
+                <footer className="chapter-nav" aria-label="Turn the page">
+                  {prev != null ? (
+                    <button type="button" className="chapter-link prev" onClick={() => open(prev.id)}>
+                      <span className="chapter-link-label"><Icon name="arrow_back" size={15} /> Previous chapter</span>
+                      <span className="chapter-link-title">{prev.number}. {prev.title}</span>
+                    </button>
+                  ) : <span />}
+                  {next != null && (
+                    <button type="button" className="chapter-link next" onClick={() => open(next.id)}>
+                      <span className="chapter-link-label">Next chapter <Icon name="arrow_forward" size={15} /></span>
+                      <span className="chapter-link-title">{next.number}. {next.title}</span>
+                    </button>
+                  )}
+                </footer>
+              </article>
             )}
-          </footer>
-        </article>
-      </main>
+
+            {showRightRail && (
+              <aside className="doc-rail" aria-label="On this page">
+                {activeChapter.sections.length > 0 && (
+                  <div className="doc-rail-card">
+                    <div className="doc-rail-head">On this page</div>
+                    {renderSectionList(activeChapter, 'rail-sections')}
+                  </div>
+                )}
+                {stackItems.length > 0 && (
+                  <div className="doc-rail-card">
+                    <div className="doc-rail-head">Components</div>
+                    <div className="doc-rail-stack">
+                      {stackItems.map((item) => (
+                        <button
+                          key={item.nodeId}
+                          type="button"
+                          className="doc-rail-comp"
+                          onClick={() => openDiagram(item.nodeId)}
+                          title={`Focus ${item.label} on canvas`}
+                        >
+                          <span className="doc-rail-comp-name">{item.label}</span>
+                          <span className="doc-rail-comp-tech">{item.tech}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </aside>
+            )}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }

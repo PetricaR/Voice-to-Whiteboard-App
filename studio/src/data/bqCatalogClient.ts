@@ -217,6 +217,8 @@ export const bqApi = {
     table_id: string;
     limit?: number;
     sample?: boolean;
+    /** The most recent rows by the table's time column, instead of whichever rows come first. */
+    latest?: boolean;
   }) =>
     bqRequest<BqPreviewResult>('/api/data/bq/preview/run', {
       method: 'POST',

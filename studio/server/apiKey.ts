@@ -50,10 +50,16 @@ export function parseDotEnv(content: string): Record<string, string> {
   return out;
 }
 
+const DYNAMIC_SECRET_KEYS = new Set([
+  'GEMINI_API_KEY',
+  'DEVELOPERKNOWLEDGE_API_KEY',
+  'GOOGLE_DEVELOPER_KNOWLEDGE_API_KEY',
+]);
+
 /**
  * Loads non-VITE server defaults (e.g. STUDIO_LIVE_MODELS, BIGQUERY_PROJECT_ID) from .env / .env.local
- * into `env` without overwriting existing variables or caching GEMINI_API_KEY in `process.env`
- * (so editing GEMINI_API_KEY in .env takes effect on the next session without restarting Vite).
+ * into `env` without overwriting existing variables or caching API keys in `process.env`
+ * (so editing keys in .env takes effect on the next request without restarting Vite).
  */
 export function loadDotEnvDefaults(root: string, env: NodeJS.ProcessEnv = process.env): void {
   for (const file of candidateEnvFiles(root)) {
@@ -65,12 +71,29 @@ export function loadDotEnvDefaults(root: string, env: NodeJS.ProcessEnv = proces
       continue;
     }
     for (const [k, v] of Object.entries(parsed)) {
-      if (k === 'GEMINI_API_KEY' || k.startsWith('VITE_')) continue;
+      if (DYNAMIC_SECRET_KEYS.has(k) || k.startsWith('VITE_')) continue;
       if (env[k] === undefined && v !== '') {
         env[k] = v;
       }
     }
   }
+}
+
+/** Reads the first non-empty value for any of `keys` from `.env` / `.env.local` in studio or repo root. */
+export function readEnvVarFromFiles(root: string, keys: readonly string[]): string {
+  for (const file of candidateEnvFiles(root)) {
+    if (!existsSync(file)) continue;
+    try {
+      const parsed = parseDotEnv(readFileSync(file, 'utf8'));
+      for (const k of keys) {
+        const val = parsed[k]?.trim();
+        if (val) return val;
+      }
+    } catch {
+      // unreadable file; continue to next candidate
+    }
+  }
+  return '';
 }
 
 function readKeychainService(service: string): string {

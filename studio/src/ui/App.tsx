@@ -387,11 +387,33 @@ export function App() {
   }), [workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice, openDataSources, auth, requestSignIn, signOut, ensureCanTalk]);
 
   const togglePanel = useCallback(() => updatePrefs({ panelOpen: !prefs.panelOpen }), [prefs.panelOpen, updatePrefs]);
+  const appRef = useRef<HTMLDivElement>(null);
+  const workspaceRef = useRef<HTMLElement>(null);
+
+  // Keep fixed top-layer drawers aligned flush under the top bar + page tabs (even when tabs wrap on small screens)
+  useEffect(() => {
+    const appEl = appRef.current;
+    const wsEl = workspaceRef.current;
+    if (!appEl || !wsEl) return;
+    const update = () => {
+      const top = Math.max(56, Math.round(wsEl.getBoundingClientRect().top));
+      appEl.style.setProperty('--workspace-top', `${top}px`);
+    };
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(appEl);
+    ro.observe(wsEl);
+    window.addEventListener('resize', update);
+    return () => {
+      ro.disconnect();
+      window.removeEventListener('resize', update);
+    };
+  }, []);
 
   return (
     <StudioContext.Provider value={studio}>
       <ReactFlowProvider>
-        <div className={`app${prefs.panelOpen ? ' with-sheet' : ''}`}>
+        <div ref={appRef} className={`app${prefs.panelOpen ? ' with-sheet' : ''}`}>
           <TopBar
             panelOpen={prefs.panelOpen}
             togglePanel={togglePanel}
@@ -399,7 +421,7 @@ export function App() {
             onOpenExportMp4={() => setExportMp4Open(true)}
           />
           <PageTabs />
-          <main className="workspace">
+          <main ref={workspaceRef} className="workspace">
             <div className="canvas">
               <div className="canvas-layer" inert={nonCanvasOpen}>
                 <DiagramCanvas

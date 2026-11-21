@@ -48,6 +48,7 @@ export function MotionView({
   const [selectedLayerId, setSelectedLayerId] = useState<string | null>(null);
   const [voiceoverOn, setVoiceoverOn] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const lastSpokenSceneRef = useRef<string | null>(null);
 
   const totalMs = useMemo(() => (motion ? Math.max(1500, totalMotionDurationMs(motion)) : 0), [motion]);
@@ -150,7 +151,7 @@ export function MotionView({
       const y = (e.clientY - rect.top) * scaleY;
 
       // Top-most drawn layer wins
-      const boxes = [...hitBoxesRef.current].reverse();
+      const boxes = hitBoxesRef.current.toReversed();
       const hit = boxes.find((b) => x >= b.px && x <= b.px + b.pw && y >= b.py && y <= b.py + b.ph);
       if (hit) {
         setSelectedLayerId(hit.layerId);
@@ -298,6 +299,16 @@ export function MotionView({
 
           <button
             type="button"
+            className={`tonal-btn small motion-inspector-toggle${inspectorOpen ? ' active' : ''}`}
+            aria-expanded={inspectorOpen}
+            aria-controls="motion-inspector-panel"
+            onClick={() => setInspectorOpen((v) => !v)}
+          >
+            <Icon name="tune" size={16} /> Inspector
+          </button>
+
+          <button
+            type="button"
             className="filled-btn small"
             onClick={() => {
               setPlaying(false);
@@ -343,8 +354,9 @@ export function MotionView({
                     key={s.id}
                     type="button"
                     role="listitem"
+                    aria-current={isCurrent ? 'step' : undefined}
                     className={`scene-track-block ${isCurrent ? 'active' : ''}`}
-                    style={{ width: `${widthPct}%` }}
+                    style={{ flexBasis: `${widthPct}%` }}
                     onClick={() => {
                       setPlaying(false);
                       setTimeMs(startMs + 250);
@@ -361,35 +373,54 @@ export function MotionView({
           </div>
         </div>
 
-        <aside className="motion-inspector-panel" aria-label="Scene and layer properties">
+        {inspectorOpen && (
+          <div
+            className="motion-inspector-scrim"
+            onClick={() => setInspectorOpen(false)}
+            aria-hidden="true"
+          />
+        )}
+        <aside
+          id="motion-inspector-panel"
+          className={`motion-inspector-panel${inspectorOpen ? ' open' : ''}`}
+          aria-label="Scene and layer properties"
+        >
           <div className="motion-inspector-section">
             <div className="motion-inspector-head">
               <h3>Scene {evaluated.sceneIndex + 1}: {activeScene.title}</h3>
-              <button
-                type="button"
-                className="text-btn small"
-                onClick={() =>
-                  store.editMotion(
-                    {
-                      add_scenes: [
-                        {
-                          title: `Scene ${motion.scenes.length + 1}`,
-                          durationMs: 4200,
-                          transition: 'slide_left',
-                          narration: 'Additional highlight scene.',
-                          layers: [
-                            { kind: 'badge', text: 'NEW SCENE', color: 'teal', enterAtMs: 0 },
-                            { kind: 'kinetic_text', text: 'Key Insight', subtext: 'Click to customize copy or ask Gemini Live', size: 'lg', enterAtMs: 180 },
-                          ],
-                        },
-                      ],
-                    },
-                    { source: 'manual', label: 'Added motion scene' },
-                  )
-                }
-              >
-                <Icon name="add" size={15} /> Scene
-              </button>
+              <div className="motion-inspector-head-actions">
+                <button
+                  type="button"
+                  className="text-btn small"
+                  onClick={() =>
+                    store.editMotion(
+                      {
+                        add_scenes: [
+                          {
+                            title: `Scene ${motion.scenes.length + 1}`,
+                            durationMs: 4200,
+                            transition: 'slide_left',
+                            narration: 'Additional highlight scene.',
+                            layers: [
+                              { kind: 'badge', text: 'NEW SCENE', color: 'teal', enterAtMs: 0 },
+                              { kind: 'kinetic_text', text: 'Key Insight', subtext: 'Click to customize copy or ask Gemini Live', size: 'lg', enterAtMs: 180 },
+                            ],
+                          },
+                        ],
+                      },
+                      { source: 'manual', label: 'Added motion scene' },
+                    )
+                  }
+                >
+                  <Icon name="add" size={15} /> Scene
+                </button>
+                <IconButton
+                  icon="close"
+                  label="Close inspector"
+                  className="motion-inspector-close"
+                  onClick={() => setInspectorOpen(false)}
+                />
+              </div>
             </div>
 
             <div className="inspector-field-row">

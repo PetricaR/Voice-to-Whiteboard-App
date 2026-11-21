@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { aspectDimensions, type MotionSpec } from '../../engine/motion';
 import { exportMotionVideo, type ExportProgress } from '../../motion-export/mp4Exporter';
 import { Icon, IconButton, useStudio } from '../context';
+import { closeTopLayerElement, useDialogLightDismiss } from '../domTransitions';
 import { fileName } from '../export';
 
 export function ExportMp4Dialog({
@@ -21,28 +22,39 @@ export function ExportMp4Dialog({
   const [error, setError] = useState<string | null>(null);
   const [exporting, setExporting] = useState(false);
 
-  useEffect(() => {
-    const d = dialogRef.current;
-    if (!d) return;
-    if (open && !d.open) {
-      setProgress(null);
-      setError(null);
-      d.showModal();
-    } else if (!open && d.open) {
-      abortRef.current?.abort();
-      d.close();
-    }
-  }, [open]);
+  const handleDismiss = useCallback(() => {
+    if (exporting) return;
+    onClose();
+  }, [exporting, onClose]);
 
   useEffect(() => {
     const d = dialogRef.current;
-    if (!d || 'closedBy' in HTMLDialogElement.prototype) return;
-    const onClick = (e: MouseEvent) => {
-      if (e.target === d && !exporting) d.close();
+    if (!d) return;
+    if (open) {
+      d.removeAttribute('data-closing');
+      if (!d.open) {
+        setProgress(null);
+        setError(null);
+        try {
+          d.showModal();
+        } catch {
+          d.setAttribute('open', '');
+        }
+      }
+      return;
+    }
+    if (!d.open) return;
+    abortRef.current?.abort();
+    let cancelled = false;
+    void closeTopLayerElement(d, () => {
+      if (!cancelled && d.open) d.close();
+    });
+    return () => {
+      cancelled = true;
     };
-    d.addEventListener('click', onClick);
-    return () => d.removeEventListener('click', onClick);
-  }, [exporting]);
+  }, [open]);
+
+  useDialogLightDismiss(dialogRef, handleDismiss, exporting);
 
   const startExport = async () => {
     if (!motion) return;
@@ -80,16 +92,20 @@ export function ExportMp4Dialog({
     <dialog
       ref={dialogRef}
       className="dialog"
-      closedby="any"
+      closedby={exporting ? 'none' : 'any'}
+      onCancel={(e) => {
+        e.preventDefault();
+        if (!exporting) onClose();
+      }}
       onClose={() => {
         abortRef.current?.abort();
-        onClose();
+        if (open) onClose();
       }}
       aria-labelledby="export-mp4-title"
     >
       <header className="dialog-header">
         <h2 id="export-mp4-title">Export Animated Explainer Video</h2>
-        <IconButton icon="close" label="Close" onClick={onClose} />
+        <IconButton icon="close" label="Close" onClick={() => { abortRef.current?.abort(); onClose(); }} />
       </header>
 
       <section className="dialog-section">
@@ -97,11 +113,26 @@ export function ExportMp4Dialog({
           Renders deterministic code-driven frames via WebCodecs + MP4 muxing directly in your browser — sharp typography, exact data figures, zero server upload.
         </p>
 
-        <div className="segmented" role="radiogroup" aria-label="Export resolution">
+        <div
+          className="segmented"
+          role="radiogroup"
+          aria-label="Export resolution"
+          onKeyDown={(e) => {
+            if (exporting) return;
+            if (['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(e.key)) {
+              e.preventDefault();
+              const next: 1 | 0.5 = scale === 1 ? 0.5 : 1;
+              setScale(next);
+              const idx = next === 1 ? 0 : 1;
+              e.currentTarget.querySelectorAll<HTMLButtonElement>('[role="radio"]')[idx]?.focus();
+            }
+          }}
+        >
           <button
             type="button"
             role="radio"
             aria-checked={scale === 1}
+            tabIndex={scale === 1 ? 0 : -1}
             className={scale === 1 ? 'active' : ''}
             disabled={exporting}
             onClick={() => setScale(1)}
@@ -112,6 +143,7 @@ export function ExportMp4Dialog({
             type="button"
             role="radio"
             aria-checked={scale === 0.5}
+            tabIndex={scale === 0.5 ? 0 : -1}
             className={scale === 0.5 ? 'active' : ''}
             disabled={exporting}
             onClick={() => setScale(0.5)}

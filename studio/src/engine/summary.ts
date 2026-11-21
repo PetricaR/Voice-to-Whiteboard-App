@@ -53,7 +53,7 @@ export function describeScene(scene: Scene, selection: string[] = []): string {
   }
   if (scene.groups.length > 0) {
     lines.push('groups:');
-    const sorted = [...scene.groups].sort((a, b) => groupDepth(scene, a) - groupDepth(scene, b));
+    const sorted = scene.groups.toSorted((a, b) => groupDepth(scene, a) - groupDepth(scene, b));
     for (const g of sorted) {
       lines.push(`  ${g.id} ${q(g.label)} (${g.kind})` + (g.parent ? ` in ${g.parent}` : '') + (g.color ? ` ${g.color}` : ''));
     }
@@ -74,7 +74,9 @@ export function describeScene(scene: Scene, selection: string[] = []): string {
   }
   if (scene.blocks.length > 0) {
     lines.push('documentation (a book in its own tab, chapters in reading order):');
-    scene.blocks.forEach((b, i) => lines.push(...blockLines(b, i + 1)));
+    const selectedSet = new Set(selection);
+    const fullAll = scene.blocks.length <= 3;
+    scene.blocks.forEach((b, i) => lines.push(...blockLines(b, i + 1, fullAll || selectedSet.has(b.id))));
   }
   const validSelection = selection.filter((id) =>
     scene.nodes.some((n) => n.id === id) ||
@@ -86,20 +88,37 @@ export function describeScene(scene: Scene, selection: string[] = []): string {
   return lines.join('\n');
 }
 
-const MAX_TEXT = 2400;
+const MAX_TEXT = 4000;
 const MAX_TABLE_ROWS = 40;
 
-/** A chapter with its full content (so the agent can rewrite it precisely). */
-function blockLines(b: DBlock, n: number): string[] {
+/**
+ * A chapter summary for the agent: full body for the selected chapter (and when
+ * the book has at most 3 chapters) so rewrites are exact, and a compact outline
+ * for other chapters in long books so multi-chapter generation stays lean.
+ */
+function blockLines(b: DBlock, n: number, full: boolean): string[] {
   const head = `  ${n}. ${b.id} ${b.kind}` + (b.title ? ` ${q(b.title)}` : '') + (b.color ? ` ${b.color}` : '');
   if (b.kind === 'table') {
     const rows = b.rows ?? [];
+    if (!full) {
+      return [`${head} · columns ${(b.columns ?? []).map(q).join(', ')} · ${rows.length} rows`];
+    }
     const out = [`${head} · columns ${(b.columns ?? []).map(q).join(', ')} · ${rows.length} rows:`];
     for (const r of rows.slice(0, MAX_TABLE_ROWS)) out.push(`    | ${r.join(' | ')} |`);
     if (rows.length > MAX_TABLE_ROWS) out.push(`    … ${rows.length - MAX_TABLE_ROWS} more rows`);
     return out;
   }
   const text = b.text ?? '';
+  if (!full) {
+    const headings = text
+      .split('\n')
+      .map((l) => l.trim())
+      .filter((l) => /^#{1,3}\s+/.test(l))
+      .slice(0, 8);
+    const words = text.split(/\s+/).filter(Boolean).length;
+    const summary = headings.length > 0 ? ` · ${words} words · sections: ${headings.join(' / ')}` : ` · ${words} words`;
+    return [`${head}${summary}`];
+  }
   const shown = text.length > MAX_TEXT ? text.slice(0, MAX_TEXT) + ` … (${text.length - MAX_TEXT} more characters)` : text;
   return [`${head}:`, ...shown.split('\n').map((l) => '    ' + l)];
 }

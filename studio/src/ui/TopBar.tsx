@@ -9,9 +9,10 @@ import {
 } from '../engine/dashboard';
 import { totalMotionDurationMs } from '../engine/motion';
 import { hasDashboard, hasDiagram, hasMotion, isBlankScene } from '../engine/types';
-import { bookToMarkdown } from '../engine/book';
+import { bookToMarkdown, bookToStandaloneHtml } from '../engine/book';
 import { addChapter } from './chapters';
 import { Icon, IconButton, useStoreRevision, useStudio, useWorkspaceRevision } from './context';
+import { usePopoverMenu } from './domTransitions';
 import { dataUrlToBlob, exportDiagramImage, type ImageFormat } from './canvas/imageExport';
 import { download, downloadDataUrl, fileName, pagesFromJson, pagesToJson, toDrawio } from './export';
 
@@ -39,10 +40,18 @@ export function TopBar({
   const docName = pages.length > 1 ? { ...scene, title: pages[0].title || scene.title } : scene;
   const [title, setTitle] = useState(scene.title);
   const [menu, setMenu] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
   const fileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => setTitle(scene.title), [scene.title]);
+  usePopoverMenu({
+    open: menu,
+    onOpenChange: setMenu,
+    menuRef,
+    triggerRef,
+    placement: 'bottom-end',
+  });
 
   const saveImage = (format: ImageFormat) => {
     setMenu(false);
@@ -62,34 +71,6 @@ export function TopBar({
       .then(() => notify('Copied the diagram as a picture — paste it into a document or a chat.'))
       .catch((e: unknown) => notify(`The picture could not be copied (${e instanceof Error ? e.message : String(e)}).`));
   };
-  useEffect(() => {
-    if (!menu) return;
-    const close = (e: MouseEvent) => {
-      if (!menuRef.current?.contains(e.target as Node)) setMenu(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        setMenu(false);
-        menuRef.current?.querySelector<HTMLButtonElement>('.tonal-btn')?.focus();
-      } else if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
-        const items = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not(:disabled)') ?? [])];
-        if (items.length === 0) return;
-        e.preventDefault();
-        const idx = items.indexOf(document.activeElement as HTMLButtonElement);
-        const next = e.key === 'ArrowDown'
-          ? items[(idx + 1) % items.length]
-          : items[(idx - 1 + items.length) % items.length];
-        next.focus();
-      }
-    };
-    window.addEventListener('pointerdown', close);
-    window.addEventListener('keydown', onKey);
-    return () => {
-      window.removeEventListener('pointerdown', close);
-      window.removeEventListener('keydown', onKey);
-    };
-  }, [menu]);
 
   const commitTitle = () => {
     const t = title.trim();
@@ -138,14 +119,14 @@ export function TopBar({
       <div className="toolbar-group">
         <IconButton icon="undo" label="Undo" shortcut="⌘Z" disabled={!store.canUndo()} onClick={() => store.undo()} />
         <IconButton icon="redo" label="Redo" shortcut="⇧⌘Z" disabled={!store.canRedo()} onClick={() => store.redo()} />
-        <span className="divider" />
+        <span className="divider" role="separator" aria-orientation="vertical" />
         {diagramOpen && (
           <>
             <IconButton icon="auto_awesome_mosaic" label="Tidy up layout" disabled={empty}
               onClick={() => store.relayout({ source: 'manual' }).catch((e) => notify(String(e)))} />
             <IconButton icon={scene.direction === 'LR' ? 'swap_vert' : 'swap_horiz'} label={scene.direction === 'LR' ? 'Lay out top to bottom' : 'Lay out left to right'} disabled={empty}
               onClick={() => store.relayout({ source: 'manual' }, scene.direction === 'LR' ? 'TB' : 'LR').catch((e) => notify(String(e)))} />
-            <span className="divider" />
+            <span className="divider" role="separator" aria-orientation="vertical" />
           </>
         )}
         <IconButton icon="menu_book" label={docOpen ? 'Show the diagram' : chapters > 0 ? 'Documentation' : 'Write documentation'} selected={docOpen}
@@ -153,100 +134,113 @@ export function TopBar({
         <IconButton icon="note_add" label="Add a chapter to the documentation" onClick={() => addChapter(workspace, store, 'text')} />
         <IconButton icon="table_chart" label="Add a table to the documentation" onClick={() => addChapter(workspace, store, 'table')} />
         <IconButton icon="database" label="BigQuery Catalog & Data Sources" onClick={() => openDataSources('bigquery')} />
-        <span className="divider" />
-        <div className="menu-anchor" ref={menuRef}>
-          <button type="button" className="tonal-btn" onClick={() => setMenu(!menu)} aria-haspopup="menu" aria-expanded={menu}>
-            <Icon name="download" size={18} /> Export
+        <span className="divider" role="separator" aria-orientation="vertical" />
+        <div className="menu-anchor">
+          <button
+            ref={triggerRef}
+            type="button"
+            className="tonal-btn export-trigger-btn"
+            onClick={() => setMenu((v) => !v)}
+            aria-haspopup="menu"
+            aria-expanded={menu}
+          >
+            <Icon name="download" size={18} /> <span className="export-trigger-label">Export</span>
           </button>
-          {menu && (
-            <div className="menu" role="menu">
-              {hasDashboard(scene) && scene.dashboard && (
-                <>
-                  <button type="button" role="menuitem" onClick={() => {
-                    download(fileName(scene, 'html'), dashboardToStandaloneHtml(scene.dashboard!, dashboardResults ?? {}), 'text/html');
-                    setMenu(false);
-                  }}>
-                    <Icon name="dashboard" size={20} />
-                    <span>Dashboard HTML (.html)<small>Interactive report with transparent SQL per widget</small></span>
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => {
-                    download(fileName(scene, 'sql'), dashboardToSqlBundle(scene.dashboard!), 'application/sql');
-                    setMenu(false);
-                  }}>
-                    <Icon name="table_chart" size={20} />
-                    <span>SQL Queries (.sql)<small>Annotated read-only queries &amp; filter bindings</small></span>
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => {
-                    download(fileName(scene, 'vg.json'), dashboardToVegaLiteHandoff(scene.dashboard!, dashboardResults ?? {}), 'application/json');
-                    setMenu(false);
-                  }}>
-                    <Icon name="show_chart" size={20} />
-                    <span>Vega-Lite Spec (.vg.json)<small>BI handoff for Hex, Observable, or Jupyter</small></span>
-                  </button>
-                  <button type="button" role="menuitem" onClick={() => {
-                    download(fileName(scene, 'grafana.json'), dashboardToGrafanaJson(scene.dashboard!), 'application/json');
-                    setMenu(false);
-                  }}>
-                    <Icon name="pie_chart" size={20} />
-                    <span>Grafana Dashboard (.grafana.json)<small>24-column observability JSON model</small></span>
-                  </button>
-                  <div className="menu-divider" />
-                </>
-              )}
-              {hasMotion(scene) && (
-                <>
-                  <button type="button" role="menuitem" onClick={() => {
-                    setMenu(false);
-                    onOpenExportMp4?.();
-                  }}>
-                    <Icon name="video_file" size={20} />
-                    <span>Motion Video (.mp4)<small>Render 60fps MP4 via WebCodecs</small></span>
-                  </button>
-                  <div className="menu-divider" />
-                </>
-              )}
-              <button type="button" role="menuitem" disabled={!hasDiagram(scene) && pages.every((p) => !hasDiagram(p))} onClick={() => { download(fileName(docName, 'drawio'), toDrawio(pages), 'application/xml'); setMenu(false); }}>
-                <Icon name="account_tree" size={20} />
-                <span>draw.io file{pages.length > 1 ? ` · ${pages.length} pages` : ''}<small>Open and fine-tune in draw.io</small></span>
-              </button>
-              {pages.length > 1 && (
-                <button type="button" role="menuitem" disabled={isBlankScene(scene)} onClick={() => { download(fileName(scene, 'drawio'), toDrawio(scene), 'application/xml'); setMenu(false); }}>
-                  <Icon name="account_tree" size={20} /><span>draw.io file · this page<small>Only “{workspace.pageTitle(workspace.active)}”</small></span>
+          <div ref={menuRef} popover="auto" className="menu menu-popover menu-end" role="menu" aria-label="Export and file actions">
+            {hasDashboard(scene) && scene.dashboard && (
+              <>
+                <button type="button" role="menuitem" onClick={() => {
+                  download(fileName(scene, 'html'), dashboardToStandaloneHtml(scene.dashboard!, dashboardResults ?? {}), 'text/html');
+                  setMenu(false);
+                }}>
+                  <Icon name="dashboard" size={20} />
+                  <span>Dashboard HTML (.html)<small>Interactive report with transparent SQL per widget</small></span>
                 </button>
-              )}
-              <button type="button" role="menuitem" disabled={!hasDiagram(scene)} onClick={() => saveImage('png')}>
-                <Icon name="image" size={20} /><span>PNG image<small>This page’s diagram, sharp on any screen</small></span>
+                <button type="button" role="menuitem" onClick={() => {
+                  download(fileName(scene, 'sql'), dashboardToSqlBundle(scene.dashboard!), 'application/sql');
+                  setMenu(false);
+                }}>
+                  <Icon name="table_chart" size={20} />
+                  <span>SQL Queries (.sql)<small>Annotated read-only queries &amp; filter bindings</small></span>
+                </button>
+                <button type="button" role="menuitem" onClick={() => {
+                  download(fileName(scene, 'vg.json'), dashboardToVegaLiteHandoff(scene.dashboard!, dashboardResults ?? {}), 'application/json');
+                  setMenu(false);
+                }}>
+                  <Icon name="show_chart" size={20} />
+                  <span>Vega-Lite Spec (.vg.json)<small>BI handoff for Hex, Observable, or Jupyter</small></span>
+                </button>
+                <button type="button" role="menuitem" onClick={() => {
+                  download(fileName(scene, 'grafana.json'), dashboardToGrafanaJson(scene.dashboard!), 'application/json');
+                  setMenu(false);
+                }}>
+                  <Icon name="pie_chart" size={20} />
+                  <span>Grafana Dashboard (.grafana.json)<small>24-column observability JSON model</small></span>
+                </button>
+                <hr className="menu-divider" />
+              </>
+            )}
+            {hasMotion(scene) && (
+              <>
+                <button type="button" role="menuitem" onClick={() => {
+                  setMenu(false);
+                  onOpenExportMp4?.();
+                }}>
+                  <Icon name="video_file" size={20} />
+                  <span>Motion Video (.mp4)<small>Render 60fps MP4 via WebCodecs</small></span>
+                </button>
+                <hr className="menu-divider" />
+              </>
+            )}
+            <button type="button" role="menuitem" disabled={!hasDiagram(scene) && pages.every((p) => !hasDiagram(p))} onClick={() => { download(fileName(docName, 'drawio'), toDrawio(pages), 'application/xml'); setMenu(false); }}>
+              <Icon name="account_tree" size={20} />
+              <span>draw.io file{pages.length > 1 ? ` · ${pages.length} pages` : ''}<small>Open and fine-tune in draw.io</small></span>
+            </button>
+            {pages.length > 1 && (
+              <button type="button" role="menuitem" disabled={isBlankScene(scene)} onClick={() => { download(fileName(scene, 'drawio'), toDrawio(scene), 'application/xml'); setMenu(false); }}>
+                <Icon name="account_tree" size={20} /><span>draw.io file · this page<small>Only “{workspace.pageTitle(workspace.active)}”</small></span>
               </button>
-              <button type="button" role="menuitem" disabled={!hasDiagram(scene)} onClick={() => saveImage('svg')}>
-                <Icon name="image" size={20} /><span>SVG image<small>Scales without blur, for the web</small></span>
-              </button>
-              <button type="button" role="menuitem" disabled={!hasDiagram(scene)} onClick={copyImage}>
-                <Icon name="content_copy" size={20} /><span>Copy as image<small>Paste into Docs, Slides or a chat</small></span>
-              </button>
-              <div className="menu-divider" />
-              <button type="button" role="menuitem" disabled={chapters === 0} onClick={() => {
-                const name = fileName(scene, 'md').replace(/\.md$/, '-documentation.md');
-                download(name, bookToMarkdown(scene), 'text/markdown');
-                setMenu(false);
-              }}>
-                <Icon name="menu_book" size={20} />
-                <span>Documentation (.md)<small>{chapters > 0 ? `${chapters} ${chapters === 1 ? 'chapter' : 'chapters'} of “${workspace.pageTitle(workspace.active)}”` : 'This page has no documentation yet'}</small></span>
-              </button>
-              <button type="button" role="menuitem" disabled={nothing} onClick={() => { download(fileName(docName, 'json'), pagesToJson(pages), 'application/json'); setMenu(false); }}>
-                <Icon name="data_object" size={20} /><span>Studio file (.json)<small>All pages, to open again here later</small></span>
-              </button>
-              <div className="menu-divider" />
-              <button type="button" role="menuitem" onClick={() => { fileRef.current?.click(); setMenu(false); }}>
-                <Icon name="upload_file" size={20} /><span>Open a studio file…<small>Its pages open as new pages</small></span>
-              </button>
-              <button type="button" role="menuitem" onClick={() => {
-                workspace.addPage({ label: 'New page' });
-                setMenu(false);
-              }}>
-                <Icon name="add" size={20} /><span>New page</span>
-              </button>
-            </div>
-          )}
+            )}
+            <button type="button" role="menuitem" disabled={!hasDiagram(scene)} onClick={() => saveImage('png')}>
+              <Icon name="image" size={20} /><span>PNG image<small>This page’s diagram, sharp on any screen</small></span>
+            </button>
+            <button type="button" role="menuitem" disabled={!hasDiagram(scene)} onClick={() => saveImage('svg')}>
+              <Icon name="image" size={20} /><span>SVG image<small>Scales without blur, for the web</small></span>
+            </button>
+            <button type="button" role="menuitem" disabled={!hasDiagram(scene)} onClick={copyImage}>
+              <Icon name="content_copy" size={20} /><span>Copy as image<small>Paste into Docs, Slides or a chat</small></span>
+            </button>
+            <hr className="menu-divider" />
+            <button type="button" role="menuitem" disabled={chapters === 0} onClick={() => {
+              const name = fileName(scene, 'md').replace(/\.md$/, '-documentation.md');
+              download(name, bookToMarkdown(scene, { includeDiagram: true }), 'text/markdown');
+              setMenu(false);
+            }}>
+              <Icon name="menu_book" size={20} />
+              <span>Documentation (.md)<small>{chapters > 0 ? `${chapters} ${chapters === 1 ? 'chapter' : 'chapters'} + Mermaid diagram of “${workspace.pageTitle(workspace.active)}”` : 'This page has no documentation yet'}</small></span>
+            </button>
+            <button type="button" role="menuitem" disabled={chapters === 0} onClick={() => {
+              const name = fileName(scene, 'html').replace(/\.html$/, '-documentation.html');
+              download(name, bookToStandaloneHtml(scene), 'text/html');
+              setMenu(false);
+            }}>
+              <Icon name="article" size={20} />
+              <span>Documentation HTML (.html)<small>{chapters > 0 ? 'Standalone guide with embedded vector architecture SVG' : 'This page has no documentation yet'}</small></span>
+            </button>
+            <button type="button" role="menuitem" disabled={nothing} onClick={() => { download(fileName(docName, 'json'), pagesToJson(pages), 'application/json'); setMenu(false); }}>
+              <Icon name="data_object" size={20} /><span>Studio file (.json)<small>All pages, to open again here later</small></span>
+            </button>
+            <hr className="menu-divider" />
+            <button type="button" role="menuitem" onClick={() => { fileRef.current?.click(); setMenu(false); }}>
+              <Icon name="upload_file" size={20} /><span>Open a studio file…<small>Its pages open as new pages</small></span>
+            </button>
+            <button type="button" role="menuitem" onClick={() => {
+              workspace.addPage({ label: 'New page' });
+              setMenu(false);
+            }}>
+              <Icon name="add" size={20} /><span>New page</span>
+            </button>
+          </div>
           <input
             ref={fileRef} type="file" accept=".json,application/json" hidden
             onChange={async (e) => {

@@ -1,11 +1,12 @@
 /**
  * The account button at the end of the top bar, shown only when the studio
- * server requires sign-in: "Sign in", or the user's picture with a menu of the
- * plan, today's sessions and Sign out.
+ * server requires sign-in: "Sign in", or the user's picture with a top-layer
+ * popover menu of the plan, today's sessions and Sign out.
  */
 import { useEffect, useRef, useState } from 'react';
 import { deleteAccount, type Account } from '../voice/liveToken';
-import { Icon, useStudio } from './context';
+import { Icon, IconButton, useStudio } from './context';
+import { closeTopLayerElement, useDialogLightDismiss, usePopoverMenu } from './domTransitions';
 
 const PLAN: Record<Account['plan'], string> = { free: 'Free plan', pro: 'Pro plan', owner: 'Owner' };
 
@@ -24,23 +25,39 @@ function Avatar({ account, size }: { account: Account; size: number }) {
 export function AccountMenu() {
   const { auth, requestSignIn, signOut, notify } = useStudio();
   const [open, setOpen] = useState(false);
-  const ref = useRef<HTMLDivElement>(null);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const menuRef = useRef<HTMLDivElement>(null);
+  const confirmDialogRef = useRef<HTMLDialogElement>(null);
+
+  usePopoverMenu({
+    open,
+    onOpenChange: setOpen,
+    menuRef,
+    triggerRef,
+    placement: 'bottom-end',
+  });
 
   useEffect(() => {
-    if (!open) return;
-    const onDown = (e: PointerEvent) => {
-      if (!ref.current?.contains(e.target as Node)) setOpen(false);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
-    };
-    document.addEventListener('pointerdown', onDown);
-    document.addEventListener('keydown', onKey);
+    const d = confirmDialogRef.current;
+    if (!d) return;
+    if (confirmDelete) {
+      d.removeAttribute('data-closing');
+      if (!d.open) d.showModal();
+      return;
+    }
+    if (!d.open) return;
+    let cancelled = false;
+    void closeTopLayerElement(d, () => {
+      if (!cancelled && d.open) d.close();
+    }, 240);
     return () => {
-      document.removeEventListener('pointerdown', onDown);
-      document.removeEventListener('keydown', onKey);
+      cancelled = true;
     };
-  }, [open]);
+  }, [confirmDelete]);
+
+  useDialogLightDismiss(confirmDialogRef, () => setConfirmDelete(false), deleting);
 
   if (!auth.required) return null;
   const account = auth.configured ? auth.account : null;
@@ -52,55 +69,99 @@ export function AccountMenu() {
     );
   }
 
-  const removeAccount = () => {
-    setOpen(false);
-    const sure = window.confirm(
-      'Delete your studio account? Your profile and usage are removed from the studio server. ' +
-      'The pages saved in this browser stay.',
-    );
-    if (!sure) return;
+  const handleDeleteAccount = () => {
+    setDeleting(true);
     deleteAccount()
-      .then(signOut)
-      .catch((e: unknown) => notify(e instanceof Error ? e.message : String(e)));
+      .then(() => {
+        setConfirmDelete(false);
+        signOut();
+      })
+      .catch((e: unknown) => notify(e instanceof Error ? e.message : String(e)))
+      .finally(() => setDeleting(false));
   };
 
   const usage = account.limit == null
     ? `${account.used} ${account.used === 1 ? 'session' : 'sessions'} today`
     : `${account.used} of ${account.limit} sessions used today`;
   return (
-    <div className="menu-anchor" ref={ref}>
-      <button type="button" className="account-btn" onClick={() => setOpen(!open)}
-        aria-haspopup="menu" aria-expanded={open} aria-label={`Account: ${account.email}`} data-tooltip={account.email}>
+    <div className="menu-anchor">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="account-btn"
+        onClick={() => setOpen((v) => !v)}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label={`Account: ${account.email}`}
+        data-tooltip={account.email}
+      >
         <Avatar account={account} size={32} />
       </button>
-      {open && (
-        <div className="menu account-menu" role="menu">
-          <div className="account-head">
-            <Avatar account={account} size={40} />
-            <span>
-              {account.name && <strong>{account.name}</strong>}
-              <small>{account.email}</small>
-            </span>
-          </div>
-          <div className="account-plan">
-            <Icon name="workspace_premium" size={20} />
-            <span>{PLAN[account.plan]}<small>{usage}</small></span>
-          </div>
-          {account.limit != null && (
-            <div className="account-meter" role="meter" aria-label="Sessions used today"
-              aria-valuemin={0} aria-valuemax={account.limit} aria-valuenow={account.used}>
-              <i style={{ width: `${Math.min(100, (account.used / Math.max(1, account.limit)) * 100)}%` }} />
-            </div>
-          )}
-          <div className="menu-divider" />
-          <button type="button" role="menuitem" onClick={() => { setOpen(false); signOut(); }}>
-            <Icon name="logout" size={20} /><span>Sign out</span>
-          </button>
-          <button type="button" role="menuitem" onClick={removeAccount}>
-            <Icon name="delete" size={20} /><span>Delete account</span>
-          </button>
+      <div ref={menuRef} popover="auto" className="menu menu-popover menu-end account-menu" role="menu" aria-label="Account">
+        <div className="account-head">
+          <Avatar account={account} size={40} />
+          <span>
+            {account.name && <strong>{account.name}</strong>}
+            <small>{account.email}</small>
+          </span>
         </div>
-      )}
+        <div className="account-plan">
+          <Icon name="workspace_premium" size={20} />
+          <span>{PLAN[account.plan]}<small>{usage}</small></span>
+        </div>
+        {account.limit != null && (
+          <div className="account-meter" role="meter" aria-label="Sessions used today"
+            aria-valuemin={0} aria-valuemax={account.limit} aria-valuenow={account.used}>
+            <i style={{ width: `${Math.min(100, (account.used / Math.max(1, account.limit)) * 100)}%` }} />
+          </div>
+        )}
+        <hr className="menu-divider" />
+        <button type="button" role="menuitem" onClick={() => { setOpen(false); signOut(); }}>
+          <Icon name="logout" size={20} /><span>Sign out</span>
+        </button>
+        <button type="button" role="menuitem" onClick={() => { setOpen(false); setConfirmDelete(true); }}>
+          <Icon name="delete" size={20} /><span>Delete account</span>
+        </button>
+      </div>
+
+      <dialog
+        ref={confirmDialogRef}
+        className="dialog sign-in-dialog"
+        closedby={deleting ? 'none' : 'any'}
+        onCancel={(e) => {
+          e.preventDefault();
+          if (!deleting) setConfirmDelete(false);
+        }}
+        onClose={() => setConfirmDelete(false)}
+        aria-labelledby="delete-account-title"
+      >
+        <header className="dialog-header">
+          <h2 id="delete-account-title">Delete your studio account?</h2>
+          <IconButton icon="close" label="Close" disabled={deleting} onClick={() => setConfirmDelete(false)} />
+        </header>
+        <p className="sign-in-text">
+          Your profile and usage history are removed from the studio server. The pages saved in this browser stay.
+        </p>
+        <footer className="dialog-actions">
+          <button
+            type="button"
+            className="text-btn danger"
+            disabled={deleting}
+            onClick={handleDeleteAccount}
+          >
+            {deleting ? 'Deleting…' : 'Delete account'}
+          </button>
+          <button
+            type="button"
+            className="filled-btn"
+            autoFocus
+            disabled={deleting}
+            onClick={() => setConfirmDelete(false)}
+          >
+            Cancel
+          </button>
+        </footer>
+      </dialog>
     </div>
   );
 }

@@ -8,7 +8,7 @@ import {
   type ChartCatalogEntry,
 } from '../../engine/chartCatalog';
 import { Icon, IconButton, useStudio } from '../context';
-import { closeTopLayerElement } from '../domTransitions';
+import { closeTopLayerElement, handleTabListKeyDown, useDialogLightDismiss } from '../domTransitions';
 
 export function ChartGalleryModal({
   open,
@@ -48,6 +48,13 @@ export function ChartGalleryModal({
       cancelled = true;
     };
   }, [open]);
+
+  useDialogLightDismiss(dialogRef, onClose);
+
+  const categoryIds = useMemo<('all' | ChartCategoryId)[]>(
+    () => ['all', ...CHART_CATEGORIES.map((c) => c.id)],
+    [],
+  );
 
   const filteredCharts = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -116,13 +123,14 @@ export function ChartGalleryModal({
     <dialog
       ref={dialogRef}
       className="dialog chart-gallery-dialog"
+      closedby="any"
       aria-labelledby="chart-gallery-title"
       onCancel={(e) => {
         e.preventDefault();
         onClose();
       }}
-      onClick={(e) => {
-        if (e.target === dialogRef.current) onClose();
+      onClose={() => {
+        if (open) onClose();
       }}
     >
       <header className="gallery-header">
@@ -159,18 +167,37 @@ export function ChartGalleryModal({
       )}
 
       <div className="gallery-toolbar">
-        <input
-          type="search"
-          className="ctrl-input gallery-search"
-          placeholder="Search 48 chart types by name, data shape, or storytelling goal (e.g. waterfall, sankey, candlestick, violin, map)…"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
-        <div className="gallery-cat-pills" role="tablist" aria-label="Chart categories">
+        <search className="gallery-search-box">
+          <input
+            type="search"
+            className="ctrl-input gallery-search"
+            aria-label="Search chart types"
+            placeholder="Search 48 chart types by name, data shape, or storytelling goal (e.g. waterfall, sankey, candlestick, violin, map)…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+          />
+        </search>
+        <div
+          className="gallery-cat-pills"
+          role="tablist"
+          aria-label="Chart categories"
+          onKeyDown={(e) =>
+            handleTabListKeyDown(
+              e,
+              categoryIds,
+              selectedCategory,
+              setSelectedCategory,
+              (id) => dialogRef.current?.querySelector<HTMLButtonElement>(`#gallery-tab-${id}`)?.focus(),
+            )
+          }
+        >
           <button
+            id="gallery-tab-all"
             type="button"
             role="tab"
             aria-selected={selectedCategory === 'all'}
+            aria-controls="gallery-results-panel"
+            tabIndex={selectedCategory === 'all' ? 0 : -1}
             className={`gallery-cat-btn${selectedCategory === 'all' ? ' active' : ''}`}
             onClick={() => setSelectedCategory('all')}
           >
@@ -181,9 +208,12 @@ export function ChartGalleryModal({
             return (
               <button
                 key={cat.id}
+                id={`gallery-tab-${cat.id}`}
                 type="button"
                 role="tab"
                 aria-selected={selectedCategory === cat.id}
+                aria-controls="gallery-results-panel"
+                tabIndex={selectedCategory === cat.id ? 0 : -1}
                 className={`gallery-cat-btn${selectedCategory === cat.id ? ' active' : ''}`}
                 onClick={() => setSelectedCategory(cat.id)}
               >
@@ -195,7 +225,12 @@ export function ChartGalleryModal({
         </div>
       </div>
 
-      <div className="gallery-grid">
+      <div
+        id="gallery-results-panel"
+        role="tabpanel"
+        aria-labelledby={`gallery-tab-${selectedCategory}`}
+        className="gallery-grid"
+      >
         {filteredCharts.map((meta) => (
           <article key={meta.kind} className="gallery-card">
             <div className="gallery-card-head">

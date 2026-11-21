@@ -2,17 +2,29 @@
  * Pure deterministic layout, statistical, scale, curve, and palette algorithms
  * powering all 48 chart types in ChartRenderer.
  */
-import type {
-  AxisScale,
-  ChartElementConfig,
-  ChartPalette,
-  CurveType,
-  LineStyle,
-  MarkerShape,
+import {
+  formatMetricValue,
+  type AxisScale,
+  type ChartElementConfig,
+  type ChartPalette,
+  type CurveType,
+  type LineStyle,
+  type MarkerShape,
+  type ValueFormat,
 } from '../../engine/dashboard';
 import type { ColorName } from '../../engine/types';
 
 export const PALETTE_SWATCHES: Record<ChartPalette, readonly string[]> = {
+  /** Financial Times / Datawrapper-inspired editorial palette: balanced chroma, crisp contrast in light & dark modes. */
+  editorial: ['#2563eb', '#e05a47', '#0d9488', '#d97706', '#7c3aed', '#db2777', '#0284c7', '#64748b'],
+  /** Stripe / Linear modern product analytics palette. */
+  stripe: ['#635bff', '#00a6d6', '#10b981', '#f59e0b', '#f43f5e', '#8b5cf6', '#0ea5e9', '#64748b'],
+  /** Flourish / Observable10 vibrant data storytelling palette. */
+  flourish: ['#4269d0', '#ff725c', '#3ca951', '#efb118', '#a463f2', '#6cc5b0', '#ff8ab7', '#97bbf5'],
+  /** The Economist iconic journalistic palette. */
+  economist: ['#006ba2', '#db444b', '#3ebcd2', '#379a8b', '#ebb434', '#9a607f', '#b4ba39', '#758d99'],
+  /** Okabe-Ito universal colorblind-safe scientific palette. */
+  okabe_ito: ['#0072b2', '#e69f00', '#009e73', '#d55e00', '#cc79a7', '#56b4e9', '#f0e442', '#475569'],
   studio: [
     'var(--c-blue-accent)',
     'var(--c-teal-accent)',
@@ -28,9 +40,16 @@ export const PALETTE_SWATCHES: Record<ChartPalette, readonly string[]> = {
   sunset: ['#f97316', '#ef4444', '#ec4899', '#eab308', '#a855f7', '#fb7185', '#f59e0b', '#dc2626'],
   forest: ['#15803d', '#10b981', '#65a30d', '#0d9488', '#22c55e', '#84cc16', '#047857', '#14532d'],
   pastel: ['#60a5fa', '#5eead4', '#c084fc', '#86efac', '#fdba74', '#f9a8d4', '#fde047', '#fca5a5'],
-  monochrome: ['#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#1d4ed8', '#1e40af', '#bfdbfe', '#38bdf8'],
+  monochrome: ['#1d4ed8', '#2563eb', '#3b82f6', '#60a5fa', '#93c5fd', '#1e40af', '#bfdbfe', '#38bdf8'],
   diverging: ['#2563eb', '#0ea5e9', '#2dd4bf', '#a3e635', '#facc15', '#fb923c', '#f87171', '#dc2626'],
   neon: ['#38bdf8', '#2dd4bf', '#a855f7', '#4ade80', '#fb923c', '#f472b6', '#facc15', '#f87171'],
+};
+
+const PRESET_DEFAULT_PALETTE: Record<string, ChartPalette> = {
+  editorial: 'editorial',
+  stripe: 'stripe',
+  flourish: 'flourish',
+  minimal: 'editorial',
 };
 
 const collator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
@@ -43,11 +62,177 @@ export function resolveSeriesColor(
   if (cfg?.customColors && cfg.customColors.length > 0) {
     return cfg.customColors[idx % cfg.customColors.length];
   }
-  if (idx === 0 && widgetColor && !cfg?.palette) {
+  if (idx === 0 && widgetColor && !cfg?.palette && !cfg?.designPreset) {
     return `var(--c-${widgetColor}-accent)`;
   }
-  const pal = PALETTE_SWATCHES[cfg?.palette ?? 'studio'] ?? PALETTE_SWATCHES.studio;
+  const fallbackPal: ChartPalette =
+    (cfg?.designPreset && PRESET_DEFAULT_PALETTE[cfg.designPreset]) || 'editorial';
+  const pal = PALETTE_SWATCHES[cfg?.palette ?? fallbackPal] ?? PALETTE_SWATCHES.editorial;
   return pal[idx % pal.length];
+}
+
+const UPPERCASE_TOKENS = new Set(['mrr', 'arr', 'ndr', 'nrr', 'roi', 'kpi', 'cac', 'ltv', 'gmv', 'aov', 'arpu', 'sla', 'slo', 'sli', 'usd', 'eur', 'gbp', 'sql', 'api', 'id', 'p95', 'p99', 'p50', 'yoy', 'mom', 'qoq', 'crm', 'pop', 'rtt', 'ohlc', 'ai', 'ml', 'gcp']);
+
+/** Turns raw SQL aliases like `net_expansion_pct` or `mrr_usd` into clean editorial captions. */
+export function humanizeColumnName(raw: string): string {
+  const cleaned = raw.trim();
+  if (!cleaned) return '';
+  // Already looks human-written (has spaces or uppercase letters without underscores)
+  if (!cleaned.includes('_') && /[A-Z\s]/.test(cleaned)) return cleaned;
+  const parts = cleaned.split('_').filter(Boolean);
+  if (parts.length === 0) return cleaned;
+  const out: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    const p = parts[i].toLowerCase();
+    if (p === 'pct' || p === 'percent') {
+      out.push('%');
+    } else if ((p === 'usd' || p === 'eur' || p === 'gbp') && parts.length > 1 && i === parts.length - 1) {
+      out.push(`(${p.toUpperCase()})`);
+    } else if (UPPERCASE_TOKENS.has(p)) {
+      out.push(p.toUpperCase());
+    } else {
+      out.push(p.charAt(0).toUpperCase() + p.slice(1));
+    }
+  }
+  return out.join(' ').replace(/\s+%/g, ' %');
+}
+
+/**
+ * Formats axis tick numbers cleanly (Financial Times / Datawrapper style):
+ * strips redundant `.0` decimals on round ticks (`$200K`, `50%`, `1M`) and
+ * inherits currency/percent signs from the widget's value format automatically.
+ */
+export function formatAxisTick(
+  val: number,
+  format: ValueFormat | undefined,
+  unit?: string,
+  opts?: { decimals?: number; prefix?: string; suffix?: string },
+): string {
+  if (!Number.isFinite(val)) return '';
+  if (Math.abs(val) < 1e-11) val = 0;
+  const fmt = format ?? 'compact';
+  const dec = opts?.decimals;
+  let out: string;
+  const stripTrailingZero = (s: string) => s.replace(/\.0+(?=[KMBT%]|$)/, '');
+
+  switch (fmt) {
+    case 'currency_usd':
+    case 'currency_eur':
+    case 'currency_gbp': {
+      const sym = fmt === 'currency_eur' ? '€' : fmt === 'currency_gbp' ? '£' : '$';
+      const sign = val < 0 ? '−' : '';
+      const abs = Math.abs(val);
+      if (abs === 0) out = `${sym}0`;
+      else if (abs >= 1_000_000_000) out = `${sign}${sym}${stripTrailingZero((abs / 1_000_000_000).toFixed(dec ?? 1))}B`;
+      else if (abs >= 1_000_000) out = `${sign}${sym}${stripTrailingZero((abs / 1_000_000).toFixed(dec ?? 1))}M`;
+      else if (abs >= 1_000) out = `${sign}${sym}${stripTrailingZero((abs / 1_000).toFixed(dec ?? 1))}K`;
+      else out = `${sign}${sym}${new Intl.NumberFormat('en-US', { maximumFractionDigits: dec ?? (Number.isInteger(abs) ? 0 : 1) }).format(abs)}`;
+      break;
+    }
+    case 'percent': {
+      const abs = Math.abs(val);
+      const d = dec ?? (Math.abs(val - Math.round(val)) < 1e-6 ? 0 : 1);
+      out = `${val < 0 ? '−' : ''}${stripTrailingZero(abs.toFixed(d))}%`;
+      break;
+    }
+    case 'ms':
+      out = `${Math.round(val)}ms`;
+      break;
+    case 'bytes':
+      out = formatMetricValue(val, 'bytes', undefined, { decimals: dec ?? 0 });
+      break;
+    case 'number':
+    case 'compact':
+    default: {
+      const sign = val < 0 ? '−' : '';
+      const abs = Math.abs(val);
+      if (abs >= 1_000_000_000) out = `${sign}${stripTrailingZero((abs / 1_000_000_000).toFixed(dec ?? 1))}B`;
+      else if (abs >= 1_000_000) out = `${sign}${stripTrailingZero((abs / 1_000_000).toFixed(dec ?? 1))}M`;
+      else if (abs >= 10_000) out = `${sign}${stripTrailingZero((abs / 1_000).toFixed(dec ?? 1))}K`;
+      else out = `${sign}${new Intl.NumberFormat('en-US', { maximumFractionDigits: dec ?? (Number.isInteger(abs) ? 0 : 1) }).format(abs)}`;
+      break;
+    }
+  }
+  const affixed = `${opts?.prefix ?? ''}${out}${opts?.suffix ?? ''}`;
+  return unit && fmt !== 'percent' && fmt !== 'ms' ? `${affixed} ${unit}` : affixed;
+}
+
+/**
+ * Generates an SVG path for a bar with flat baseline corners and smooth rounded corners
+ * ONLY on its value tip (Stripe / Linear / Flourish / Datawrapper best practice).
+ */
+export function roundedBarPath(
+  x: number,
+  y: number,
+  w: number,
+  h: number,
+  radius: number,
+  tipSide: 'top' | 'bottom' | 'right' | 'left' = 'top',
+): string {
+  const safeW = Math.max(0.5, w);
+  const safeH = Math.max(0.5, h);
+  const r = Math.max(0, Math.min(radius, safeW / 2, safeH / 2));
+  if (r <= 0.25) {
+    return `M ${x.toFixed(2)} ${y.toFixed(2)} h ${safeW.toFixed(2)} v ${safeH.toFixed(2)} h ${(-safeW).toFixed(2)} Z`;
+  }
+  const tl = tipSide === 'top' || tipSide === 'left' ? r : 0;
+  const tr = tipSide === 'top' || tipSide === 'right' ? r : 0;
+  const br = tipSide === 'bottom' || tipSide === 'right' ? r : 0;
+  const bl = tipSide === 'bottom' || tipSide === 'left' ? r : 0;
+  const x0 = x;
+  const y0 = y;
+  const x1 = x + safeW;
+  const y1 = y + safeH;
+  return [
+    `M ${(x0 + tl).toFixed(2)} ${y0.toFixed(2)}`,
+    `L ${(x1 - tr).toFixed(2)} ${y0.toFixed(2)}`,
+    tr > 0 ? `Q ${x1.toFixed(2)} ${y0.toFixed(2)} ${x1.toFixed(2)} ${(y0 + tr).toFixed(2)}` : '',
+    `L ${x1.toFixed(2)} ${(y1 - br).toFixed(2)}`,
+    br > 0 ? `Q ${x1.toFixed(2)} ${y1.toFixed(2)} ${(x1 - br).toFixed(2)} ${y1.toFixed(2)}` : '',
+    `L ${(x0 + bl).toFixed(2)} ${y1.toFixed(2)}`,
+    bl > 0 ? `Q ${x0.toFixed(2)} ${y1.toFixed(2)} ${x0.toFixed(2)} ${(y1 - bl).toFixed(2)}` : '',
+    `L ${x0.toFixed(2)} ${(y0 + tl).toFixed(2)}`,
+    tl > 0 ? `Q ${x0.toFixed(2)} ${y0.toFixed(2)} ${(x0 + tl).toFixed(2)} ${y0.toFixed(2)}` : '',
+    'Z',
+  ]
+    .filter(Boolean)
+    .join(' ');
+}
+
+/**
+ * Collision-free vertical positioning for direct end-of-line labels
+ * (Financial Times / Economist / Datawrapper pattern).
+ */
+export function resolveDirectLabelPositions(
+  targets: { id: string; y: number }[],
+  minY: number,
+  maxY: number,
+  minGap = 15,
+): Map<string, number> {
+  const sorted = targets.toSorted((a, b) => a.y - b.y).map((t) => ({ id: t.id, y: Math.max(minY, Math.min(maxY, t.y)) }));
+  for (let pass = 0; pass < 8; pass++) {
+    for (let i = 1; i < sorted.length; i++) {
+      const overlap = minGap - (sorted[i].y - sorted[i - 1].y);
+      if (overlap > 0) {
+        sorted[i - 1].y -= overlap * 0.5;
+        sorted[i].y += overlap * 0.5;
+      }
+    }
+    for (let i = 0; i < sorted.length; i++) {
+      sorted[i].y = Math.max(minY, Math.min(maxY, sorted[i].y));
+    }
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i].y < sorted[i - 1].y + minGap) {
+        sorted[i].y = Math.min(maxY, sorted[i - 1].y + minGap);
+      }
+    }
+    for (let i = sorted.length - 2; i >= 0; i--) {
+      if (sorted[i].y > sorted[i + 1].y - minGap) {
+        sorted[i].y = Math.max(minY, sorted[i + 1].y - minGap);
+      }
+    }
+  }
+  return new Map(sorted.map((s) => [s.id, s.y]));
 }
 
 export function strokeDashForStyle(style: LineStyle | undefined): string | undefined {
@@ -70,6 +255,10 @@ export function markerSvgPath(shape: MarkerShape | undefined, cx: number, cy: nu
   }
 }
 
+/**
+ * True Fritsch-Carlson Monotone Cubic Hermite Spline (`monotone`), Step, or Linear SVG path.
+ * Monotone interpolation guarantees the curve NEVER falsely overshoots data peaks or dips below zero.
+ */
 export function buildCurvePath(pts: { x: number; y: number }[], curve: CurveType = 'linear'): string {
   if (pts.length === 0) return '';
   if (pts.length === 1) return `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`;
@@ -81,18 +270,46 @@ export function buildCurvePath(pts: { x: number; y: number }[], curve: CurveType
     return parts.join(' ');
   }
   if (curve === 'monotone' && pts.length >= 2) {
+    if (pts.length === 2) {
+      return `M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)} L ${pts[1].x.toFixed(1)} ${pts[1].y.toFixed(1)}`;
+    }
+    const n = pts.length;
+    const dx: number[] = new Array(n - 1);
+    const dy: number[] = new Array(n - 1);
+    const slope: number[] = new Array(n - 1);
+    for (let i = 0; i < n - 1; i++) {
+      dx[i] = pts[i + 1].x - pts[i].x;
+      dy[i] = pts[i + 1].y - pts[i].y;
+      slope[i] = Math.abs(dx[i]) > 1e-9 ? dy[i] / dx[i] : 0;
+    }
+    const tangents: number[] = new Array(n).fill(0);
+    tangents[0] = slope[0];
+    tangents[n - 1] = slope[n - 2];
+    for (let i = 1; i < n - 1; i++) {
+      if (slope[i - 1] * slope[i] <= 0) {
+        tangents[i] = 0;
+      } else {
+        const w1 = 2 * dx[i] + dx[i - 1];
+        const w2 = dx[i] + 2 * dx[i - 1];
+        tangents[i] = (w1 + w2) / (w1 / slope[i - 1] + w2 / slope[i]);
+      }
+    }
+    // Clamp endpoint tangents to prevent overshoot at ends
+    if (Math.abs(slope[0]) > 1e-9) {
+      tangents[0] = Math.sign(slope[0]) * Math.min(Math.abs(tangents[0]), 3 * Math.abs(slope[0]));
+    }
+    if (Math.abs(slope[n - 2]) > 1e-9) {
+      tangents[n - 1] = Math.sign(slope[n - 2]) * Math.min(Math.abs(tangents[n - 1]), 3 * Math.abs(slope[n - 2]));
+    }
     const parts = [`M ${pts[0].x.toFixed(1)} ${pts[0].y.toFixed(1)}`];
-    for (let i = 0; i < pts.length - 1; i++) {
-      const p0 = pts[Math.max(0, i - 1)];
-      const p1 = pts[i];
-      const p2 = pts[i + 1];
-      const p3 = pts[Math.min(pts.length - 1, i + 2)];
-      const cp1x = p1.x + (p2.x - p0.x) / 6;
-      const cp1y = p1.y + (p2.y - p0.y) / 6;
-      const cp2x = p2.x - (p3.x - p1.x) / 6;
-      const cp2y = p2.y - (p3.y - p1.y) / 6;
+    for (let i = 0; i < n - 1; i++) {
+      const h = dx[i] / 3;
+      const cp1x = pts[i].x + h;
+      const cp1y = pts[i].y + tangents[i] * h;
+      const cp2x = pts[i + 1].x - h;
+      const cp2y = pts[i + 1].y - tangents[i + 1] * h;
       parts.push(
-        `C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${p2.x.toFixed(1)} ${p2.y.toFixed(1)}`,
+        `C ${cp1x.toFixed(1)} ${cp1y.toFixed(1)}, ${cp2x.toFixed(1)} ${cp2y.toFixed(1)}, ${pts[i + 1].x.toFixed(1)} ${pts[i + 1].y.toFixed(1)}`,
       );
     }
     return parts.join(' ');
@@ -120,15 +337,41 @@ function transformScaleVal(v: number, mode: AxisScale): number {
   return v;
 }
 
+/** Heckbert "Nice Numbers for Graph Labels" step selector (1, 2, 2.5, 5 × 10^n). */
+function niceStep(roughStep: number): number {
+  if (!Number.isFinite(roughStep) || roughStep <= 0) return 1;
+  const exp = Math.floor(Math.log10(roughStep));
+  const frac = roughStep / Math.pow(10, exp);
+  let niceFrac: number;
+  if (frac <= 1.0) niceFrac = 1;
+  else if (frac <= 1.5) niceFrac = 1.5;
+  else if (frac <= 2.0) niceFrac = 2;
+  else if (frac <= 2.5) niceFrac = 2.5;
+  else if (frac <= 5.0) niceFrac = 5;
+  else niceFrac = 10;
+  return niceFrac * Math.pow(10, exp);
+}
+
+function cleanFloat(n: number): number {
+  if (Math.abs(n) < 1e-11) return 0;
+  return Number(n.toPrecision(12));
+}
+
+export interface NumericScaleOpts {
+  startFromZero?: boolean;
+  minOverride?: number;
+  maxOverride?: number;
+  tickCount?: number;
+  scale?: AxisScale;
+  /** Snap min/max and ticks to clean Wilkinson/Heckbert nice numbers (default true for linear scales). */
+  nice?: boolean;
+  /** Keep exact tick count (used to lock Y1 & Y2 gridlines 1-to-1 on dual-axis charts). */
+  exactTickCount?: boolean;
+}
+
 export function createNumericScale(
   values: number[],
-  opts: {
-    startFromZero?: boolean;
-    minOverride?: number;
-    maxOverride?: number;
-    tickCount?: number;
-    scale?: AxisScale;
-  } = {},
+  opts: NumericScaleOpts = {},
 ): NumericScale {
   const finite = values.filter((v) => Number.isFinite(v));
   let rawMin = finite.length > 0 ? Math.min(...finite) : 0;
@@ -148,23 +391,69 @@ export function createNumericScale(
     rawMax = rawMin === 0 ? 1 : rawMin + Math.abs(rawMin) * 0.2 + 1;
   }
 
-  const count = Math.max(2, Math.min(12, Math.round(opts.tickCount ?? 3)));
+  const targetCount = Math.max(2, Math.min(12, Math.round(opts.tickCount ?? 5)));
   const mode: AxisScale = opts.scale ?? 'linear';
+  const useNice = mode === 'linear' && opts.nice !== false;
+  const hasMinOverride = typeof opts.minOverride === 'number' && Number.isFinite(opts.minOverride);
+  const hasMaxOverride = typeof opts.maxOverride === 'number' && Number.isFinite(opts.maxOverride);
+
+  if (useNice && !hasMinOverride && !hasMaxOverride) {
+    const intervals = Math.max(1, targetCount - 1);
+    const step = niceStep((rawMax - rawMin) / intervals);
+    let niceMin = cleanFloat(Math.floor(rawMin / step) * step);
+    if (opts.startFromZero !== false && rawMin >= 0) niceMin = 0;
+    let niceMax = cleanFloat(Math.ceil(rawMax / step) * step);
+    if (niceMax <= niceMin) niceMax = cleanFloat(niceMin + step * intervals);
+
+    if (opts.exactTickCount) {
+      // Lock exact interval count so Left & Right dual axes align 1-to-1 on every horizontal gridline
+      let lockedStep = step;
+      while (niceMin + lockedStep * intervals < rawMax - 1e-9) {
+        lockedStep = niceStep(lockedStep * 1.25);
+        niceMin = opts.startFromZero !== false && rawMin >= 0 ? 0 : cleanFloat(Math.floor(rawMin / lockedStep) * lockedStep);
+      }
+      niceMax = cleanFloat(niceMin + lockedStep * intervals);
+      const ticks = Array.from({ length: targetCount }, (_, i) => cleanFloat(niceMin + lockedStep * i));
+      const span = Math.max(1e-9, niceMax - niceMin);
+      return {
+        min: niceMin,
+        max: niceMax,
+        ticks,
+        norm: (v: number) => Math.max(0, Math.min(1, (v - niceMin) / span)),
+      };
+    }
+
+    const ticks: number[] = [];
+    const stepsCount = Math.max(1, Math.round((niceMax - niceMin) / step));
+    if (stepsCount <= 10) {
+      for (let i = 0; i <= stepsCount; i++) {
+        ticks.push(cleanFloat(niceMin + step * i));
+      }
+      const span = Math.max(1e-9, niceMax - niceMin);
+      return {
+        min: niceMin,
+        max: niceMax,
+        ticks,
+        norm: (v: number) => Math.max(0, Math.min(1, (v - niceMin) / span)),
+      };
+    }
+  }
+
   const tMin = transformScaleVal(rawMin, mode);
   const tMax = transformScaleVal(rawMax, mode);
   const span = Math.max(1e-9, tMax - tMin);
 
   const ticks: number[] = [];
-  for (let i = 0; i < count; i++) {
-    const ratio = i / (count - 1);
+  for (let i = 0; i < targetCount; i++) {
+    const ratio = i / (targetCount - 1);
     if (mode === 'linear') {
-      ticks.push(rawMin + (rawMax - rawMin) * ratio);
+      ticks.push(cleanFloat(rawMin + (rawMax - rawMin) * ratio));
     } else if (mode === 'sqrt') {
       const tv = tMin + span * ratio;
-      ticks.push((tv < 0 ? -1 : 1) * tv * tv);
+      ticks.push(cleanFloat((tv < 0 ? -1 : 1) * tv * tv));
     } else {
       const tv = tMin + span * ratio;
-      ticks.push((tv < 0 ? -1 : 1) * (Math.pow(10, Math.abs(tv)) - 1));
+      ticks.push(cleanFloat((tv < 0 ? -1 : 1) * (Math.pow(10, Math.abs(tv)) - 1)));
     }
   }
 
@@ -177,6 +466,32 @@ export function createNumericScale(
       return Math.max(0, Math.min(1, (tv - tMin) / span));
     },
   };
+}
+
+/**
+ * Computes synchronized nice-number scales for Dual-Axis (Left Y1 + Right Y2) charts
+ * so both sides share identical horizontal gridlines without double-grid clutter.
+ */
+export function createDualAxisScales(
+  leftValues: number[],
+  rightValues: number[],
+  leftOpts: NumericScaleOpts = {},
+  rightOpts: NumericScaleOpts = {},
+): { left: NumericScale; right: NumericScale } {
+  const tickCount = Math.max(3, Math.min(8, Math.round(leftOpts.tickCount ?? 5)));
+  const left = createNumericScale(leftValues, {
+    ...leftOpts,
+    tickCount,
+    exactTickCount: true,
+    nice: leftOpts.nice !== false,
+  });
+  const right = createNumericScale(rightValues, {
+    ...rightOpts,
+    tickCount: left.ticks.length,
+    exactTickCount: true,
+    nice: rightOpts.nice !== false,
+  });
+  return { left, right };
 }
 
 export interface CategoryDatum {
@@ -407,7 +722,7 @@ export function computeBoxPlotStats(
 
   const out: BoxPlotGroupStats[] = [];
   for (const [group, { vals, row }] of byGroup.entries()) {
-    const sorted = [...vals].sort((a, b) => a - b);
+    const sorted = vals.toSorted((a, b) => a - b);
     const q1 = quantileSorted(sorted, 0.25);
     const median = quantileSorted(sorted, 0.5);
     const q3 = quantileSorted(sorted, 0.75);

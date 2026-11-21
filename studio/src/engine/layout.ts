@@ -47,7 +47,7 @@ export async function layoutScene(scene: Scene): Promise<void> {
   // Current order across the flow, for a stable re-layout
   const hasPositions = scene.nodes.every((n) => Number.isFinite(n.x) && Number.isFinite(n.y));
   const nodes = hasPositions
-    ? [...scene.nodes].sort((a, b) => crossOf(center(a), dir) - crossOf(center(b), dir))
+    ? scene.nodes.toSorted((a, b) => crossOf(center(a), dir) - crossOf(center(b), dir))
     : scene.nodes;
 
   const elkNodes = new Map<string, ElkNode>();
@@ -202,7 +202,7 @@ export async function layoutScene(scene: Scene): Promise<void> {
 function layoutSequenceScene(scene: Scene): void {
   const hasPositions = scene.nodes.every((n) => Number.isFinite(n.x) && Number.isFinite(n.y));
   const ordered = hasPositions
-    ? [...scene.nodes].sort((a, b) => a.x - b.x)
+    ? scene.nodes.toSorted((a, b) => a.x - b.x)
     : scene.nodes;
   let cursorX = 80;
   const topY = 80;

@@ -35,7 +35,7 @@ function ThumbnailView({ scene }: { scene: Scene }) {
   const view = `${b.x - pad} ${b.y - pad} ${b.w + 2 * pad} ${b.h + 2 * pad}`;
   const groups = groupBounds(scene);
   const byId = new Map(scene.nodes.map((n) => [n.id, n]));
-  const sorted = [...scene.groups].sort((x, y) => groupDepth(scene, x) - groupDepth(scene, y));
+  const sorted = scene.groups.toSorted((x, y) => groupDepth(scene, x) - groupDepth(scene, y));
   return (
     <svg className="thumbnail" viewBox={view} preserveAspectRatio="xMidYMid meet" aria-hidden="true">
       {sorted.map((g) => {

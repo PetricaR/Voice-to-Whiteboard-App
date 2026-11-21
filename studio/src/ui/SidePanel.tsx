@@ -5,7 +5,7 @@
  * - Catalog: RAG Technical Blueprints (6 AI Agent categories + Architecture Center),
  *   multi-cloud architecture components, and all 261 official Google Cloud SVG icons.
  */
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import {
   AGENT_CATEGORY_LABELS,
   BLUEPRINT_CATALOG,
@@ -21,6 +21,7 @@ import { DiagramStore } from '../engine/store';
 import type { LibraryEntry } from '../engine/workspace';
 import { ActivityList, timeAgo } from './ActivityPanel';
 import { Icon, IconButton, useStudio, useWorkspaceRevision } from './context';
+import { handleTabListKeyDown, usePopoverMenu } from './domTransitions';
 import { ALL_GCP_ICONS, resolveGcpIconUrl, searchGcpIcons, type GcpIconEntry } from './gcpIcons';
 import { resolveNodeIcon, type IconName } from './icons';
 import { Thumbnail } from './Thumbnail';
@@ -38,45 +39,65 @@ const GROUP_BADGE: Record<GcpIconEntry['group'], string> = {
   products: 'Product SVG',
 };
 
-function EntryMenu({ entry, open, onClose }: { entry: LibraryEntry; open: boolean; onClose: () => void }) {
+function EntryMenu({
+  entry,
+  open,
+  triggerRef,
+  onOpenChange,
+}: {
+  entry: LibraryEntry;
+  open: boolean;
+  triggerRef: RefObject<HTMLButtonElement | null>;
+  onOpenChange: (next: boolean) => void;
+}) {
   const { workspace, notify } = useStudio();
-  const ref = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    if (!open) return;
-    ref.current?.querySelector<HTMLButtonElement>('[role="menuitem"]')?.focus();
-    const close = (e: PointerEvent) => {
-      const t = e.target as Element;
-      if (!ref.current?.contains(t) && !t.closest?.('.history-more')) onClose();
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        onClose();
-      }
-    };
-    window.addEventListener('pointerdown', close);
-    window.addEventListener('keydown', onKey, true);
-    return () => {
-      window.removeEventListener('pointerdown', close);
-      window.removeEventListener('keydown', onKey, true);
-    };
-  }, [open, onClose]);
-  if (!open) return null;
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  usePopoverMenu({
+    open,
+    onOpenChange,
+    menuRef,
+    triggerRef,
+    placement: 'bottom-end',
+    focusFirstOnOpen: true,
+  });
+
   return (
-    <div className="menu history-menu" role="menu" ref={ref}>
+    <div ref={menuRef} popover="auto" className="menu menu-popover menu-end history-menu" role="menu" aria-label={`Actions for ${entry.title}`}>
       <button type="button" role="menuitem" onClick={() => {
         workspace.addPage({ scene: entry.scene, label: `Copied “${entry.title}” from the history` });
-        onClose();
+        onOpenChange(false);
       }}>
         <Icon name="content_copy" size={20} /><span>Open a copy on a new page</span>
       </button>
       <button type="button" role="menuitem" onClick={() => {
         const removed = workspace.removeEntry(entry.id);
-        onClose();
+        onOpenChange(false);
         if (removed) notify(`Removed “${entry.title}” from the history`, { label: 'Undo', run: () => workspace.restoreEntry(removed) });
       }}>
         <Icon name="delete" size={20} /><span>Remove from history</span>
       </button>
+    </div>
+  );
+}
+
+function EntryMoreButton({ entry, open, onToggle }: { entry: LibraryEntry; open: boolean; onToggle: (next: boolean) => void }) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  return (
+    <div className="menu-anchor history-more">
+      <button
+        ref={triggerRef}
+        type="button"
+        className="icon-btn standard"
+        aria-label={`More for ${entry.title}`}
+        aria-haspopup="menu"
+        aria-expanded={open}
+        data-tooltip={`More for ${entry.title}`}
+        onClick={() => onToggle(!open)}
+      >
+        <Icon name="more_vert" />
+      </button>
+      <EntryMenu entry={entry} open={open} triggerRef={triggerRef} onOpenChange={onToggle} />
     </div>
   );
 }
@@ -141,10 +162,7 @@ function DiagramHistory() {
                 )}
               </span>
             </button>
-            <div className="menu-anchor history-more">
-              <IconButton icon="more_vert" label={`More for ${e.title}`} onClick={() => setMenu(menu === e.id ? null : e.id)} />
-              <EntryMenu entry={e} open={menu === e.id} onClose={() => setMenu(null)} />
-            </div>
+            <EntryMoreButton entry={e} open={menu === e.id} onToggle={(next) => setMenu(next ? e.id : null)} />
           </li>
         );
       })}
@@ -224,7 +242,7 @@ function CatalogPane() {
   return (
     <div className="catalog-pane">
       <div className="catalog-controls">
-        <div className="catalog-search-box">
+        <search className="catalog-search-box" aria-label="Search catalog">
           <Icon name="find_in_page" size={18} />
           <input
             type="search"
@@ -246,7 +264,7 @@ function CatalogPane() {
               <Icon name="close" size={16} />
             </button>
           )}
-        </div>
+        </search>
         <div className="catalog-filters" role="group" aria-label="Filter catalog">
           {([
             ['all', 'All'],
@@ -400,14 +418,13 @@ export function SidePanel({ tab, setTab, onClose }: { tab: PanelTab; setTab: (t:
             className={tab === t.id ? 'active' : ''}
             onClick={() => setTab(t.id)}
             onKeyDown={(e) => {
-              if (e.key === 'ArrowRight' || e.key === 'ArrowLeft') {
-                e.preventDefault();
-                const idx = tabs.findIndex((x) => x.id === t.id);
-                const delta = e.key === 'ArrowRight' ? 1 : -1;
-                const next = tabs[(idx + delta + tabs.length) % tabs.length].id;
-                setTab(next);
-                document.getElementById(`panel-tab-${next}`)?.focus();
-              }
+              handleTabListKeyDown(
+                e,
+                tabs.map((x) => x.id),
+                t.id,
+                setTab,
+                (next) => document.getElementById(`panel-tab-${next}`)?.focus(),
+              );
             }}
           >
             {t.label}

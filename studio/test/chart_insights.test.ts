@@ -7,11 +7,21 @@ import { CHART_CATALOG } from '../src/engine/chartCatalog';
 import { reviewDashboardLayout, reviewWidget, type WidgetReview } from '../src/engine/chartInsights';
 import {
   buildDashboard,
+  dashboardToVegaLiteHandoff,
   describeDashboard,
   normalizeChartConfig,
   WIDGET_KINDS,
   type DashboardWidgetInput,
 } from '../src/engine/dashboard';
+import {
+  buildCurvePath,
+  createDualAxisScales,
+  createNumericScale,
+  formatAxisTick,
+  humanizeColumnName,
+  resolveDirectLabelPositions,
+  roundedBarPath,
+} from '../src/ui/dashboard/chartLayouts';
 import { Workspace } from '../src/engine/workspace';
 
 async function review(input: DashboardWidgetInput): Promise<WidgetReview> {
@@ -402,5 +412,112 @@ describe('Dashboard tools give the agent what it needs to build good charts', ()
 
     const inspected = await handleToolCall('inspect_widget', { widget_id: 'mrr' }, ctx) as any;
     expect(inspected.facts[0]).toMatch(/mrr_usd = /);
+  });
+});
+
+describe('Top-tier visualization design primitives & Second Y-Axis (Dual Axis)', () => {
+  it('computes clean Heckbert/Wilkinson nice ticks and synchronized dual-axis scales', () => {
+    const scale = createNumericScale([0, 674281], { startFromZero: true, tickCount: 5 });
+    expect(scale.min).toBe(0);
+    expect(scale.max).toBe(800000);
+    expect(scale.ticks).toEqual([0, 200000, 400000, 600000, 800000]);
+    expect(formatAxisTick(200000, 'currency_usd')).toBe('$200K');
+    expect(formatAxisTick(120, 'percent')).toBe('120%');
+
+    const dual = createDualAxisScales(
+      [409000, 674281],
+      [108.5, 118.2],
+      { startFromZero: true, tickCount: 5 },
+      { startFromZero: false, tickCount: 5 },
+    );
+    // Left and right axes share identical gridline counts for clean 1-to-1 horizontal alignment
+    expect(dual.left.ticks.length).toBe(5);
+    expect(dual.right.ticks.length).toBe(dual.left.ticks.length);
+    expect(dual.left.min).toBe(0);
+    expect(dual.left.max).toBeGreaterThanOrEqual(674281);
+    expect(dual.right.min).toBeLessThanOrEqual(108.5);
+    expect(dual.right.max).toBeGreaterThanOrEqual(118.2);
+  });
+
+  it('produces non-overshooting Fritsch-Carlson monotone splines, top-rounded bars, humanized captions, and collision-free direct labels', () => {
+    const pts = [
+      { x: 0, y: 100 },
+      { x: 50, y: 100 },
+      { x: 100, y: 20 },
+      { x: 150, y: 20 },
+    ];
+    const d = buildCurvePath(pts, 'monotone');
+    // Control points along flat segments must never overshoot outside [20, 100]
+    const ys = [...d.matchAll(/C\s*[\d.-]+\s+([\d.-]+),\s*[\d.-]+\s+([\d.-]+),\s*[\d.-]+\s+([\d.-]+)/g)]
+      .flatMap((m) => [Number(m[1]), Number(m[2]), Number(m[3])]);
+    for (const y of ys) {
+      expect(y).toBeGreaterThanOrEqual(20 - 1e-6);
+      expect(y).toBeLessThanOrEqual(100 + 1e-6);
+    }
+
+    const barD = roundedBarPath(10, 20, 30, 80, 5, 'top');
+    expect(barD).toContain('Q 40.00 20.00');
+    // Bottom corners stay flat (no quadratic arc at y=100)
+    expect(barD).not.toContain('Q 40.00 100.00');
+
+    expect(humanizeColumnName('net_expansion_pct')).toBe('Net Expansion %');
+    expect(humanizeColumnName('new_mrr_usd')).toBe('New MRR (USD)');
+
+    const resolved = resolveDirectLabelPositions(
+      [{ id: 'A', y: 50 }, { id: 'B', y: 52 }, { id: 'C', y: 53 }],
+      10,
+      200,
+      15,
+    );
+    expect(resolved.get('B')! - resolved.get('A')!).toBeGreaterThanOrEqual(14.9);
+    expect(resolved.get('C')! - resolved.get('B')!).toBeGreaterThanOrEqual(14.9);
+  });
+
+  it('normalizes dual-axis combo config and exports independent layered Vega-Lite specs', async () => {
+    const built = buildDashboard({
+      title: 'Dual Axis',
+      widgets: [{
+        id: 'mrr_ndr',
+        title: 'MRR & Retention',
+        kind: 'combo',
+        sql: 'SELECT month, SUM(mrr_usd) AS mrr_usd, ROUND(AVG(net_dollar_retention_pct), 1) AS ndr_pct FROM monthly_revenue GROUP BY month ORDER BY month',
+        x_field: 'month',
+        y_fields: ['mrr_usd', 'ndr_pct'],
+        format: 'currency_usd',
+        chart_config: {
+          design_preset: 'stripe',
+          palette: 'editorial',
+          secondary_y_fields: ['ndr_pct'],
+          secondary_series_type: 'line',
+          y_axis_title: 'MRR ($)',
+          y2_axis_title: 'NDR (%)',
+          y2_axis_format: 'percent',
+          y2_start_from_zero: false,
+          reference_lines: [{ axis: 'y2', value: '115', label: '115% Goal' }],
+        },
+      }],
+    });
+    expect(built.ok).toBe(true);
+    const w = built.dashboard.widgets[0];
+    expect(w.chartConfig).toMatchObject({
+      designPreset: 'stripe',
+      palette: 'editorial',
+      secondaryYFields: ['ndr_pct'],
+      secondarySeriesType: 'line',
+      yAxisTitle: 'MRR ($)',
+      y2AxisTitle: 'NDR (%)',
+      y2AxisFormat: 'percent',
+      y2StartFromZero: false,
+    });
+    expect(w.chartConfig?.referenceLines?.[0].axis).toBe('y2');
+
+    const res = await executeSqlQuery(w.sql);
+    const rev = reviewWidget(w, res);
+    expect(rev.issues).toEqual([]);
+
+    const vl = JSON.parse(dashboardToVegaLiteHandoff(built.dashboard, { [w.id]: res }));
+    expect(vl.vconcat[0].layer).toHaveLength(2);
+    expect(vl.vconcat[0].resolve.scale.y).toBe('independent');
+    expect(vl.vconcat[0].layer[1].encoding.y.axis.orient).toBe('right');
   });
 });

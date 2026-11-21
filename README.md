@@ -25,9 +25,10 @@ Every request is a **deterministic, incremental edit** of your active workspace�
    - **Editable Layers & Physics**: `badge`, `kinetic_text`, `metric_counter` (interpolating real queried numbers), `motion_chart`, `flow_diagram`, and `callout_card` with `spring`, `smooth`, `snappy`, and `linear` easings, click-on-canvas hit-box selection, kinetic captions, and optional Web Speech voiceover.
    - **Client-side `.mp4` Video Export**: deterministic frame-by-frame WebCodecs `VideoEncoder` + `mp4-muxer` H.264 `.mp4` rendering (with `MediaRecorder` `.webm` fallback).
 
-3. **Architecture Whiteboard & Book Documentation (`Diagram` & `Docs` surfaces)**
+3. **Architecture Whiteboard & Official Google-Grounded Book Documentation (`Diagram` & `Docs` surfaces)**
    - Incremental graph editing (`create_diagram`, `edit_diagram`, `tidy_layout`) with neighbor-aware node placement, official Google Cloud SVG icons, 101 Gen AI technical blueprints, and draw.io (`.drawio`) / PNG / SVG export.
-   - Companion arc42 / C4 / ADR **Documentation** book per page (`write_text`, `write_table`) with Markdown (`.md`) export.
+   - Publication-grade **Docs** reference guide (`write_text`, `write_table`) with inline full & subsystem-focused vector architecture embeds (`{{diagram}}`), Low-Level Design → Implementation Guidelines code blocks, typed callouts, ADRs, clickable official citations, standalone HTML (`.html`) and Mermaid-enabled Markdown (`.md`) exports.
+   - **Official Google Developer Knowledge MCP (`https://developerknowledge.googleapis.com/mcp`)**: server-side Streamable HTTP MCP client (`studio/server/googleDocsMcp.ts`) exposing `search_google_docs`, `get_google_docs`, and `answer_google_docs` so Gemini Live grounds every Google Cloud, Gemini/Vertex AI, Firebase, ADK, Genkit, Apigee, Android, Chrome, Flutter, and Go chapter strictly in the latest official Google documentation.
 
 ---
 
@@ -62,7 +63,29 @@ Press **Space** (or click **Talk**) to speak, or press **`/`** to type (includin
 | *"Make the opening scene 4 seconds and change the headline to Q4 Momentum"* | `edit_motion` (updates only that scene/layer while keeping all other timings intact) |
 | *"Play from the start"* / *"Export as MP4"* | `control_motion` (`restart` / `export_mp4`) |
 | *"Draw our real-time BigQuery & Vertex AI architecture in a new tab"* | `create_diagram` (`new_page: true`) |
-| *"Document this architecture"* | `write_text` + `write_table` (numbered chapters & tables in the **Docs** surface) |
+| *"Document this architecture"* | `search_google_docs` + `get_google_docs` → `write_text` + `write_table` (official Google-grounded LLD & implementation guide in **Docs**) |
+
+---
+
+## Official Google Documentation Grounding (Developer Knowledge MCP)
+
+Architecture documentation is grounded live against Google’s official [Developer Knowledge MCP Server](https://developers.google.com/knowledge/mcp) (`https://developerknowledge.googleapis.com/mcp`, tools `search_documents`, `get_documents`, `answer_query`) strictly on the server (`/api/docs/*`)—credentials never reach the browser.
+
+1. Enable the Developer Knowledge API on your Google Cloud project:
+   ```bash
+   gcloud services enable developerknowledge.googleapis.com --project=<PROJECT_ID>
+   ```
+2. Authenticate using **either** method:
+   - **Option A — API Key (in `studio/.env`):** create an API key in that GCP project restricted to the Developer Knowledge API and add:
+     ```dotenv
+     DEVELOPERKNOWLEDGE_API_KEY=<YOUR_GCP_API_KEY>
+     ```
+   - **Option B — Google Cloud ADC / `gcloud` (zero key management, works automatically on Cloud Run):**
+     ```bash
+     gcloud auth application-default login --project=<PROJECT_ID>
+     ```
+     Optionally set `DEVELOPERKNOWLEDGE_PROJECT_ID=<PROJECT_ID>` (or `GOOGLE_CLOUD_PROJECT`) in `studio/.env`.
+3. Open **Settings → Official Google Documentation (MCP)** in the studio UI and click **Test live MCP connection** to verify.
 
 ---
 

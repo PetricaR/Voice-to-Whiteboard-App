@@ -21,6 +21,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { importPKCS8, SignJWT } from 'jose';
+import { warehouseTimestampToIso } from '../src/data/timeValues.ts';
 import type { DataConnectorEnv } from './dataConnectors.ts';
 import { validateReadOnlySql } from './sqlGuard.ts';
 
@@ -476,6 +477,8 @@ export function parseBigQueryRows(
         return Number.isFinite(n) ? n : String(v);
       }
       if (fType === 'BOOLEAN' || fType === 'BOOL') return v === 'true' || v === true;
+      // The REST API writes a TIMESTAMP as epoch seconds ("1.7931456E9"): no chart axis or person can read that
+      if (fType === 'TIMESTAMP') return warehouseTimestampToIso(v);
       return typeof v === 'object' ? JSON.stringify(v) : String(v);
     }),
   );
@@ -1090,11 +1093,26 @@ export class BqCatalogStore {
     return results;
   }
 
-  private buildPreviewSql(projectId: string, datasetId: string, tableId: string, limit: number, useSample: boolean): string {
+  /**
+   * The column that orders a table's facts in time: a DATE/DATETIME/TIMESTAMP that is not a load
+   * or audit stamp, the finest one first (a timestamp before a date).
+   */
+  timeColumnOf(projectId: string, datasetId: string, tableId: string): string | undefined {
+    const tbl = this.datasets.get(`${projectId}.${datasetId}`)?.tables.find((t) => t.table_id === tableId);
+    const temporal = (tbl?.columns ?? []).filter((c) =>
+      !c.name.includes('.') && c.mode !== 'REPEATED' && /^(TIMESTAMP|DATETIME|DATE)$/i.test(c.data_type) &&
+      !/(ingest|load|insert|updat|modif|sync|process|scor|refresh|export|import|extract|fetch|logged|created_at|deleted)/i.test(c.name));
+    const rank = (t: string) => (/^TIMESTAMP$/i.test(t) ? 0 : /^DATETIME$/i.test(t) ? 1 : 2);
+    return temporal.sort((a, b) => rank(a.data_type) - rank(b.data_type))[0]?.name;
+  }
+
+  private buildPreviewSql(projectId: string, datasetId: string, tableId: string, limit: number, useSample: boolean, orderBy?: string): string {
     const fq = `\`${projectId}.${datasetId}.${tableId}\``;
     const safeLimit = Math.max(1, Math.min(Math.floor(limit), 2000));
     if (!useSample) {
-      return `SELECT * FROM ${fq} LIMIT ${safeLimit}`;
+      // Ordering reads no more bytes than SELECT * already does, and gives a contiguous, recent slice
+      const order = orderBy && /^[A-Za-z_][A-Za-z0-9_]*$/.test(orderBy) ? ` ORDER BY \`${orderBy}\` DESC` : '';
+      return `SELECT * FROM ${fq}${order} LIMIT ${safeLimit}`;
     }
     return `SELECT * FROM ${fq} TABLESAMPLE SYSTEM (10 PERCENT) LIMIT ${safeLimit}`;
   }
@@ -1190,6 +1208,8 @@ export class BqCatalogStore {
     table_id: string;
     limit?: number;
     sample?: boolean;
+    /** The most recent rows by the table's time column (with sample: false). */
+    latest?: boolean;
     userAccessToken?: string | null;
     fetch?: typeof fetch;
   }): Promise<BqPreviewResult> {
@@ -1209,7 +1229,8 @@ export class BqCatalogStore {
     const headers = buildGcpAuthHeaders(creds, { 'Content-Type': 'application/json' });
     const maxRows = Math.max(1, Math.min(opts.limit ?? 100, 2000));
     const trySample = opts.sample !== false && this.shouldSampleTable(projectId, datasetId, tableId) && maxRows <= 200;
-    let query = this.buildPreviewSql(projectId, datasetId, tableId, maxRows, trySample);
+    const orderBy = opts.latest && !trySample ? this.timeColumnOf(projectId, datasetId, tableId) : undefined;
+    let query = this.buildPreviewSql(projectId, datasetId, tableId, maxRows, trySample, orderBy);
 
     const check = validateReadOnlySql(query, { maxRows, dialect: 'bigquery' });
     if (!check.ok) throw new BqCatalogError(400, check.error ?? 'Invalid preview SQL.');
@@ -1241,6 +1262,11 @@ export class BqCatalogStore {
 
     let run = await execQuery(query);
     if (!run.ok && trySample && /TABLESAMPLE/i.test(run.body.error?.message ?? '')) {
+      query = this.buildPreviewSql(projectId, datasetId, tableId, maxRows, false);
+      run = await execQuery(query);
+    }
+    if (!run.ok && orderBy) {
+      // A sort the warehouse refuses (resources, a column it cannot order) still leaves the plain slice
       query = this.buildPreviewSql(projectId, datasetId, tableId, maxRows, false);
       run = await execQuery(query);
     }
