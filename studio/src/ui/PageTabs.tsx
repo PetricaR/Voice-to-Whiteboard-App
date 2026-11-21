@@ -220,6 +220,9 @@ export function PageTabs() {
             <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.showView('dashboard', { page: menuPage.id }); }}>
               <Icon name="dashboard" size={20} /><span>{menuPage.store.scene.dashboard ? 'Open live dashboard' : 'Build SQL dashboard'}</span>
             </button>
+            <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.showView('board', { page: menuPage.id }); }}>
+              <Icon name="query_stats" size={20} /><span>{menuPage.store.scene.board ? 'Open the Board' : 'Explore on a Board'}</span>
+            </button>
             <button type="button" role="menuitem" onClick={() => { setMenuId(null); workspace.showView('motion', { page: menuPage.id }); }}>
               <Icon name="movie" size={20} /><span>{menuPage.store.scene.motion ? 'Open motion explainer' : 'Animate motion explainer'}</span>
             </button>
@@ -254,6 +257,19 @@ export function PageTabs() {
           <span>Dashboard</span>
           {(activeScene.dashboard?.widgets.length ?? 0) > 0 && (
             <span className="surface-badge">{activeScene.dashboard!.widgets.length}</span>
+          )}
+        </button>
+        <button
+          type="button"
+          className={`surface-pill${view === 'board' ? ' active' : ''}`}
+          aria-pressed={view === 'board'}
+          onClick={() => workspace.showView('board')}
+          title="Board: explore and collect insights, then pin charts to the dashboard"
+        >
+          <Icon name="query_stats" size={15} />
+          <span>Board</span>
+          {(activeScene.board?.widgets.length ?? 0) > 0 && (
+            <span className="surface-badge">{activeScene.board!.widgets.length}</span>
           )}
         </button>
         <button

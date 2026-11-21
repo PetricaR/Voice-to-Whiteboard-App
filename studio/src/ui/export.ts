@@ -243,9 +243,10 @@ function normalizeBlock(raw: any): DBlock | null {
 /** Checks and completes a scene read from a file or from storage, or null if it is not one. */
 export function normalizeScene(s: any): Scene | null {
   const dashboard = normalizeDashboard(s?.dashboard);
+  const board = normalizeDashboard(s?.board);
   const motion = normalizeMotion(s?.motion);
   const hasDiagramArrays = Array.isArray(s?.nodes) && Array.isArray(s?.edges);
-  if (!hasDiagramArrays && !dashboard && !motion) return null;
+  if (!hasDiagramArrays && !dashboard && !board && !motion) return null;
   const nodes: DNode[] = [];
   for (const raw of (Array.isArray(s?.nodes) ? s.nodes : [])) {
     if (raw == null || typeof raw.id !== 'string' || typeof raw.label !== 'string') return null;
@@ -277,6 +278,7 @@ export function normalizeScene(s: any): Scene | null {
     groups,
     blocks,
     ...(dashboard ? { dashboard } : {}),
+    ...(board ? { board: { ...board, refreshSeconds: 0 } } : {}),
     ...(motion ? { motion } : {}),
   };
   if (typeof s?.subtitle === 'string' && s.subtitle) scene.subtitle = s.subtitle;

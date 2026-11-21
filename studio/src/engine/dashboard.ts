@@ -386,6 +386,13 @@ export interface DashboardWidget {
   color?: ColorName;
   /** Granular per-element chart configuration (axes, grid, geometry, labels, legends, overlays, frame). */
   chartConfig?: ChartElementConfig;
+  /** On the Board: what the user asked when this chart was made. */
+  askedAs?: string;
+  /** On the Board: what the chart showed (its facts), kept with it. */
+  insight?: string;
+  /** On the Board: when it was copied to the dashboard, and as which widget. */
+  promotedAt?: number;
+  promotedAs?: string;
 }
 
 export interface DashboardSpec {
@@ -451,6 +458,12 @@ export interface DashboardWidgetInput {
   chartConfig?: ChartElementConfigInput;
   reset_chart_config?: boolean;
   resetChartConfig?: boolean;
+  /** Board notes (see DashboardWidget). */
+  asked_as?: string;
+  askedAs?: string;
+  insight?: string;
+  promotedAt?: number;
+  promotedAs?: string;
 }
 
 export interface DashboardFilterInput {
@@ -895,6 +908,15 @@ function normalizeWidget(input: DashboardWidgetInput, defaultSource: string, use
     }
   }
 
+  // Board notes
+  const askedAs = text(input.askedAs ?? input.asked_as);
+  if (askedAs) widget.askedAs = askedAs.slice(0, 300);
+  const insight = text(input.insight);
+  if (insight) widget.insight = insight.slice(0, 600);
+  if (typeof input.promotedAt === 'number' && Number.isFinite(input.promotedAt)) widget.promotedAt = input.promotedAt;
+  const promotedAs = text(input.promotedAs);
+  if (promotedAs) widget.promotedAs = promotedAs;
+
   return widget;
 }
 
@@ -1057,7 +1079,7 @@ function ignoredChartSettings(patch: unknown, merged: ChartElementConfig | undef
   return out;
 }
 
-function resolveWidgetRef(ref: unknown, widgets: DashboardWidget[], selection: string[]): Resolution<DashboardWidget> {
+export function resolveWidgetRef(ref: unknown, widgets: DashboardWidget[], selection: string[]): Resolution<DashboardWidget> {
   if (typeof ref !== 'string' || ref.trim() === '') {
     return { error: 'A widget reference is missing: give the widget id (or its title).' };
   }
@@ -1374,10 +1396,10 @@ function summarizeFields(w: DashboardWidget): string {
 const STATE_SQL_CHARS = 420;
 
 /** Compact summary of the active dashboard returned to Gemini Live on every tool call. */
-export function describeDashboard(d: DashboardSpec): string {
+export function describeDashboard(d: DashboardSpec, label = 'dashboard'): string {
   const lines: string[] = [];
   lines.push(
-    `dashboard: ${JSON.stringify(d.title)}` +
+    `${label}: ${JSON.stringify(d.title)}` +
     (d.subtitle ? ` (${JSON.stringify(d.subtitle)})` : '') +
     ` · source ${d.defaultSource} · ${d.widgets.length} ${d.widgets.length === 1 ? 'widget' : 'widgets'}` +
     (d.refreshSeconds > 0 ? ` · auto-refresh ${d.refreshSeconds}s` : ''),
@@ -1390,8 +1412,10 @@ export function describeDashboard(d: DashboardSpec): string {
     lines.push(
       `  - ${w.id} [${w.kind}, span ${w.colSpan}/12, src=${w.source}]${summarizeFields(w)} ${JSON.stringify(w.title)}` +
       (w.subtitle ? ` · ${JSON.stringify(w.subtitle)}` : '') +
-      `${summarizeChartConfig(w.chartConfig)}: ` +
-      `${sqlOneLine.length > STATE_SQL_CHARS ? sqlOneLine.slice(0, STATE_SQL_CHARS) + '…' : sqlOneLine}`,
+      `${summarizeChartConfig(w.chartConfig)}` +
+      (w.askedAs ? ` · asked ${JSON.stringify(w.askedAs)}` : '') +
+      (w.promotedAs ? ` · on the dashboard as ${w.promotedAs}` : '') +
+      `: ${sqlOneLine.length > STATE_SQL_CHARS ? sqlOneLine.slice(0, STATE_SQL_CHARS) + '…' : sqlOneLine}`,
     );
   }
   return lines.join('\n');

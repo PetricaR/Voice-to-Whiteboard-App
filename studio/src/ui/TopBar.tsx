@@ -89,6 +89,9 @@ export function TopBar({
   let chipLabel: string | null = null;
   if (view === 'dashboard' && scene.dashboard) {
     chipLabel = `Live SQL · ${scene.dashboard.widgets.length} ${scene.dashboard.widgets.length === 1 ? 'widget' : 'widgets'}`;
+  } else if (view === 'board' && scene.board) {
+    const pinned = scene.board.widgets.filter((w) => w.promotedAs != null).length;
+    chipLabel = `Board · ${scene.board.widgets.length} ${scene.board.widgets.length === 1 ? 'chart' : 'charts'}${pinned > 0 ? ` · ${pinned} on dashboard` : ''}`;
   } else if (view === 'motion' && scene.motion) {
     const secs = (totalMotionDurationMs(scene.motion) / 1000).toFixed(1);
     chipLabel = `Motion · ${scene.motion.aspectRatio} · ${secs}s`;

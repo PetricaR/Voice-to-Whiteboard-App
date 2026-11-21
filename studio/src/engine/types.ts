@@ -115,6 +115,11 @@ export interface Scene {
   blocks: DBlock[];
   /** Live SQL-backed interactive dashboard on this page. */
   dashboard?: DashboardSpec;
+  /**
+   * The Board: work in progress while looking for insights. Charts and tables
+   * land here first; the ones worth keeping are copied to the dashboard.
+   */
+  board?: DashboardSpec;
   /** Programmatic multi-scene animated explainer on this page. */
   motion?: MotionSpec;
 }
@@ -164,6 +169,7 @@ export function isBlankScene(scene: Scene): boolean {
     scene.groups.length === 0 &&
     scene.blocks.length === 0 &&
     scene.dashboard == null &&
+    scene.board == null &&
     scene.motion == null
   );
 }

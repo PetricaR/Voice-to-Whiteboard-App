@@ -15,6 +15,8 @@ import { ChartGalleryModal } from './ChartGalleryModal';
 import { ChartRenderer, type InspectedDatum } from './ChartRenderer';
 import { QueryInspectorDrawer } from './QueryInspectorDrawer';
 import { STARTER_SAAS_DASHBOARD } from './starterDashboard';
+import { DashboardSurfaceContext } from './surface';
+import type { DashboardSurface } from '../../engine/store';
 
 export { STARTER_SAAS_DASHBOARD };
 
@@ -29,11 +31,14 @@ interface DisplayFilterItem {
 }
 
 export function DashboardView({
+  surface = 'dashboard',
   closing = false,
   onResultsChange,
   inspectorWidgetRequest,
   onClearInspectorRequest,
 }: {
+  /** The page's dashboard, or its Board (work in progress: never refreshes by itself, charts are pinned to the dashboard). */
+  surface?: DashboardSurface;
   closing?: boolean;
   onResultsChange?: (results: Record<string, QueryExecutionResult | undefined>) => void;
   inspectorWidgetRequest?: string | null;
@@ -41,7 +46,22 @@ export function DashboardView({
 }) {
   const { workspace, store, notify, openDataSources, requireSampleData } = useStudio();
   useStoreRevision(store);
-  const liveDashboard = store.scene.dashboard;
+  const isBoard = surface === 'board';
+  const liveDashboard = store.scene[surface];
+  const pageDashboard = store.scene.dashboard;
+  // On the Board, the charts picked (click, or ⇧/⌘-click for several) to pin together
+  const boardPicked = isBoard ? store.selection.filter((id) => liveDashboard?.widgets.some((w) => w.id === id && !(w.promotedAs && pageDashboard?.widgets.some((d) => d.id === w.promotedAs)))) : [];
+  const pinToDashboard = (ids: string[]) => {
+    const res = store.promoteToDashboard(ids, { source: 'manual' });
+    if (res.ok && res.promoted.length > 0) {
+      notify(res.promoted.length === 1 ? 'Added to the dashboard' : `Added ${res.promoted.length} charts to the dashboard`, {
+        label: 'Open dashboard',
+        run: () => workspace.showView('dashboard'),
+      });
+    } else {
+      notify([...res.errors, ...res.warnings][0] ?? 'Nothing was added to the dashboard.');
+    }
+  };
 
   // Retain outgoing dashboard or empty card briefly so transitions between empty <-> populated fade smoothly
   const [retainedDashboard, setRetainedDashboard] = useState<DashboardSpec | undefined>(liveDashboard);
@@ -383,7 +403,7 @@ export function DashboardView({
 
   // Scheduled live auto-refresh
   useEffect(() => {
-    if (!liveDashboard || !liveDashboard.refreshSeconds || liveDashboard.refreshSeconds <= 0) return;
+    if (isBoard || !liveDashboard || !liveDashboard.refreshSeconds || liveDashboard.refreshSeconds <= 0) return;
     const id = window.setInterval(() => {
       setRefreshTick((n) => n + 1);
     }, liveDashboard.refreshSeconds * 1000);
@@ -439,8 +459,39 @@ export function DashboardView({
     </section>
   );
 
+  const boardEmptySection = (isClosingEmpty: boolean) => (
+    <section
+      className="surface-empty-view board-empty"
+      data-closing={isClosingEmpty || closing ? '' : undefined}
+      inert={isClosingEmpty || closing || undefined}
+    >
+      <div className="surface-empty-card">
+        <div className="surface-empty-icon-wrap">
+          <Icon name="query_stats" size={32} />
+        </div>
+        <h2>The Board is empty</h2>
+        <p>
+          Explore here before anything goes on the dashboard. Ask a question — “why did churn rise in Q4?”, “show me
+          revenue by plan over time” — and the charts that answer it land on the Board with what they show. Pin the
+          ones worth keeping to the dashboard.
+        </p>
+        <div className="surface-empty-actions">
+          <button type="button" className="filled-btn" onClick={() => setGalleryOpen(true)}>
+            <Icon name="add" size={18} /> Add a chart
+          </button>
+          <button type="button" className="tonal-btn" onClick={() => workspace.showView('dashboard')}>
+            <Icon name="dashboard" size={18} /> Go to the dashboard
+          </button>
+        </div>
+      </div>
+      <DashboardSurfaceContext.Provider value={surface}>
+        <ChartGalleryModal open={galleryOpen} onClose={() => setGalleryOpen(false)} />
+      </DashboardSurfaceContext.Provider>
+    </section>
+  );
+
   if (!dashboard) {
-    return emptyStateSection(false);
+    return isBoard ? boardEmptySection(false) : emptyStateSection(false);
   }
 
   const inspectedWidget: DashboardWidget | null =
@@ -453,6 +504,7 @@ export function DashboardView({
     store.editDashboard(
       { summary: `Resized ${w.title}`, update_widgets: [{ id: w.id, colSpan: nextSpan }] },
       { source: 'manual', label: `Resized “${w.title}” to ${nextSpan}/12 cols` },
+      surface,
     );
   };
 
@@ -468,9 +520,10 @@ export function DashboardView({
 
   return (
     <>
-      {emptyOverlayClosing && emptyStateSection(true)}
+      {emptyOverlayClosing && (isBoard ? boardEmptySection(true) : emptyStateSection(true))}
+      <DashboardSurfaceContext.Provider value={surface}>
       <div
-        className={`dashboard-view${inspectorOpen ? ' inspector-open' : ''}`}
+        className={`dashboard-view${isBoard ? ' is-board' : ''}${inspectorOpen ? ' inspector-open' : ''}`}
         data-closing={isSurfaceClosing ? '' : undefined}
         inert={isSurfaceClosing || undefined}
         onDragOver={(e) => e.preventDefault()}
@@ -491,9 +544,9 @@ export function DashboardView({
           <header className="dashboard-toolbar">
             <div className="dashboard-heading">
               <div className="dashboard-meta-row">
-                <div className="dashboard-live-pill">
+                <div className={`dashboard-live-pill${isBoard ? ' board-pill' : ''}`}>
                   <span className="live-dot" />
-                  <span>LIVE SQL · {dashboard.defaultSource}</span>
+                  <span>{isBoard ? `BOARD · WORK IN PROGRESS · ${dashboard.widgets.length} ${dashboard.widgets.length === 1 ? 'CHART' : 'CHARTS'}` : `LIVE SQL · ${dashboard.defaultSource}`}</span>
                 </div>
                 {lastRefreshed && (
                   <span className="refresh-stamp" key={lastRefreshed}>
@@ -503,7 +556,11 @@ export function DashboardView({
               </div>
               <div className="dashboard-title-group">
                 <h2 className="dashboard-title">{dashboard.title}</h2>
-                {dashboard.subtitle && <p className="dashboard-subtitle">{dashboard.subtitle}</p>}
+                {isBoard ? (
+                  <p className="dashboard-subtitle">Explore here; pin the charts worth keeping to the dashboard.</p>
+                ) : (
+                  dashboard.subtitle && <p className="dashboard-subtitle">{dashboard.subtitle}</p>
+                )}
               </div>
             </div>
 
@@ -530,6 +587,7 @@ export function DashboardView({
                         store.editDashboard(
                           { update_filters: [{ id: f.id, value: e.target.value }] },
                           { source: 'manual', label: `Filtered ${f.label} = ${e.target.value}` },
+                          surface,
                         )
                       }
                     >
@@ -546,6 +604,7 @@ export function DashboardView({
                         store.editDashboard(
                           { update_filters: [{ id: f.id, value: e.target.value }] },
                           { source: 'manual', label: `Filtered ${f.label}` },
+                          surface,
                         )
                       }
                     />
@@ -553,6 +612,7 @@ export function DashboardView({
                 </label>
               ))}
 
+              {!isBoard && (
               <label className="dash-filter-chip" title="Auto-refresh schedule">
                 <Icon name="refresh" size={15} />
                 <select
@@ -562,6 +622,7 @@ export function DashboardView({
                     store.editDashboard(
                       { refresh_seconds: Number(e.target.value) },
                       { source: 'manual', label: 'Changed auto-refresh interval' },
+                      surface,
                     )
                   }
                 >
@@ -571,6 +632,7 @@ export function DashboardView({
                   <option value={300}>Every 5m</option>
                 </select>
               </label>
+              )}
 
               <div className="dashboard-action-btns">
                 <button type="button" className="tonal-btn small" onClick={() => setRefreshTick((n) => n + 1)}>
@@ -582,9 +644,22 @@ export function DashboardView({
                 <button type="button" className="tonal-btn small" onClick={() => openDataSources('bigquery')}>
                   <Icon name="database" size={16} /> BigQuery &amp; Data
                 </button>
-                <button type="button" className="tonal-btn small accent" onClick={animateDashboard}>
-                  <Icon name="movie" size={16} /> Animate Explainer
-                </button>
+                {isBoard ? (
+                  <button
+                    type="button"
+                    className="filled-btn small"
+                    disabled={boardPicked.length === 0}
+                    title={boardPicked.length === 0 ? 'Pick charts on the Board (⇧/⌘-click for several)' : undefined}
+                    onClick={() => pinToDashboard(boardPicked)}
+                  >
+                    <Icon name="dashboard" size={16} />
+                    {boardPicked.length > 1 ? `Add ${boardPicked.length} to dashboard` : 'Add to dashboard'}
+                  </button>
+                ) : (
+                  <button type="button" className="tonal-btn small accent" onClick={animateDashboard}>
+                    <Icon name="movie" size={16} /> Animate Explainer
+                  </button>
+                )}
               </div>
             </div>
           </header>
@@ -631,20 +706,49 @@ export function DashboardView({
                   <article
                     className={cardClasses}
                     data-widget-id={w.id}
+                    onMouseDown={(e) => {
+                      // ⇧-click picks several Board charts; it must not select text across them
+                      if (isBoard && e.shiftKey && !(e.target as HTMLElement).closest('button, select, input, a')) e.preventDefault();
+                    }}
                     onClick={(e) => {
                       if (exiting) return;
                       if (!(e.target as HTMLElement).closest('button, select, input, a')) {
-                        store.setSelection([w.id]);
+                        if (isBoard && (e.shiftKey || e.metaKey || e.ctrlKey)) {
+                          const sel = store.selection;
+                          store.setSelection(sel.includes(w.id) ? sel.filter((id) => id !== w.id) : [...sel, w.id]);
+                        } else {
+                          store.setSelection([w.id]);
+                        }
                       }
                     }}
                   >
                     <header className="widget-card-head">
                       <div className="widget-titles">
                         {cfg?.badgeText && <span className="widget-eyebrow-badge">{cfg.badgeText}</span>}
+                        {isBoard && w.askedAs && <span className="board-asked" title={w.askedAs}>“{w.askedAs}”</span>}
                         <h3>{w.title}</h3>
                         {w.subtitle && <p>{w.subtitle}</p>}
                       </div>
                       <div className="widget-actions">
+                        {isBoard && (w.promotedAs && pageDashboard?.widgets.some((d) => d.id === w.promotedAs) ? (
+                          <button
+                            type="button"
+                            className="board-pin-btn is-pinned"
+                            title="This chart is on the dashboard — open it"
+                            onClick={() => workspace.showView('dashboard')}
+                          >
+                            <Icon name="check" size={14} /> On dashboard
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            className="board-pin-btn"
+                            title="Copy this chart to the page's dashboard"
+                            onClick={() => pinToDashboard([w.id])}
+                          >
+                            <Icon name="dashboard" size={14} /> Add to dashboard
+                          </button>
+                        ))}
                         <button
                           type="button"
                           className={`sql-pill-btn${inspectedWidgetId === w.id ? ' active' : ''}`}
@@ -672,6 +776,7 @@ export function DashboardView({
                             store.editDashboard(
                               { remove_widgets: [w.id] },
                               { source: 'manual', label: `Removed “${w.title}”` },
+                              surface,
                             )
                           }
                         />
@@ -700,6 +805,9 @@ export function DashboardView({
                         />
                       </ErrorBoundary>
                     </div>
+                    {isBoard && w.insight && (
+                      <p className="board-insight"><Icon name="lightbulb" size={15} /> <span>{w.insight}</span></p>
+                    )}
                   </article>
                 </div>
               );
@@ -734,6 +842,7 @@ export function DashboardView({
           }}
         />
       </div>
+      </DashboardSurfaceContext.Provider>
     </>
   );
 }

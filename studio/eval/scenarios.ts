@@ -285,7 +285,12 @@ export const SCENARIOS: Scenario[] = [
       },
       {
         say: 'Is there a relationship between the number of seats and the ARR of our enterprise accounts? Add a chart for that.',
-        checks: [widgetKind(/seats/i, ['scatter', 'bubble'])],
+        // A question: the chart may land on the Board (exploring) or on the dashboard
+        checks: [{
+          name: 'a seats vs ARR scatter / bubble (Board or dashboard)',
+          test: (s) => [...(s.dashboard?.widgets ?? []), ...(s.board?.widgets ?? [])]
+            .some((w) => /seats/i.test(w.sql) && (w.kind === 'scatter' || w.kind === 'bubble')),
+        }],
       },
     ],
   },
@@ -334,6 +339,33 @@ export const SCENARIOS: Scenario[] = [
       {
         say: 'Turn this dashboard into an animated motion explainer reel in 9:16 vertical format.',
         checks: [hasMotionScenes(3), { name: '9:16 vertical aspect ratio', test: (s) => s.motion?.aspectRatio === '9:16' }],
+      },
+    ],
+  },
+  {
+    name: 'Board: explore, then pin to the dashboard',
+    steps: [
+      {
+        say: 'How does MRR develop for each pricing plan over the months? Show me that.',
+        checks: [
+          { name: 'the chart lands on the Board', test: (s) => (s.board?.widgets ?? []).some((w) => /plan/i.test(w.sql) && /month/i.test(w.sql)) },
+          { name: 'the dashboard is untouched', test: (s) => s.dashboard == null },
+        ],
+      },
+      {
+        say: 'Good, pin that one to the dashboard.',
+        checks: [
+          { name: 'the dashboard has the pinned chart', test: (s) => (s.dashboard?.widgets ?? []).some((w) => /plan/i.test(w.sql)) },
+          { name: 'the Board chart is marked as promoted', test: (s) => (s.board?.widgets ?? []).some((w) => w.promotedAs != null) },
+          { name: 'the Board keeps its chart', test: (s) => (s.board?.widgets.length ?? 0) >= 1 },
+        ],
+      },
+      {
+        say: 'Which region brings in the most MRR this month?',
+        checks: [
+          { name: 'the new question lands on the Board', test: (s) => (s.board?.widgets ?? []).some((w) => /region/i.test(w.sql)) },
+          { name: 'the dashboard still has one chart', test: (s) => (s.dashboard?.widgets.length ?? 0) === 1 },
+        ],
       },
     ],
   },

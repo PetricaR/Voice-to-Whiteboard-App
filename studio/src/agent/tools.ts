@@ -299,7 +299,7 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'create_dashboard',
-    description: 'Creates an interactive live SQL dashboard on the active page (or a new page with new_page: true) and switches to the Dashboard view. Every widget is backed by an auditable SQL query. ' +
+    description: 'Creates an interactive live SQL dashboard on the active page (or a new page with new_page: true) and switches to the Dashboard view — only when the user asks for a dashboard; a question to explore ("show me…", "why…", "how does … develop") goes to the Board with edit_dashboard target "board". Every widget is backed by an auditable SQL query. ' +
       'The result contains "chartReview": for every widget the rows and columns its query returned, "issues" (the chart is empty, broken or misleading: fix them with edit_dashboard), ' +
       '"advice" (improvements with the exact patch) and "facts" (the numbers the chart shows, for the spoken insight, titles and annotations), plus "layout" notes.',
     behavior: 'NON_BLOCKING',
@@ -316,12 +316,13 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'edit_dashboard',
-    description: 'Incrementally edits the live dashboard on the active page: add, copy, update, remove, move or reorder widgets and filters without disturbing untouched widgets. ' +
+    description: 'Incrementally edits the live dashboard on the active page — or, with target "board", the page\'s Board (work in progress while exploring; made by the first edit that adds to it): add, copy, update, remove, move or reorder widgets and filters without disturbing untouched widgets. ' +
       'Everything not named stays exactly as it is. The result contains "chartReview" (issues, advice and facts) for the widgets it added or changed, ' +
       'and "warnings" for anything that had no effect.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
       summary: str('Short summary of what changed (at most 8 words).'),
+      target: enumOf(['dashboard', 'board'], 'Where the edit goes: "dashboard" (default) or "board" (exploring: questions and findings).'),
       title: str('Optional new dashboard title.'),
       subtitle: str('Optional new subtitle, or "" to clear.'),
       refresh_seconds: { type: 'INTEGER', description: 'Auto-refresh interval in seconds (0, 30, 60, 300).' },
@@ -358,9 +359,23 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'refresh_dashboard',
-    description: 'Re-runs all SQL queries on the active dashboard and returns "chartReview": the facts every chart shows right now (leaders, shares, trends, drop-offs) and any issues. ' +
+    description: 'Re-runs all SQL queries on the active dashboard (or, with target "board", on the Board) and returns "chartReview": the facts every chart shows right now (leaders, shares, trends, drop-offs) and any issues. ' +
       'Use it to answer "what does this dashboard tell us?", "what are the insights?" or "summarize this".',
     behavior: 'NON_BLOCKING',
+    parameters: obj({
+      target: enumOf(['dashboard', 'board'], '"dashboard" (default) or "board".'),
+    }, []),
+  },
+  {
+    name: 'promote_to_dashboard',
+    description: 'Copies charts from the page\'s Board to its dashboard (made when there is none): "pin that", "keep this one", "move these to the dashboard". ' +
+      'A copy keeps its SQL, settings and the filters its query uses; the Board chart stays and is marked as promoted. ' +
+      'The result contains "chartReview" for the copies and "layout" notes for the dashboard.',
+    behavior: 'NON_BLOCKING',
+    parameters: obj({
+      widgets: arrayOf(str('Board chart id or title, or "@selected".'), 'The Board charts to copy, in the order they go on the dashboard.'),
+      summary: str('Short summary (at most 8 words).'),
+    }, ['widgets']),
   },
   {
     name: 'inspect_widget',
@@ -564,11 +579,11 @@ export const TOOL_DECLARATIONS = [
   },
   {
     name: 'switch_page',
-    description: 'Shows a page (tab) and/or switches its active view: live dashboard, motion explainer, diagram canvas, or documentation book.',
+    description: 'Shows a page (tab) and/or switches its active view: live dashboard, Board (work in progress), motion explainer, diagram canvas, or documentation book.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
       page: str('Page id, name, or number ("2"), or "next", "previous", "last"; the current page if omitted.'),
-      view: enumOf(['dashboard', 'motion', 'diagram', 'documentation'], 'What to show on the page: dashboard, motion, diagram, or documentation.'),
+      view: enumOf(['dashboard', 'board', 'motion', 'diagram', 'documentation'], 'What to show on the page: dashboard, board (work in progress), motion, diagram, or documentation.'),
       chapter: str('Id or title of the chapter to open in the documentation.'),
     }, []),
   },

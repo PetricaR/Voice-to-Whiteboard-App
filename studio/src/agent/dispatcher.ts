@@ -36,7 +36,8 @@ import {
 import type { CreateMotionRequest, EditMotionRequest } from '../engine/motion';
 import type { BlockInput, CreateRequest, EditRequest, EditResult } from '../engine/ops';
 import { resolveRef } from '../engine/resolve';
-import { DiagramStore, type ChangeSource } from '../engine/store';
+import { DiagramStore, type ChangeSource, type DashboardSurface } from '../engine/store';
+import { emptyBoard } from '../engine/board';
 import { describeChanges, describeScene } from '../engine/summary';
 import type { ChangeSet } from '../engine/types';
 import type { PageView, Workspace } from '../engine/workspace';
@@ -90,12 +91,15 @@ function pagesLine(ws: Workspace): string {
   return 'pages: ' + ws.pages.map((p, i) => {
     const chapters = p.store.scene.blocks.length;
     const widgets = p.store.scene.dashboard?.widgets.length ?? 0;
+    const boardCharts = p.store.scene.board?.widgets.length ?? 0;
     const motionScenes = p.store.scene.motion?.scenes.length ?? 0;
     const currentViewSuffix = p.id === ws.activeId
       ? p.view === 'doc'
         ? ' (current, its documentation tab is shown)'
         : p.view === 'dashboard'
           ? ' (current, its dashboard tab is shown)'
+          : p.view === 'board'
+            ? ' (current, its board tab is shown)'
           : p.view === 'motion'
             ? ' (current, its motion tab is shown)'
             : ' (current)'
@@ -103,6 +107,7 @@ function pagesLine(ws: Workspace): string {
     return `${p.id} ${JSON.stringify(ws.pageTitle(p))}` +
       currentViewSuffix +
       (widgets > 0 ? ` + dashboard (${widgets} ${widgets === 1 ? 'widget' : 'widgets'})` : '') +
+      (boardCharts > 0 ? ` + board (${boardCharts} ${boardCharts === 1 ? 'chart' : 'charts'})` : '') +
       (motionScenes > 0 ? ` + motion (${motionScenes} ${motionScenes === 1 ? 'scene' : 'scenes'})` : '') +
       (chapters > 0 ? ` + documentation (${chapters} ${chapters === 1 ? 'chapter' : 'chapters'})` : '') +
       (i === 0 && ws.pages.length === 1 ? ' (only page)' : '');
@@ -185,13 +190,24 @@ async function withChartReview(
   ok: boolean,
   only?: Set<string>,
   precomputed?: Map<string, QueryExecutionResult>,
+  surface: DashboardSurface = 'dashboard',
 ): Promise<ToolResponse> {
-  const dash = storeOf(ctx).scene.dashboard;
+  const store = storeOf(ctx);
+  const dash = store.scene[surface];
   if (!ok || !dash) return response;
   const widgets = only ? dash.widgets.filter((w) => only.has(w.id)) : dash.widgets;
+  // The Board is not a dashboard to lay out; what each chart shows stays with it
+  const chartReview = await reviewDashboardCharts(dash, widgets, { precomputed, layout: surface === 'dashboard' });
+  if (surface === 'board') {
+    const insights: Record<string, string> = {};
+    for (const r of chartReview.widgets as { id: string; facts?: string[] }[]) {
+      if (r.facts && r.facts.length > 0) insights[r.id] = r.facts.slice(0, 2).join('; ');
+    }
+    store.noteBoardInsights(insights);
+  }
   // The state goes last: it is what the model reads before its next call
   const { diagram, ...rest } = response;
-  return { ...rest, chartReview: await reviewDashboardCharts(dash, widgets, { precomputed }), diagram };
+  return { ...rest, chartReview, diagram: surface === 'board' ? stateOf(ctx) : diagram };
 }
 
 const asInt = (v: unknown, def: number) => {
@@ -617,10 +633,16 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
 
     case 'edit_dashboard': {
       const store = storeOf(ctx);
-      const req = a as unknown as EditDashboardRequest;
-      const curDash = store.scene.dashboard;
+      const surface: DashboardSurface = str(a.target)?.toLowerCase() === 'board' ? 'board' : 'dashboard';
+      const { target: _target, ...rawReq } = a;
+      const req = rawReq as unknown as EditDashboardRequest;
+      const curDash = surface === 'board' ? (store.scene.board ?? emptyBoard(store.scene.dashboard?.defaultSource)) : store.scene.dashboard;
       if (!curDash) {
-        return { ok: false, errors: ['No dashboard on this page yet. Call create_dashboard first.'], diagram: stateOf(ctx) };
+        return { ok: false, errors: ['No dashboard on this page yet. Call create_dashboard first (or edit_dashboard with target "board" to explore on the Board).'], diagram: stateOf(ctx) };
+      }
+      // A Board chart remembers the question it answers
+      if (surface === 'board' && ctx.request && Array.isArray(req.add_widgets)) {
+        req.add_widgets = req.add_widgets.map((w) => (w && typeof w === 'object' && !w.asked_as && !w.askedAs ? { ...w, asked_as: ctx.request } : w));
       }
       const params = filterParamsOf(curDash);
       const sqlErrors: string[] = [];
@@ -646,8 +668,8 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       }
       if (sqlErrors.length > 0) return { ok: false, errors: sqlErrors, diagram: stateOf(ctx) };
 
-      const res = store.editDashboard(req, { ...meta, label: str(req.summary) });
-      if (res.ok) ws?.showView('dashboard');
+      const res = store.editDashboard(req, { ...meta, label: str(req.summary) }, surface);
+      if (res.ok) ws?.showView(surface);
       // Only what this edit touched is reviewed; a changed filter value changes every chart
       const touched = new Set([...res.changes.addedWidgets, ...res.changes.updatedWidgets]);
       const filtersChanged =
@@ -660,14 +682,45 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
         res.ok,
         filtersChanged ? undefined : touched,
         filtersChanged ? undefined : precomputed,
+        surface,
       );
     }
 
-    case 'refresh_dashboard': {
-      const dash = storeOf(ctx).scene.dashboard;
-      if (!dash) return { ok: false, errors: ['No dashboard on the current page.'], diagram: stateOf(ctx) };
+    case 'promote_to_dashboard': {
+      const store = storeOf(ctx);
+      const refs = Array.isArray(a.widgets) ? a.widgets.map(String).filter(Boolean) : typeof a.widgets === 'string' ? [a.widgets] : [];
+      const res = store.promoteToDashboard(refs, { ...meta, label: str(a.summary) });
+      if (!res.ok || res.promoted.length === 0) {
+        return {
+          ok: false,
+          errors: res.errors.length > 0 ? res.errors : ['Nothing was promoted.'],
+          ...(res.warnings.length > 0 ? { warnings: res.warnings } : {}),
+          diagram: stateOf(ctx),
+        };
+      }
       ws?.showView('dashboard');
-      const chartReview = await reviewDashboardCharts(dash);
+      const response: ToolResponse = {
+        ok: true,
+        result: res.promoted.map(([from, to]) => (from === to ? `${from} copied to the dashboard` : `${from} copied to the dashboard as ${to}`)).join('; ') +
+          (res.createdDashboard ? ' (the page had no dashboard: it was made)' : '') +
+          (res.addedFilters.length > 0 ? `; the dashboard got the filters ${res.addedFilters.join(', ')}` : ''),
+        ...(res.warnings.length > 0 ? { warnings: res.warnings } : {}),
+        ...(res.notes.length > 0 ? { notes: res.notes } : {}),
+        diagram: stateOf(ctx),
+      };
+      const dash = store.scene.dashboard!;
+      const copies = new Set(res.promoted.map(([, to]) => to));
+      const { diagram, ...rest } = response;
+      const chartReview = await reviewDashboardCharts(dash, dash.widgets.filter((w) => copies.has(w.id)));
+      return { ...rest, chartReview, diagram };
+    }
+
+    case 'refresh_dashboard': {
+      const surface: DashboardSurface = str(a.target)?.toLowerCase() === 'board' ? 'board' : 'dashboard';
+      const dash = storeOf(ctx).scene[surface];
+      if (!dash) return { ok: false, errors: [surface === 'board' ? 'This page has no Board yet.' : 'No dashboard on the current page.'], diagram: stateOf(ctx) };
+      ws?.showView(surface);
+      const chartReview = await reviewDashboardCharts(dash, dash.widgets, { layout: surface === 'dashboard' });
       const titles = new Map(dash.widgets.map((w) => [w.id, w.title]));
       chartReview.widgets = (chartReview.widgets as Record<string, unknown>[]).map((r) => ({ title: titles.get(r.id as string), ...r }));
       chartReview.next = 'Answer from the facts (numbers exactly as given), the most important insight first. Fix issues only if the user asks to improve the dashboard.';
@@ -988,6 +1041,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       if (viewArg != null) {
         if (/^doc/.test(viewArg)) targetView = 'doc';
         else if (/^dash/.test(viewArg)) targetView = 'dashboard';
+        else if (/^board|^explor|^scratch/.test(viewArg)) targetView = 'board';
         else if (/^motion|^video|^anim/.test(viewArg)) targetView = 'motion';
         else targetView = 'diagram';
       } else if (docRef) {

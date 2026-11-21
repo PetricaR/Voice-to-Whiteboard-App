@@ -521,6 +521,9 @@ export function App({
                     onClearInspectorRequest={() => setInspectorWidgetRequest(null)}
                   />
                 )}
+                {activeView === 'board' && (
+                  <DashboardView key={`board-${activeId}`} surface="board" />
+                )}
                 {activeView === 'motion' && (
                   <MotionView
                     key={`motion-${activeId}`}

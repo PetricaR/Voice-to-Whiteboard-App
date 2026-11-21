@@ -22,6 +22,11 @@ import { layoutScene } from './layout';
 import { cloneScene } from './scene';
 import { describeChanges, isEmptyChange } from './summary';
 import { emptyChanges, emptyScene, isBlankScene, type ChangeSet, type Scene } from './types';
+import { emptyBoard, promoteWidgets } from './board';
+import type { DashboardSpec } from './dashboard';
+
+/** Where a dashboard edit goes: the page's dashboard, or its Board (work in progress). */
+export type DashboardSurface = 'dashboard' | 'board';
 
 export type ChangeSource = 'voice' | 'text' | 'manual' | 'system';
 
@@ -115,6 +120,7 @@ export class DiagramStore {
       scene.nodes.some((n) => n.id === id) ||
       scene.blocks.some((b) => b.id === id) ||
       (scene.dashboard?.widgets.some((w) => w.id === id) ?? false) ||
+      (scene.board?.widgets.some((w) => w.id === id) ?? false) ||
       (scene.motion?.scenes.some((s) => s.id === id || s.layers.some((l) => l.id === id)) ?? false),
     );
   }
@@ -195,8 +201,8 @@ export class DiagramStore {
     return result;
   }
 
-  /** Creates or replaces the live SQL dashboard on this page. */
-  createDashboard(req: CreateDashboardRequest, meta: ChangeMeta): EditResult {
+  /** Creates or replaces the live SQL dashboard (or the Board) on this page. */
+  createDashboard(req: CreateDashboardRequest, meta: ChangeMeta, surface: DashboardSurface = 'dashboard'): EditResult {
     const prev = this.scene;
     const res = buildDashboard(req);
     if (!res.ok) {
@@ -210,10 +216,15 @@ export class DiagramStore {
       };
     }
     const next = cloneScene(prev);
-    next.dashboard = res.dashboard;
     next.version = prev.version + 1;
-    if (!next.title || req.replace === true) next.title = res.dashboard.title;
-    if (!next.subtitle && res.dashboard.subtitle) next.subtitle = res.dashboard.subtitle;
+    if (surface === 'board') {
+      // The Board never refreshes by itself and does not name the page
+      next.board = { ...res.dashboard, refreshSeconds: 0 };
+    } else {
+      next.dashboard = res.dashboard;
+      if (!next.title || req.replace === true) next.title = res.dashboard.title;
+      if (!next.subtitle && res.dashboard.subtitle) next.subtitle = res.dashboard.subtitle;
+    }
     const changes = emptyChanges();
     changes.addedWidgets = res.addedWidgets;
     this.selection = [];
@@ -221,8 +232,8 @@ export class DiagramStore {
       next,
       {
         ...meta,
-        origin: isBlankScene(prev) || req.replace === true,
-        label: meta.label ?? `Created dashboard “${res.dashboard.title}”`,
+        origin: surface === 'dashboard' && (isBlankScene(prev) || req.replace === true),
+        label: meta.label ?? (surface === 'board' ? 'Started the Board' : `Created dashboard “${res.dashboard.title}”`),
       },
       changes,
     );
@@ -230,9 +241,13 @@ export class DiagramStore {
     return { ok: true, scene: next, changes, errors: [], warnings: res.warnings, notes: res.notes };
   }
 
-  /** Incrementally updates widgets/filters/settings on the active dashboard. */
-  editDashboard(req: EditDashboardRequest, meta: ChangeMeta): EditResult {
+  /**
+   * Incrementally updates widgets/filters/settings on the page's dashboard, or
+   * on its Board (made by the first edit that adds to it).
+   */
+  editDashboard(req: EditDashboardRequest, meta: ChangeMeta, surface: DashboardSurface = 'dashboard'): EditResult {
     const prev = this.scene;
+    if (surface === 'board') return this.editBoard(req, meta);
     if (!prev.dashboard) {
       return {
         ok: false,
@@ -275,6 +290,82 @@ export class DiagramStore {
     this.push(next, { ...meta, label: meta.label ?? req.summary ?? 'Updated dashboard' }, changes);
     this.emit();
     return { ok: true, scene: next, changes, errors: [], warnings: res.warnings, notes: res.notes };
+  }
+
+  private editBoard(req: EditDashboardRequest, meta: ChangeMeta): EditResult {
+    const prev = this.scene;
+    const base: DashboardSpec = prev.board ?? emptyBoard(prev.dashboard?.defaultSource);
+    const res = applyDashboardEdit(base, { ...req, refresh_seconds: undefined }, this.selection);
+    if (!res.ok) {
+      return { ok: false, scene: prev, changes: emptyChanges(), errors: res.errors, warnings: res.warnings, notes: res.notes };
+    }
+    const next = cloneScene(prev);
+    next.board = { ...res.dashboard, refreshSeconds: 0 };
+    next.version = prev.version + 1;
+    const changes = emptyChanges();
+    changes.addedWidgets = res.addedWidgets;
+    changes.updatedWidgets = res.updatedWidgets;
+    changes.removedWidgets = res.removedWidgets;
+    if (isEmptyChange(changes) && JSON.stringify(base.filters) !== JSON.stringify(res.dashboard.filters) && res.dashboard.widgets[0]) {
+      changes.updatedWidgets = [res.dashboard.widgets[0].id];
+    }
+    this.push(next, { ...meta, label: meta.label ?? req.summary ?? 'Updated the Board' }, changes);
+    this.emit();
+    return { ok: true, scene: next, changes, errors: [], warnings: res.warnings, notes: res.notes };
+  }
+
+  /**
+   * Copies Board charts to the page's dashboard (made when there is none), in
+   * one step of the history, so one undo takes it back.
+   */
+  promoteToDashboard(refs: string[], meta: ChangeMeta): EditResult & { promoted: [string, string][]; addedFilters: string[]; createdDashboard: boolean } {
+    const prev = this.scene;
+    const none = { promoted: [] as [string, string][], addedFilters: [] as string[], createdDashboard: false };
+    if (!prev.board || prev.board.widgets.length === 0) {
+      return { ok: false, scene: prev, changes: emptyChanges(), errors: ['This page has nothing on its Board yet.'], warnings: [], notes: [], ...none };
+    }
+    const res = promoteWidgets(prev.board, prev.dashboard, refs, { selection: this.selection, title: prev.title });
+    if (!res.ok || res.promoted.length === 0) {
+      return { ok: res.ok, scene: prev, changes: emptyChanges(), errors: res.errors, warnings: res.warnings, notes: res.notes, ...none };
+    }
+    const next = cloneScene(prev);
+    next.board = res.board;
+    next.dashboard = res.dashboard;
+    next.version = prev.version + 1;
+    if (!next.title) next.title = res.dashboard.title;
+    const changes = emptyChanges();
+    changes.addedWidgets = res.promoted.map(([, to]) => to);
+    changes.updatedWidgets = res.promoted.map(([from]) => from);
+    const n = res.promoted.length;
+    this.push(next, {
+      ...meta,
+      label: meta.label ?? (n === 1 ? `Added “${res.dashboard.widgets.find((w) => w.id === res.promoted[0][1])?.title}” to the dashboard` : `Added ${n} charts to the dashboard`),
+    }, changes);
+    this.emit();
+    return {
+      ok: true, scene: next, changes, errors: res.errors, warnings: res.warnings, notes: res.notes,
+      promoted: res.promoted, addedFilters: res.addedFilters, createdDashboard: res.createdDashboard,
+    };
+  }
+
+  /**
+   * Keeps what Board charts showed (their insight) with them, in the current
+   * step of the history: it belongs to the change that made the charts.
+   */
+  noteBoardInsights(insights: Record<string, string>): void {
+    const entry = this.entries[this.index];
+    const board = entry.scene.board;
+    if (board == null) return;
+    let changed = false;
+    const widgets = board.widgets.map((w) => {
+      const text = insights[w.id]?.trim();
+      if (!text || text === w.insight) return w;
+      changed = true;
+      return { ...w, insight: text.slice(0, 600) };
+    });
+    if (!changed) return;
+    entry.scene = { ...entry.scene, board: { ...board, widgets } };
+    this.emit();
   }
 
   /** Creates or synthesizes a programmatic Motion Explainer on this page. */

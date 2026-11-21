@@ -1,6 +1,6 @@
 # Plan: Projects and Board
 
-Status: Phases 1–3 done · 2026-11-21
+Status: Phases 1–4 done · 2026-11-21
 
 ## Goal
 
@@ -129,6 +129,7 @@ As reviewed earlier:
 - **Agent:** add `target: 'board' | 'dashboard'` to `create_dashboard`, `edit_dashboard` and `refresh_dashboard`, plus a new op `promote_widgets: string[]` (it accepts `@selected`).
   - Routing rule: questions and exploration ("why…", "show me…") go to the Board. "Build / update the dashboard" goes to the Dashboard.
 - **Promotion:** copy the widget, give it a new id if needed (reuse the `copy_of` logic), and bring over the filters its SQL uses. If a filter is missing on the Dashboard, add it; if that is not possible, inline its current value. Insert the widget after the last promoted one, then run `reviewDashboardLayout`. The whole promotion is **one undo step**.
+- *As built:* the agent puts findings on the Board with `edit_dashboard` + `target: "board"` (the first edit makes the Board) rather than a `target` on `create_dashboard`; `refresh_dashboard` takes `target` too, and pinning is a separate tool, `promote_to_dashboard`. The Board's charts are still queried when the Board is shown (to draw them); "frozen" means it never refreshes on a timer. A filter the copy needs is added to the dashboard unless the dashboard already has a filter on that parameter (it keeps its own value); inlining was not needed.
 - **Cost:** the Board never auto-refreshes. Results are frozen with the time they ran and re-run only on request. Save insight facts, not result rows.
 - **Excluded:** exports (HTML, Grafana, Vega-Lite, SQL), `create_motion from_current_page` and the docs ignore the Board.
 - **UI:** a new `PageView` `'board'`. Cards are ordered by time, with the question as each card's heading and its insight line. Each card has **Pin to dashboard** next to its SQL button, and several cards can be selected and promoted at once.

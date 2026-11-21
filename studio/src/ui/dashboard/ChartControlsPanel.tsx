@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { useDashboardSurface } from './surface';
 import {
   CHART_CATEGORIES,
   CHART_CATALOG,
@@ -52,6 +53,7 @@ export function ChartControlsPanel({
   availableColumns: string[];
 }) {
   const { store, notify } = useStudio();
+  const surface = useDashboardSurface();
   const [kindFilter, setKindFilter] = useState('');
   const [showSpecialFields, setShowSpecialFields] = useState(false);
 
@@ -76,6 +78,7 @@ export function ChartControlsPanel({
         update_widgets: [{ id: widget.id, ...patch }],
       },
       { source: 'manual', label },
+      surface,
     );
   };
 

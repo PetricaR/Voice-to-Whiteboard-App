@@ -18,7 +18,7 @@ export interface Viewport {
 }
 
 /** What a page shows: its live dashboard, motion explainer, diagram (canvas), or documentation (book). */
-export type PageView = 'diagram' | 'doc' | 'dashboard' | 'motion';
+export type PageView = 'diagram' | 'doc' | 'dashboard' | 'board' | 'motion';
 
 export interface Page {
   id: string;
@@ -94,7 +94,7 @@ export class Workspace {
     if (saved != null && saved.pages.length > 0) {
       for (const p of saved.pages) {
         const page = this.attach(p.id, new DiagramStore(p.scene));
-        if (p.view === 'doc' || p.view === 'dashboard' || p.view === 'motion') page.view = p.view;
+        if (p.view === 'doc' || p.view === 'dashboard' || p.view === 'board' || p.view === 'motion') page.view = p.view;
         if (typeof p.chapter === 'string') page.chapter = p.chapter;
         const n = /^page_(\d+)$/.exec(p.id);
         if (n) this.pageCounter = Math.max(this.pageCounter, Number(n[1]));

@@ -33,6 +33,7 @@ export function describeScene(scene: Scene, selection: string[] = []): string {
     scene.groups.length === 0 &&
     scene.blocks.length === 0 &&
     scene.dashboard == null &&
+    scene.board == null &&
     scene.motion == null
   ) {
     return `version ${scene.version} · empty canvas (no diagram yet)` + (scene.title ? ` · title ${q(scene.title)}` : '');
@@ -44,9 +45,13 @@ export function describeScene(scene: Scene, selection: string[] = []): string {
     ` · ${scene.nodes.length} nodes, ${scene.edges.length} edges` +
     (scene.blocks.length > 0 ? `, ${scene.blocks.length} documentation ${scene.blocks.length === 1 ? 'chapter' : 'chapters'}` : '') +
     (scene.dashboard ? `, ${scene.dashboard.widgets.length} dashboard ${scene.dashboard.widgets.length === 1 ? 'widget' : 'widgets'}` : '') +
+    (scene.board ? `, ${scene.board.widgets.length} board ${scene.board.widgets.length === 1 ? 'chart' : 'charts'}` : '') +
     (scene.motion ? `, ${scene.motion.scenes.length} motion ${scene.motion.scenes.length === 1 ? 'scene' : 'scenes'}` : ''));
   if (scene.dashboard) {
     lines.push(describeDashboard(scene.dashboard));
+  }
+  if (scene.board) {
+    lines.push(describeDashboard(scene.board, 'board (work in progress; promote_to_dashboard copies charts to the dashboard)'));
   }
   if (scene.motion) {
     lines.push(describeMotion(scene.motion));
@@ -82,6 +87,7 @@ export function describeScene(scene: Scene, selection: string[] = []): string {
     scene.nodes.some((n) => n.id === id) ||
     scene.blocks.some((b) => b.id === id) ||
     (scene.dashboard?.widgets.some((w) => w.id === id) ?? false) ||
+    (scene.board?.widgets.some((w) => w.id === id) ?? false) ||
     (scene.motion?.scenes.some((s) => s.id === id || s.layers.some((l) => l.id === id)) ?? false),
   );
   lines.push(validSelection.length > 0 ? `selected: ${validSelection.join(', ')}` : 'selected: nothing');

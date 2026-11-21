@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { useDashboardSurface } from './surface';
 import {
   CHART_CATEGORIES,
   CHART_CATALOG,
@@ -20,6 +21,7 @@ export function ChartGalleryModal({
   onWidgetAdded?: (widgetId: string) => void;
 }) {
   const { store, notify, requireSampleData } = useStudio();
+  const surface = useDashboardSurface();
   const dialogRef = useRef<HTMLDialogElement>(null);
   const [selectedCategory, setSelectedCategory] = useState<'all' | ChartCategoryId>('all');
   const [search, setSearch] = useState('');
@@ -81,13 +83,15 @@ export function ChartGalleryModal({
       id: newId,
     };
 
-    if (store.scene.dashboard) {
+    // The Board is made by the first chart added to it
+    if (store.scene.dashboard || surface === 'board') {
       const res = store.editDashboard(
         {
           summary: `Added ${meta.label} chart`,
           add_widgets: [widgetPayload],
         },
         { source: 'manual', label: `Added ${meta.label}` },
+        surface,
       );
       if (res.ok) {
         notify(`Added “${sample.title}” (${meta.label}) to dashboard`);

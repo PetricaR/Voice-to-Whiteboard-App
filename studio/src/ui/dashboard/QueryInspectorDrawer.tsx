@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { useDashboardSurface } from './surface';
 import { executeSqlQuery, type QueryExecutionResult } from '../../data/sqlEngine';
 import { adviseChartStorytelling, getChartMeta } from '../../engine/chartCatalog';
 import { filterParamsOf, type DashboardSpec, type DashboardWidget } from '../../engine/dashboard';
@@ -40,6 +41,7 @@ export function QueryInspectorDrawer({
   onResultUpdated: (widgetId: string, res: QueryExecutionResult) => void;
 }) {
   const { store, agent, ensureCanTalk, notify } = useStudio();
+  const surface = useDashboardSurface();
   const dialogRef = useRef<HTMLDialogElement>(null);
   // Retain the last inspected widget/datum during the exit fade-out so content never blanks mid-transition
   const [retainedWidget, setRetainedWidget] = useState<DashboardWidget | null>(widget);
@@ -181,6 +183,7 @@ export function QueryInspectorDrawer({
           update_widgets: [{ id: activeWidget.id, sql: trimmed }],
         },
         { source: 'manual', label: `Updated SQL of “${activeWidget.title}”` },
+        surface,
       );
       if (edit.ok) {
         setPreview(res);
@@ -288,6 +291,7 @@ export function QueryInspectorDrawer({
                           update_widgets: [{ id: activeWidget.id, ...adv.quickFix!.patch }],
                         },
                         { source: 'manual', label: `${adv.quickFix!.label} (“${activeWidget.title}”)` },
+                        surface,
                       );
                       notify(`Applied: ${adv.quickFix!.label}`);
                     }}

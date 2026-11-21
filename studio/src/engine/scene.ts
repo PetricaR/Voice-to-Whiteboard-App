@@ -38,6 +38,7 @@ export function cloneScene(scene: Scene): Scene {
       rows: b.rows ? b.rows.map((r) => [...r]) : undefined,
     })),
     ...(scene.dashboard ? { dashboard: cloneDashboard(scene.dashboard) } : {}),
+    ...(scene.board ? { board: cloneDashboard(scene.board) } : {}),
     ...(scene.motion ? { motion: cloneMotion(scene.motion) } : {}),
   };
 }
