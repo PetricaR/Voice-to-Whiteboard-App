@@ -331,8 +331,12 @@ export function DashboardView({
     prevRectsRef.current = nextRects;
   }, [layoutSignature]);
 
+  // Each run of the queries; only the latest may show its results
+  const runGenRef = useRef(0);
+
   const runAllQueries = useCallback(async () => {
     if (!liveDashboard) return;
+    const gen = ++runGenRef.current;
     const params = filterParamsOf(liveDashboard);
     const widgets = liveDashboard.widgets;
     setLoading(Object.fromEntries(widgets.map((w) => [w.id, true])));
@@ -355,6 +359,9 @@ export function DashboardView({
       }),
     );
 
+    // A newer run started meanwhile (a filter changed while a warehouse was still answering):
+    // the older results must not replace it on screen under the new filter
+    if (gen !== runGenRef.current) return;
     setResults(nextResults);
     setErrors(nextErrors);
     setLoading({});

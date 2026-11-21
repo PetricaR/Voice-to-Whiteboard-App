@@ -532,6 +532,33 @@ function snakeToCamelKey(k: string): string {
 
 const clampNum = (n: number, min: number, max: number) => Math.max(min, Math.min(max, n));
 
+/**
+ * A trimmed, non-empty string from a model's argument, or undefined. Tool
+ * arguments are only as typed as the model makes them: a missing title or a
+ * number where a string belongs must not crash the whole dashboard.
+ */
+const text = (v: unknown): string | undefined => (typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined);
+
+/** One field name or a list of them: `"revenue"` means `["revenue"]`, never its letters. */
+const fieldList = (v: unknown): string[] | undefined => {
+  const list = typeof v === 'string' ? [v] : Array.isArray(v) ? v : undefined;
+  return list?.map((s) => String(s).trim()).filter(Boolean);
+};
+
+/** The auto-refresh choices the dashboard offers: manual, 30 s, 1 min, 5 min. */
+const REFRESH_CHOICES = [0, 30, 60, 300] as const;
+
+/**
+ * The refresh interval as one of the offered choices, or undefined for a value
+ * that is not a number. A request for "every second" would re-run every query
+ * (and bill every warehouse scan) once a second; it becomes 30 s.
+ */
+export function normalizeRefreshSeconds(v: unknown): number | undefined {
+  if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined;
+  if (v === 0) return 0;
+  return REFRESH_CHOICES.slice(1).reduce((best, c) => (Math.abs(c - v) < Math.abs(best - v) ? c : best), 30);
+}
+
 /** Normalizes camelCase or snake_case chart element properties into a clean `ChartElementConfig`. */
 export function normalizeChartConfig(
   raw: unknown,
@@ -825,34 +852,38 @@ const EXTRA_FIELD_PAIRS: [keyof DashboardWidget, keyof DashboardWidgetInput, key
 
 function normalizeWidget(input: DashboardWidgetInput, defaultSource: string, usedIds: Set<string>, index: number): DashboardWidget {
   const kind: WidgetKind = WIDGET_KINDS.includes(input.kind) ? input.kind : 'bar';
-  const baseId = slugId(input.id || input.title, `${kind}_${index + 1}`);
+  const title = text(input.title);
+  const baseId = slugId(text(input.id) ?? title ?? '', `${kind}_${index + 1}`);
   let id = baseId;
   let n = 2;
   while (usedIds.has(id)) id = `${baseId}_${n++}`;
   usedIds.add(id);
 
   const color = input.color && input.color !== 'none' && COLORS.includes(input.color) ? input.color : undefined;
-  const xField = input.xField ?? input.x_field;
-  const yFields = input.yFields ?? input.y_fields;
-  const seriesField = input.seriesField ?? input.series_field;
-  const comparisonField = input.comparisonField ?? input.comparison_field;
+  const xField = text(input.xField ?? input.x_field);
+  const yFields = fieldList(input.yFields ?? input.y_fields);
+  const seriesField = text(input.seriesField ?? input.series_field);
+  const comparisonField = text(input.comparisonField ?? input.comparison_field);
+  const subtitle = text(input.subtitle);
+  const unit = text(input.unit);
+  const explanation = text(input.explanation);
   const chartConfig = normalizeChartConfig(input.chartConfig ?? input.chart_config);
 
   const widget: DashboardWidget = {
     id,
-    title: input.title.trim() || 'Untitled Metric',
-    ...(input.subtitle?.trim() ? { subtitle: input.subtitle.trim() } : {}),
+    title: title ?? 'Untitled Metric',
+    ...(subtitle ? { subtitle } : {}),
     kind,
-    source: (input.source?.trim() || defaultSource || 'local'),
-    sql: input.sql.trim(),
-    ...(xField?.trim() ? { xField: xField.trim() } : {}),
-    ...(Array.isArray(yFields) && yFields.length > 0 ? { yFields: yFields.map((s) => String(s).trim()).filter(Boolean) } : {}),
-    ...(seriesField?.trim() ? { seriesField: seriesField.trim() } : {}),
+    source: text(input.source) ?? (defaultSource || 'local'),
+    sql: (typeof input.sql === 'string' ? input.sql : '').trim(),
+    ...(xField ? { xField } : {}),
+    ...(yFields && yFields.length > 0 ? { yFields } : {}),
+    ...(seriesField ? { seriesField } : {}),
     ...(input.format && VALUE_FORMATS.includes(input.format) ? { format: input.format } : {}),
-    ...(comparisonField?.trim() ? { comparisonField: comparisonField.trim() } : {}),
-    ...(input.unit?.trim() ? { unit: input.unit.trim() } : {}),
+    ...(comparisonField ? { comparisonField } : {}),
+    ...(unit ? { unit } : {}),
     colSpan: normalizeColSpan(input.colSpan ?? input.col_span, kind),
-    ...(input.explanation?.trim() ? { explanation: input.explanation.trim() } : {}),
+    ...(explanation ? { explanation } : {}),
     ...(color ? { color } : {}),
     ...(chartConfig ? { chartConfig } : {}),
   };
@@ -868,8 +899,8 @@ function normalizeWidget(input: DashboardWidgetInput, defaultSource: string, use
 }
 
 function normalizeFilter(input: DashboardFilterInput, usedIds: Set<string>, index: number): DashboardFilter {
-  const param = slugId(input.param || input.id || input.label, `param_${index + 1}`);
-  const baseId = slugId(input.id || `filter_${param}`, `filter_${index + 1}`);
+  const param = slugId(text(input.param) ?? text(input.id) ?? text(input.label) ?? '', `param_${index + 1}`);
+  const baseId = slugId(text(input.id) ?? `filter_${param}`, `filter_${index + 1}`);
   let id = baseId;
   let n = 2;
   while (usedIds.has(id)) id = `${baseId}_${n++}`;
@@ -880,7 +911,7 @@ function normalizeFilter(input: DashboardFilterInput, usedIds: Set<string>, inde
   const defaultValue = input.value !== undefined ? String(input.value) : (options?.[0] ?? 'ALL');
   return {
     id,
-    label: input.label?.trim() || param,
+    label: text(input.label) ?? param,
     param,
     kind: input.kind === 'text' ? 'text' : 'select',
     ...(options ? { options } : {}),
@@ -915,7 +946,7 @@ export function normalizeDashboard(raw: any): DashboardSpec | undefined {
     title: typeof raw.title === 'string' ? raw.title : 'Live Dashboard',
     ...(typeof raw.subtitle === 'string' && raw.subtitle ? { subtitle: raw.subtitle } : {}),
     defaultSource,
-    refreshSeconds: typeof raw.refreshSeconds === 'number' && raw.refreshSeconds >= 0 ? raw.refreshSeconds : 0,
+    refreshSeconds: normalizeRefreshSeconds(raw.refreshSeconds) ?? 0,
     filters,
     widgets,
   };
@@ -944,7 +975,7 @@ export function buildDashboard(req: CreateDashboardRequest): DashboardOpResult {
   if (errors.length > 0) {
     return {
       ok: false,
-      dashboard: { title: req.title || '', defaultSource: 'local', refreshSeconds: 0, filters: [], widgets: [] },
+      dashboard: { title: text(req.title) ?? '', defaultSource: 'local', refreshSeconds: 0, filters: [], widgets: [] },
       addedWidgets: [],
       updatedWidgets: [],
       removedWidgets: [],
@@ -954,17 +985,19 @@ export function buildDashboard(req: CreateDashboardRequest): DashboardOpResult {
     };
   }
 
-  const defaultSource = req.source?.trim() || 'local';
+  const defaultSource = text(req.source) ?? 'local';
   const usedW = new Set<string>();
   const usedF = new Set<string>();
-  const filters = (req.filters ?? []).map((f, i) => normalizeFilter(f, usedF, i));
+  const filters = (Array.isArray(req.filters) ? req.filters : [])
+    .filter((f) => f != null && typeof f === 'object')
+    .map((f, i) => normalizeFilter(f, usedF, i));
   const widgets = req.widgets.map((w, i) => normalizeWidget(w, defaultSource, usedW, i));
 
   const dashboard: DashboardSpec = {
-    title: req.title?.trim() || 'Live Dashboard',
-    ...(req.subtitle?.trim() ? { subtitle: req.subtitle.trim() } : {}),
+    title: text(req.title) ?? 'Live Dashboard',
+    ...(text(req.subtitle) ? { subtitle: text(req.subtitle) } : {}),
     defaultSource,
-    refreshSeconds: typeof req.refresh_seconds === 'number' && req.refresh_seconds >= 0 ? req.refresh_seconds : 0,
+    refreshSeconds: normalizeRefreshSeconds(req.refresh_seconds) ?? 0,
     filters,
     widgets,
   };
@@ -1024,7 +1057,10 @@ function ignoredChartSettings(patch: unknown, merged: ChartElementConfig | undef
   return out;
 }
 
-function resolveWidgetRef(ref: string, widgets: DashboardWidget[], selection: string[]): Resolution<DashboardWidget> {
+function resolveWidgetRef(ref: unknown, widgets: DashboardWidget[], selection: string[]): Resolution<DashboardWidget> {
+  if (typeof ref !== 'string' || ref.trim() === '') {
+    return { error: 'A widget reference is missing: give the widget id (or its title).' };
+  }
   if (ref === '@selected' && selection.length > 0) {
     const found = widgets.find((w) => selection.includes(w.id));
     if (found) return { item: found, note: `"@selected" → ${found.id}` };
@@ -1055,9 +1091,8 @@ export function applyDashboardEdit(
     if (req.subtitle.trim() === '') delete next.subtitle;
     else next.subtitle = req.subtitle.trim();
   }
-  if (typeof req.refresh_seconds === 'number' && req.refresh_seconds >= 0) {
-    next.refreshSeconds = req.refresh_seconds;
-  }
+  const refresh = normalizeRefreshSeconds(req.refresh_seconds);
+  if (refresh !== undefined) next.refreshSeconds = refresh;
 
   // Remove widgets
   for (const rawRef of req.remove_widgets ?? []) {
@@ -1074,6 +1109,7 @@ export function applyDashboardEdit(
 
   // Update widgets
   for (const patch of req.update_widgets ?? []) {
+    if (patch == null || typeof patch !== 'object') continue;
     const r = resolveWidgetRef(patch.id, next.widgets, selection);
     const target = 'widget' in (r.item ?? {}) ? (r.item as any).widget as DashboardWidget : (r.item as DashboardWidget | undefined);
     if (!target) {
@@ -1088,30 +1124,33 @@ export function applyDashboardEdit(
     if (patch.format !== undefined && !VALUE_FORMATS.includes(patch.format)) {
       warnings.push(`${target.id}: format "${patch.format}" does not exist (${VALUE_FORMATS.join(', ')}).`);
     }
-    if (patch.title !== undefined && patch.title.trim()) target.title = patch.title.trim();
-    if (patch.subtitle !== undefined) {
+    if (text(patch.title)) target.title = text(patch.title)!;
+    if (typeof patch.subtitle === 'string') {
       if (patch.subtitle.trim() === '') delete target.subtitle;
       else target.subtitle = patch.subtitle.trim();
     }
     if (patch.kind !== undefined && WIDGET_KINDS.includes(patch.kind)) target.kind = patch.kind;
-    if (patch.source !== undefined && patch.source.trim()) target.source = patch.source.trim();
-    if (patch.sql !== undefined && patch.sql.trim()) target.sql = patch.sql.trim();
+    if (text(patch.source)) target.source = text(patch.source)!;
+    if (text(patch.sql)) target.sql = text(patch.sql)!;
     const xF = patch.xField ?? patch.x_field;
-    if (xF !== undefined) {
-      if (xF === '') delete target.xField;
-      else target.xField = xF;
+    if (typeof xF === 'string') {
+      if (xF.trim() === '') delete target.xField;
+      else target.xField = xF.trim();
     }
     const yF = patch.yFields ?? patch.y_fields;
-    if (yF !== undefined) target.yFields = yF.length > 0 ? [...yF] : undefined;
+    if (yF !== undefined && yF !== null) {
+      const list = fieldList(yF) ?? [];
+      target.yFields = list.length > 0 ? list : undefined;
+    }
     const sF = patch.seriesField ?? patch.series_field;
-    if (sF !== undefined) {
-      if (sF === '') delete target.seriesField;
-      else target.seriesField = sF;
+    if (typeof sF === 'string') {
+      if (sF.trim() === '') delete target.seriesField;
+      else target.seriesField = sF.trim();
     }
     for (const [targetKey, camelKey, snakeKey] of EXTRA_FIELD_PAIRS) {
-      const val = (patch[camelKey] ?? patch[snakeKey]) as string | undefined;
-      if (val !== undefined) {
-        if (val === '') delete (target as unknown as Record<string, unknown>)[targetKey];
+      const val = patch[camelKey] ?? patch[snakeKey];
+      if (typeof val === 'string') {
+        if (val.trim() === '') delete (target as unknown as Record<string, unknown>)[targetKey];
         else (target as unknown as Record<string, unknown>)[targetKey] = val.trim();
       }
     }
@@ -1164,6 +1203,7 @@ export function applyDashboardEdit(
   // Add widgets
   const usedIds = new Set(next.widgets.map((w) => w.id));
   for (const raw of req.add_widgets ?? []) {
+    if (raw == null || typeof raw !== 'object') continue;
     let add = raw as DashboardWidgetInput & { after?: string; copy_of?: string };
     if (raw.copy_of) {
       const r = resolveWidgetRef(raw.copy_of, next.widgets, selection);
@@ -1178,17 +1218,17 @@ export function applyDashboardEdit(
         ...base,
         ...own,
         id: raw.id ?? '',
-        title: raw.title?.trim() || `${r.item.title} (copy)`,
+        title: text(raw.title) ?? `${r.item.title} (copy)`,
         chart_config: (cfgPatch !== undefined ? normalizeChartConfig(cfgPatch, r.item.chartConfig) : base.chart_config) as ChartElementConfigInput,
         chartConfig: undefined,
         after: raw.after ?? r.item.id,
       } as typeof add;
     }
-    if (!add.sql || !add.sql.trim()) {
+    if (!text(add.sql)) {
       errors.push(`New widget "${add.title || 'unnamed'}" requires a non-empty SQL query (or copy_of an existing widget).`);
       continue;
     }
-    if (!add.title?.trim()) add = { ...add, title: 'Untitled Metric' };
+    if (!text(add.title)) add = { ...add, title: 'Untitled Metric' };
     if (!add.kind) {
       errors.push(`New widget "${add.title}" requires a kind.`);
       continue;
@@ -1223,6 +1263,7 @@ export function applyDashboardEdit(
 
   // Move single widgets relative to others
   for (const mv of req.move_widgets ?? []) {
+    if (mv == null || typeof mv !== 'object') continue;
     const r = resolveWidgetRef(mv.id, next.widgets, selection);
     if (!r.item) {
       errors.push(r.error ?? `move_widgets: no widget matching "${mv.id}".`);
@@ -1252,17 +1293,19 @@ export function applyDashboardEdit(
     next.filters = next.filters.filter((f) => f.id !== fRef && f.param !== fRef);
   }
   for (const fPatch of req.update_filters ?? []) {
+    if (fPatch == null || typeof fPatch !== 'object') continue;
     const f = next.filters.find((x) => x.id === fPatch.id || x.param === fPatch.id);
     if (!f) {
       warnings.push(`No filter "${fPatch.id}" found.`);
       continue;
     }
-    if (fPatch.label !== undefined && fPatch.label.trim()) f.label = fPatch.label.trim();
-    if (fPatch.value !== undefined) f.value = String(fPatch.value);
-    if (fPatch.options !== undefined) f.options = fPatch.options.map(String);
+    if (text(fPatch.label)) f.label = text(fPatch.label)!;
+    if (fPatch.value !== undefined && fPatch.value !== null) f.value = String(fPatch.value);
+    if (Array.isArray(fPatch.options)) f.options = fPatch.options.map(String);
   }
   const usedFIds = new Set(next.filters.map((f) => f.id));
   for (const fAdd of req.add_filters ?? []) {
+    if (fAdd == null || typeof fAdd !== 'object') continue;
     next.filters.push(normalizeFilter(fAdd, usedFIds, next.filters.length));
   }
 
@@ -1368,32 +1411,22 @@ export function formatMetricValue(
   let out: string;
   switch (format) {
     case 'currency_usd':
-      out = decOverride !== undefined
-        ? `$${new Intl.NumberFormat('en-US', { minimumFractionDigits: decOverride, maximumFractionDigits: decOverride }).format(num)}`
-        : Math.abs(num) >= 1_000_000
-          ? `$${(num / 1_000_000).toFixed(2)}M`
-          : Math.abs(num) >= 10_000
-            ? `$${(num / 1_000).toFixed(1)}K`
-            : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', maximumFractionDigits: 0 }).format(num);
-      break;
     case 'currency_eur':
-      out = decOverride !== undefined
-        ? `€${new Intl.NumberFormat('en-US', { minimumFractionDigits: decOverride, maximumFractionDigits: decOverride }).format(num)}`
-        : Math.abs(num) >= 1_000_000
-          ? `€${(num / 1_000_000).toFixed(2)}M`
-          : Math.abs(num) >= 10_000
-            ? `€${(num / 1_000).toFixed(1)}K`
-            : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'EUR', maximumFractionDigits: 0 }).format(num);
+    case 'currency_gbp': {
+      const symbol = format === 'currency_usd' ? '$' : format === 'currency_eur' ? '€' : '£';
+      const abs = Math.abs(num);
+      const body = decOverride !== undefined
+        ? new Intl.NumberFormat('en-US', { minimumFractionDigits: decOverride, maximumFractionDigits: decOverride }).format(abs)
+        : abs >= 1_000_000
+          ? `${(abs / 1_000_000).toFixed(2)}M`
+          : abs >= 10_000
+            ? `${(abs / 1_000).toFixed(1)}K`
+            : new Intl.NumberFormat('en-US', { maximumFractionDigits: 0 }).format(abs);
+      // The sign goes before the symbol: −$1.50M, not $-1.50M; nothing that rounds to zero is negative
+      const negative = num < 0 && /[1-9]/.test(body);
+      out = `${negative ? '-' : ''}${symbol}${body}`;
       break;
-    case 'currency_gbp':
-      out = decOverride !== undefined
-        ? `£${new Intl.NumberFormat('en-US', { minimumFractionDigits: decOverride, maximumFractionDigits: decOverride }).format(num)}`
-        : Math.abs(num) >= 1_000_000
-          ? `£${(num / 1_000_000).toFixed(2)}M`
-          : Math.abs(num) >= 10_000
-            ? `£${(num / 1_000).toFixed(1)}K`
-            : new Intl.NumberFormat('en-US', { style: 'currency', currency: 'GBP', maximumFractionDigits: 0 }).format(num);
-      break;
+    }
     case 'percent':
       out = `${num.toFixed(decOverride ?? 1)}%`;
       break;

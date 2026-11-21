@@ -456,6 +456,54 @@ export function buildGcpAuthHeaders(creds: ResolvedGoogleCredentials, extra: Rec
   return headers;
 }
 
+/** What `jobs.query` and `jobs.getQueryResults` answer. */
+export interface BqQueryAnswer {
+  jobComplete?: boolean;
+  jobReference?: { projectId?: string; jobId?: string; location?: string };
+  schema?: { fields?: { name: string; type: string }[] };
+  rows?: { f: { v: unknown }[] }[];
+  totalRows?: string;
+  error?: { message?: string };
+}
+
+/** How long a query may run in all before the studio gives up waiting for it. */
+export const BQ_QUERY_DEADLINE_MS = 60_000;
+
+/**
+ * `jobs.query` answers without rows (`jobComplete: false`) when the query
+ * outlives its `timeoutMs`; reading that as a result would draw an empty chart
+ * as if it were the data. Waits for the job with `jobs.getQueryResults` until
+ * `deadline`, then gives up with an error.
+ */
+export async function completeBigQueryJob(
+  first: BqQueryAnswer,
+  o: { projectId: string; headers: Record<string, string>; fetch: typeof fetch; maxResults: number; deadline: number; now?: () => number },
+): Promise<BqQueryAnswer> {
+  const now = o.now ?? Date.now;
+  let answer = first;
+  for (let poll = 0; answer.jobComplete === false; poll++) {
+    const jobId = answer.jobReference?.jobId;
+    const remaining = o.deadline - now();
+    // getQueryResults itself waits up to timeoutMs; the cap and the pause keep an
+    // upstream that answers "not yet" at once from turning this into a busy loop
+    if (!jobId || remaining <= 1000 || poll >= 20) {
+      throw new BqCatalogError(504, 'BigQuery did not finish the query in time. Narrow it (fewer columns, a filter on the partition column) and try again.');
+    }
+    if (poll > 0) await new Promise((r) => setTimeout(r, 250));
+    const url = new URL(`https://bigquery.googleapis.com/bigquery/v2/projects/${encodeURIComponent(answer.jobReference?.projectId || o.projectId)}/queries/${encodeURIComponent(jobId)}`);
+    url.searchParams.set('maxResults', String(o.maxResults));
+    url.searchParams.set('timeoutMs', String(Math.min(10_000, remaining - 1000)));
+    if (answer.jobReference?.location) url.searchParams.set('location', answer.jobReference.location);
+    const res = await o.fetch(url.toString(), { headers: o.headers, signal: AbortSignal.timeout(Math.min(12_000, remaining)) });
+    const next = (await res.json().catch(() => ({}))) as BqQueryAnswer;
+    if (!res.ok) {
+      throw new BqCatalogError(502, explainBytesBilled(next.error?.message ?? `BigQuery returned HTTP ${res.status}.`));
+    }
+    answer = { ...next, jobReference: next.jobReference ?? answer.jobReference };
+  }
+  return answer;
+}
+
 export function parseBigQueryRows(
   fields: { name: string; type: string }[],
   rawRows: { f: { v: unknown }[] }[] | undefined,
@@ -1251,15 +1299,11 @@ export class BqCatalogStore {
           signal: AbortSignal.timeout(BQ_TIMEOUT_MS + 2000),
         },
       );
-      const body = (await res.json().catch(() => ({}))) as {
-        schema?: { fields?: { name: string; type: string }[] };
-        rows?: { f: { v: unknown }[] }[];
-        totalRows?: string;
-        error?: { message?: string };
-      };
+      const body = (await res.json().catch(() => ({}))) as BqQueryAnswer;
       return { ok: res.ok, status: res.status, body };
     };
 
+    const started = Date.now();
     let run = await execQuery(query);
     if (!run.ok && trySample && /TABLESAMPLE/i.test(run.body.error?.message ?? '')) {
       query = this.buildPreviewSql(projectId, datasetId, tableId, maxRows, false);
@@ -1274,10 +1318,17 @@ export class BqCatalogStore {
       throw new BqCatalogError(502, `Preview query failed: ${explainBytesBilled(run.body.error?.message ?? `HTTP ${run.status}`)}`);
     }
 
-    const fields = run.body.schema?.fields ?? [];
+    const body = await completeBigQueryJob(run.body, {
+      projectId,
+      headers,
+      fetch: fetchImpl,
+      maxResults: maxRows,
+      deadline: started + BQ_QUERY_DEADLINE_MS,
+    });
+    const fields = body.schema?.fields ?? [];
     const columns = fields.map((f) => f.name);
-    const rows = parseBigQueryRows(fields, run.body.rows);
-    const total = Number(run.body.totalRows ?? rows.length);
+    const rows = parseBigQueryRows(fields, body.rows);
+    const total = Number(body.totalRows ?? rows.length);
     return {
       query,
       columns,

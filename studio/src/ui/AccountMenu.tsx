@@ -140,7 +140,8 @@ export function AccountMenu() {
           <IconButton icon="close" label="Close" disabled={deleting} onClick={() => setConfirmDelete(false)} />
         </header>
         <p className="sign-in-text">
-          Your profile and usage history are removed from the studio server. The pages saved in this browser stay.
+          Your profile is removed from the studio server. Today&rsquo;s session count stays until it expires, so the daily
+          allowance is not reset. The pages saved in this browser stay.
         </p>
         <footer className="dialog-actions">
           <button

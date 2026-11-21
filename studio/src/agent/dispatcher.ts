@@ -17,6 +17,8 @@ import {
   type TableSchemaInfo,
 } from '../data/sqlEngine';
 import { dialectOfSource, validateReadOnlySql } from '../data/sqlGuard';
+import { coerceArgs, type ArgSchema } from './coerceArgs';
+import { TOOL_DECLARATIONS } from './tools';
 import { resolveBlock } from '../engine/blocks';
 import { loadAllBlueprints, retrieveCatalogContext } from '../engine/catalog';
 import { ideaForModel, suggestCharts, type IdeaSlot } from '../engine/chartIdeas';
@@ -414,8 +416,14 @@ function googleDocsErrorResponse(ctx: ToolContext, err: unknown): ToolResponse {
   };
 }
 
+/** The parameter schema of every declared tool, by name. */
+const PARAMETERS = new Map<string, ArgSchema | undefined>(
+  (TOOL_DECLARATIONS as { name: string; parameters?: ArgSchema }[]).map((d) => [d.name, d.parameters]),
+);
+
 export async function handleToolCall(name: string, args: Record<string, unknown> | undefined, ctx: ToolContext): Promise<ToolResponse> {
-  const a = args ?? {};
+  // What the model sent, read as the declared types (a null in a list, a number for a string)
+  const a = coerceArgs(args, PARAMETERS.get(name));
   const ws = ctx.workspace;
   const meta = { source: ctx.source, request: ctx.request };
 

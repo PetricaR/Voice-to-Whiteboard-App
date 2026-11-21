@@ -213,7 +213,7 @@ export interface MotionOpResult {
 }
 
 function slug(raw: string, fallback: string): string {
-  const s = raw
+  const s = String(raw ?? '')
     .trim()
     .toLowerCase()
     .replace(/[^a-z0-9]+/g, '_')
@@ -653,6 +653,8 @@ export function buildMotion(
 }
 
 function resolveSceneRef(ref: string, scenes: MotionScene[]) {
+  // A reference from a model's arguments may be null or a number
+  if (typeof ref !== 'string') ref = String(ref ?? '');
   const numMatch = /^(?:scene\s*)?(\d+)$/i.exec(ref.trim());
   if (numMatch) {
     const idx = Number(numMatch[1]) - 1;

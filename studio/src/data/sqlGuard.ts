@@ -57,25 +57,29 @@ interface DialectRules {
   rejectDollarQuotes: boolean;
   /** `#` is refused outside quotes (its meaning as a comment is version dependent). */
   rejectHash: boolean;
+  /** Block comments nest (PostgreSQL, ClickHouse): an inner opener needs its own closer before the outer one ends. */
+  nestedComments: boolean;
+  /** Backticks quote identifiers. Where they do not (PostgreSQL: an operator character), they are refused. */
+  backtickQuotes: boolean;
 }
 
 const DIALECTS: Record<SqlDialect, DialectRules> = {
   sqlite: {
     backslashEscapes: false, rejectBackslash: false, hashComments: false, bracketIdentifiers: true,
-    tripleQuotes: false, rejectDollarQuotes: false, rejectHash: false,
+    tripleQuotes: false, rejectDollarQuotes: false, rejectHash: false, nestedComments: false, backtickQuotes: true,
   },
   bigquery: {
     backslashEscapes: true, rejectBackslash: false, hashComments: true, bracketIdentifiers: false,
-    tripleQuotes: true, rejectDollarQuotes: false, rejectHash: false,
+    tripleQuotes: true, rejectDollarQuotes: false, rejectHash: false, nestedComments: false, backtickQuotes: true,
   },
   clickhouse: {
     backslashEscapes: true, rejectBackslash: false, hashComments: false, bracketIdentifiers: false,
-    tripleQuotes: false, rejectDollarQuotes: true, rejectHash: true,
+    tripleQuotes: false, rejectDollarQuotes: true, rejectHash: true, nestedComments: true, backtickQuotes: true,
   },
   // E'…' strings and standard_conforming_strings=off give backslashes a second meaning
   postgres: {
     backslashEscapes: false, rejectBackslash: true, hashComments: false, bracketIdentifiers: false,
-    tripleQuotes: false, rejectDollarQuotes: true, rejectHash: false,
+    tripleQuotes: false, rejectDollarQuotes: true, rejectHash: false, nestedComments: true, backtickQuotes: false,
   },
 };
 
@@ -134,12 +138,49 @@ interface TokenSpan {
   index: number;
   /** A word written after `.`, `:` or `@`: a column, a cast or a parameter, never a statement keyword. */
   qualified?: boolean;
+  /** For a quoted identifier: its name in lower case (the last part of a dotted path). */
+  name?: string;
+}
+
+function unquoteName(inner: string): string {
+  const parts = inner.toLowerCase().split('.');
+  return parts[parts.length - 1].trim();
 }
 
 interface ScanResult {
   tokens: TokenSpan[];
   /** Why the query cannot be read unambiguously. */
   problem?: string;
+}
+
+/**
+ * A dollar-quote opener: `$$` or `$tag$`. PostgreSQL tags are identifier
+ * characters (letters, digits after the first, `_`, any non-ASCII); ClickHouse
+ * heredoc tags are similar. Digits are allowed anywhere so that `$a1$` (a
+ * PostgreSQL tag) is caught; `$1` alone (a positional parameter) is not.
+ */
+const DOLLAR_QUOTE = /^\$[A-Za-z0-9_\u0080-\uffff]*\$/;
+
+/** The index after a block comment that opens at `start` (on `/*`), or -1 when it is not closed. */
+function endOfBlockComment(sql: string, start: number, rules: DialectRules): number {
+  const n = sql.length;
+  let depth = 1;
+  let i = start + 2;
+  while (i < n) {
+    if (sql[i] === '*' && sql[i + 1] === '/') {
+      depth--;
+      i += 2;
+      if (depth === 0) return i;
+      continue;
+    }
+    if (rules.nestedComments && sql[i] === '/' && sql[i + 1] === '*') {
+      depth++;
+      i += 2;
+      continue;
+    }
+    i++;
+  }
+  return -1;
 }
 
 /** The index after a quoted literal that opens at `start`, or -1 when it is not closed. */
@@ -209,11 +250,14 @@ function scanSqlTokens(sql: string, rules: DialectRules): ScanResult {
     }
 
     if (ch === '/' && next === '*') {
-      i += 2;
-      while (i < n && !(sql[i] === '*' && sql[i + 1] === '/')) i++;
-      if (i >= n) return { tokens, problem: 'unclosed block comment (/*)' };
-      i += 2;
+      const end = endOfBlockComment(sql, i, rules);
+      if (end < 0) return { tokens, problem: 'unclosed block comment (/*)' };
+      i = end;
       continue;
+    }
+
+    if (ch === '`' && !rules.backtickQuotes) {
+      return { tokens, problem: 'backticks are not allowed on this data source (quote identifiers with "double quotes")' };
     }
 
     if (ch === "'" || ch === '"' || ch === '`') {
@@ -222,11 +266,15 @@ function scanSqlTokens(sql: string, rules: DialectRules): ScanResult {
       if (backslash && rules.rejectBackslash) {
         return { tokens, problem: 'backslashes inside quotes are not allowed on this data source (use chr(92) or a LIKE pattern)' };
       }
+      // A quoted identifier is still a function name when it is called: "url"(…), `EXTERNAL_QUERY`(…)
+      if (ch !== "'") {
+        tokens.push({ kind: 'other', value: 'quoted', index: i, name: unquoteName(sql.slice(i + 1, end - 1)) });
+      }
       i = end;
       continue;
     }
 
-    if (ch === '$' && rules.rejectDollarQuotes && /^\$[A-Za-z_]*\$/.test(sql.slice(i, i + 64))) {
+    if (ch === '$' && rules.rejectDollarQuotes && DOLLAR_QUOTE.test(sql.slice(i, i + 64))) {
       return { tokens, problem: 'dollar-quoted strings ($$…$$) are not allowed' };
     }
 
@@ -317,12 +365,16 @@ export function validateReadOnlySql(
 
   for (let k = 0; k < tokens.length - 1; k++) {
     const t = tokens[k];
-    if (t.kind === 'word' && tokens[k + 1].value === '(' && FORBIDDEN_FUNCTIONS.has(t.value)) {
-      return { ok: false, error: `Read-only SQL guardrail blocked the function "${t.value}()".` };
+    const fn = t.kind === 'word' ? t.value : t.name;
+    if (fn != null && tokens[k + 1].value === '(' && FORBIDDEN_FUNCTIONS.has(fn)) {
+      return { ok: false, error: `Read-only SQL guardrail blocked the function "${fn}()".` };
     }
   }
 
-  const cleaned = rawSql.trim().replace(/;+\s*$/, '').trim();
+  // Drop the final semicolon and anything after it (only comments can follow it here),
+  // so the LIMIT added below is part of the statement, not a second one
+  const body = semiIdx >= 0 ? rawSql.slice(0, tokens[semiIdx].index) : rawSql;
+  const cleaned = body.trim().replace(/;+\s*$/, '').trim();
   let parenDepth = 0;
   let hasTopLevelLimit = false;
   for (const t of tokens) {
@@ -347,11 +399,15 @@ function escapeSqlScalar(value: string | number | boolean | null, rules: Dialect
   if (typeof value === 'boolean') return value ? '1' : '0';
   if (typeof value === 'number') {
     if (!Number.isFinite(value)) return 'NULL';
-    return String(value);
+    // In parentheses, so that `a-:delta` with a negative delta does not become `a--5` (a comment)
+    return value < 0 ? `(${value})` : String(value);
   }
   const text = String(value).replace(/\0/g, '');
-  // Where a backslash escapes, a value ending in one would swallow the closing quote
-  const escaped = rules.backslashEscapes ? text.replace(/\\/g, '\\\\').replace(/'/g, "\\'") : text.replace(/'/g, "''");
+  // Where a backslash escapes, a value ending in one would swallow the closing quote; there a
+  // quoted string may not span lines either (BigQuery), so line breaks are written as escapes
+  const escaped = rules.backslashEscapes
+    ? text.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/\n/g, '\\n').replace(/\r/g, '\\r')
+    : text.replace(/'/g, "''");
   return `'${escaped}'`;
 }
 
@@ -383,11 +439,10 @@ export function bindSqlParams(
     }
 
     if (ch === '/' && next === '*') {
-      const start = i;
-      i += 2;
-      while (i < n && !(sql[i] === '*' && sql[i + 1] === '/')) i++;
-      i = Math.min(n, i + 2);
-      out += sql.slice(start, i);
+      const end = endOfBlockComment(sql, i, rules);
+      const stop = end < 0 ? n : end;
+      out += sql.slice(i, stop);
+      i = stop;
       continue;
     }
 

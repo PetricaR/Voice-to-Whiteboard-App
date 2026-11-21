@@ -66,6 +66,20 @@ describe('SQL read-only guardrail & parameter binder', () => {
 });
 
 describe('Local SQLite-Wasm engine & sample datasets', () => {
+  it('loads a file named like a sample table next to it, never over it', async () => {
+    const before = await executeSqlQuery('SELECT COUNT(*) FROM monthly_revenue');
+    const meta = await importDataFile({ name: 'monthly_revenue.csv', text: 'region,amount\nEMEA,10\n' });
+    expect(meta.name).toBe('monthly_revenue_data');
+    const after = await executeSqlQuery('SELECT COUNT(*) FROM monthly_revenue');
+    expect(after.rows).toEqual(before.rows);
+    const schema = await inspectDataSchema();
+    // One description per table name: no stale sample columns next to the new ones
+    expect(schema.tables.filter((t) => t.name === 'monthly_revenue')).toHaveLength(1);
+    expect(schema.tables.find((t) => t.name === 'monthly_revenue_data')!.columns.map((c) => c.name)).toEqual(['region', 'amount']);
+    // SQLite reserves every sqlite_ name
+    expect((await importDataFile({ name: 'sqlite_stat1.csv', text: 'x\n1\n' })).name).toBe('t_sqlite_stat1');
+  });
+
   it('queries seeded multi-table SaaS, E-Commerce, FinOps, and CRM sample datasets', async () => {
     const schema = await inspectDataSchema();
     expect(schema.source).toBe('local');

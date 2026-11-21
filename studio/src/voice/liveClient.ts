@@ -82,6 +82,8 @@ export class LiveClient {
   }
 
   private async open(handle: string | null) {
+    // Closed before it connected (Stop while the audio started): a token would be a day's session spent for nothing
+    if (this.closed) return;
     let url: string;
     try {
       url = await this.url();

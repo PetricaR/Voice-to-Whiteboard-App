@@ -183,8 +183,11 @@ export class VoiceAgent {
   }
 
   private async enableMic() {
-    await this.audio!.startMic();
-    this.set({ micOn: true });
+    const audio = this.audio;
+    if (audio == null) return;
+    await audio.startMic();
+    // The session may have ended (an error, Stop) while the browser asked for the microphone
+    if (this.audio === audio && audio.micActive) this.set({ micOn: true });
   }
 
   /** Turns the microphone off but keeps the session (typed requests still work). */

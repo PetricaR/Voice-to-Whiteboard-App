@@ -344,7 +344,11 @@ export function liveTokenMiddleware(o: LiveTokenOptions) {
         if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method', message: 'Use GET.' }, { Allow: 'GET, HEAD' });
         const projectId = params.get('project_id')?.trim() || undefined;
         const search = params.get('search')?.trim() || undefined;
-        return send(res, 200, { datasets: bqCatalog.listDatasets({ project_id: projectId, search }) });
+        const datasets = bqCatalog.listDatasets({ project_id: projectId, search });
+        // Owners see every synced project; everyone else only the sources the owners left active
+        return send(res, 200, {
+          datasets: canManage ? datasets : datasets.filter((d) => bqCatalog.isQueryableProject(d.project_id)),
+        });
       }
 
       if (path === '/api/data/bq/preview') {

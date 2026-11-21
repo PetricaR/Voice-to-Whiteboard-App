@@ -9,6 +9,8 @@ import {
   dashboardToStandaloneHtml,
   dashboardToVegaLiteHandoff,
   formatMetricValue,
+  normalizeDashboard,
+  normalizeRefreshSeconds,
 } from '../src/engine/dashboard';
 import {
   applyMotionEdit,
@@ -52,6 +54,13 @@ describe('Live SQL Dashboard Engine & Exporters', () => {
     expect(built.ok).toBe(true);
     expect(built.dashboard.widgets).toHaveLength(2);
     expect(formatMetricValue(266500, 'currency_usd')).toBe('$266.5K');
+    // Negative amounts put the sign before the currency symbol, in every size
+    expect(formatMetricValue(-1_500_000, 'currency_usd')).toBe('-$1.50M');
+    expect(formatMetricValue(-12_000, 'currency_eur')).toBe('-€12.0K');
+    expect(formatMetricValue(-950, 'currency_gbp')).toBe('-£950');
+    expect(formatMetricValue(-1234.5, 'currency_usd', undefined, { decimals: 2 })).toBe('-$1,234.50');
+    expect(formatMetricValue(-0.2, 'currency_usd')).toBe('$0');
+    expect(formatMetricValue(950, 'currency_usd')).toBe('$950');
     expect(formatMetricValue(116.7, 'percent')).toBe('116.7%');
 
     // Incremental edit referencing widget by fuzzy title
@@ -127,6 +136,55 @@ describe('Live SQL Dashboard Engine & Exporters', () => {
     expect(html).toContain('<!doctype html>');
     expect(html).toContain('Inspect SQL Query');
     expect(html).toContain('$');
+  });
+
+  it('builds a dashboard from loosely typed model arguments instead of failing on them', () => {
+    const res = buildDashboard({
+      title: 42 as unknown as string,
+      subtitle: 7 as unknown as string,
+      widgets: [
+        { sql: 'SELECT 1 AS n', kind: 'kpi' } as never,
+        { title: 'Revenue', sql: 'SELECT month, mrr FROM monthly_revenue', kind: 'line', y_fields: 'mrr' as never, x_field: 3 as never } as never,
+      ],
+      filters: [{ options: ['EMEA', 'APAC'] } as never, null as never],
+    } as never);
+    expect(res.ok).toBe(true);
+    expect(res.dashboard.title).toBe('Live Dashboard');
+    expect(res.dashboard.widgets[0].title).toBe('Untitled Metric');
+    expect(res.dashboard.widgets[1].yFields).toEqual(['mrr']);
+    expect(res.dashboard.widgets[1].xField).toBeUndefined();
+    expect(res.dashboard.filters).toHaveLength(1);
+    expect(res.dashboard.filters[0].param).toBe('param_1');
+
+    const edit = applyDashboardEdit(res.dashboard, {
+      update_widgets: [{ id: 'revenue', y_fields: 'arr' } as never, null as never],
+      add_filters: [{ value: 'x' } as never],
+      update_filters: [null as never],
+    });
+    expect(edit.ok).toBe(true);
+    expect(edit.dashboard.widgets.find((w) => w.id === 'revenue')!.yFields).toEqual(['arr']);
+    expect(edit.dashboard.filters).toHaveLength(2);
+
+    // A patch without an id is refused with an error the model can act on (and nothing changes)
+    const noId = applyDashboardEdit(res.dashboard, { update_widgets: [{ title: 'no id' } as never] });
+    expect(noId.ok).toBe(false);
+    expect(noId.errors.join(' ')).toMatch(/widget reference is missing/);
+  });
+
+  it('keeps auto-refresh to the offered intervals so a warehouse is not queried every second', () => {
+    expect(normalizeRefreshSeconds(0)).toBe(0);
+    expect(normalizeRefreshSeconds(1)).toBe(30);
+    expect(normalizeRefreshSeconds(0.01)).toBe(30);
+    expect(normalizeRefreshSeconds(45)).toBe(30);
+    expect(normalizeRefreshSeconds(50)).toBe(60);
+    expect(normalizeRefreshSeconds(120)).toBe(60);
+    expect(normalizeRefreshSeconds(86_400)).toBe(300);
+    expect(normalizeRefreshSeconds(-5)).toBeUndefined();
+    expect(normalizeRefreshSeconds('60')).toBeUndefined();
+    const built = buildDashboard({ title: 'D', refresh_seconds: 1, widgets: [{ title: 'a', kind: 'kpi', sql: 'SELECT 1' }] } as never);
+    expect(built.dashboard.refreshSeconds).toBe(30);
+    expect(applyDashboardEdit(built.dashboard, { refresh_seconds: 2 }).dashboard.refreshSeconds).toBe(30);
+    expect(normalizeDashboard({ widgets: [], refreshSeconds: 0.5 })!.refreshSeconds).toBe(30);
   });
 });
 

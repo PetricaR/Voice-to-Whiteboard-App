@@ -88,6 +88,49 @@ describe('SQL guard reads a query the way the target database does', () => {
     expect(bindSqlParams('SELECT :a', { a: "O'Reilly" }, 'sqlite')).toBe("SELECT 'O''Reilly'");
   });
 
+  it('refuses dollar-quote tags with digits, nested comments and PostgreSQL backticks', () => {
+    const hidden: [string, Parameters<typeof validateReadOnlySql>[1]][] = [
+      // A PostgreSQL tag may contain digits after its first letter; a ClickHouse heredoc tag too
+      [`SELECT $a1$ ' $a1$; DROP TABLE t; --'`, { dialect: 'postgres' }],
+      [`SELECT $t1$ ' $t1$; DROP TABLE t; --'`, { dialect: 'clickhouse' }],
+      // PostgreSQL and ClickHouse nest block comments: the comment ends at the second */
+      [`SELECT 1 /* /* */ ' */ ; DROP TABLE t; -- '`, { dialect: 'postgres' }],
+      [`SELECT 1 /* /* */ ' */ ; DROP TABLE t; -- '`, { dialect: 'clickhouse' }],
+      // PostgreSQL: a backtick is an operator character, not a quote
+      ['SELECT 1 ` ; DROP TABLE t; -- `', { dialect: 'postgres' }],
+      // Table functions called through a quoted name
+      [`SELECT * FROM "url"('http://metadata.google.internal/', 'RawBLOB')`, { dialect: 'clickhouse' }],
+      ["SELECT * FROM `EXTERNAL_QUERY`('conn', 'SELECT 1')", { dialect: 'bigquery' }],
+    ];
+    for (const [sql, options] of hidden) {
+      expect(validateReadOnlySql(sql, options).ok, `Expected blocked (${options?.dialect}): ${sql}`).toBe(false);
+    }
+    // SQLite and BigQuery do not nest comments: there the same text is one string, and allowed
+    expect(validateReadOnlySql(`SELECT 1 /* /* */ ' */ ; DROP TABLE t; -- '`, { dialect: 'sqlite' }).ok).toBe(true);
+    // A nested comment that is closed properly stays allowed where comments nest
+    expect(validateReadOnlySql('SELECT 1 /* outer /* inner */ still a comment */ AS x', { dialect: 'postgres' }).ok).toBe(true);
+    // A quoted identifier that is not called is just a column
+    expect(validateReadOnlySql('SELECT "url" FROM pages', { dialect: 'clickhouse' }).ok).toBe(true);
+  });
+
+  it('keeps the added LIMIT inside the statement when a comment follows the final semicolon', () => {
+    const res = validateReadOnlySql('SELECT region FROM monthly_revenue; -- by region', { maxRows: 50 });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      expect(res.sql).toBe('SELECT region FROM monthly_revenue\nLIMIT 50');
+      expect(res.displaySql).toBe('SELECT region FROM monthly_revenue');
+    }
+  });
+
+  it('binds negative numbers and multi-line text so the query still means what it says', async () => {
+    expect(bindSqlParams('SELECT a-:d AS b FROM t', { d: -5 })).toBe('SELECT a-(-5) AS b FROM t');
+    expect(bindSqlParams('SELECT :v', { v: 'a\nb' }, 'bigquery')).toBe("SELECT 'a\\nb'");
+    expect(bindSqlParams('SELECT :v', { v: 'a\nb' }, 'sqlite')).toBe("SELECT 'a\nb'");
+    const res = await executeSqlQuery('SELECT 10-:d AS v', { params: { d: -5 } });
+    expect(res.ok).toBe(true);
+    expect(res.rows[0][0]).toBe(15);
+  });
+
   it('never changes local tables, whatever the query', async () => {
     const before = await executeSqlQuery('SELECT COUNT(*) FROM monthly_revenue');
     expect(before.ok).toBe(true);
@@ -265,6 +308,26 @@ describe('BigQuery on a deployment with sign-in', () => {
     expect(String(url)).toContain('/projects/analytics-prod-123/queries');
     const sent = JSON.parse(String((init as RequestInit).body)) as { maximumBytesBilled: string };
     expect(sent.maximumBytesBilled).toBe(String(DEFAULT_MAX_BYTES_BILLED));
+  });
+
+  it('shows members the datasets of active sources only, owners every synced project', async () => {
+    upstream.mockReset();
+    upstream.mockImplementation(async (url) => {
+      const u = new URL(String(url));
+      if (u.pathname.endsWith('/datasets')) return json({ datasets: [{ datasetReference: { datasetId: 'hr' } }] });
+      if (u.pathname.endsWith('/tables')) return json({ tables: [] });
+      return json({});
+    });
+    const synced = await call('/api/data/bq/sync', ownerCookie, { body: { project_id: 'finance-prod-7' } });
+    expect(synced.status).toBe(200);
+    const list = await (await call('/api/data/bq/sources', ownerCookie)).json() as { id: string; project_id: string }[];
+    const src = list.find((s) => s.project_id === 'finance-prod-7')!;
+    expect((await call(`/api/data/bq/sources/${src.id}`, ownerCookie, { method: 'PATCH', body: { is_active: false } })).status).toBe(200);
+
+    const projectsOf = async (cookie: string) =>
+      ((await (await call('/api/data/bq/datasets', cookie)).json()) as { datasets: { project_id: string }[] }).datasets.map((d) => d.project_id);
+    expect(await projectsOf(memberCookie)).not.toContain('finance-prod-7');
+    expect(await projectsOf(ownerCookie)).toContain('finance-prod-7');
   });
 
   it('no longer serves the billing, share, cloud workspace or telemetry endpoints', async () => {

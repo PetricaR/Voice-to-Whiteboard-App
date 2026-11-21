@@ -238,8 +238,9 @@ run_e2e() {
 		done
 	fi
 	mkdir -p e2e/screens
-	STUDIO_URL="$URL" node e2e/smoke.mjs e2e/screens
-	STUDIO_URL="$URL" node e2e/live-mock.mjs e2e/screens
+	for suite in smoke live-mock sign-in export-image charts dashboard-race; do
+		STUDIO_URL="$URL" node "e2e/$suite.mjs" e2e/screens
+	done
 	echo "Screenshots: $DIR/e2e/screens"
 }
 

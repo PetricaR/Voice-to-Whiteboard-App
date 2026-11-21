@@ -42,7 +42,12 @@ export interface UsageStore {
   /** Records a sign-in; returns the stored plan (an admin sets it to 'pro' in the store). */
   upsertUser(user: User): Promise<Plan>;
   planOf(userId: string): Promise<Plan>;
-  /** Account deletion: removes the profile and today's counter. */
+  /**
+   * Account deletion: removes the profile and plan. Today's session counter
+   * stays until it expires (a number under the opaque account id, deleted by
+   * the TTL policy): removing it would let anyone reset their daily allowance
+   * by deleting the account and signing in again.
+   */
   deleteUser?(userId: string): Promise<void>;
 }
 
@@ -166,9 +171,6 @@ export class MemoryUsageStore implements UsageStore {
   async deleteUser(userId: string): Promise<void> {
     this.users.delete(userId);
     this.plans.delete(userId);
-    for (const key of this.counts.keys()) {
-      if (key.endsWith(`:${userId}`)) this.counts.delete(key);
-    }
   }
 }
 
@@ -233,11 +235,7 @@ export async function createFirestoreUsageStore(projectId?: string, databaseId?:
     },
 
     async deleteUser(userId) {
-      const day = utcDay(Date.now());
-      await Promise.all([
-        db.collection(USERS).doc(userId).delete(),
-        db.collection(USAGE).doc(`${day}:${userId}`).delete(),
-      ]);
+      await db.collection(USERS).doc(userId).delete();
     },
 
   };

@@ -517,8 +517,9 @@ export function reviewWidget(widget: DashboardWidget, result: QueryExecutionResu
     advice.push(`${rows.length} rows are a data dump, not a detail table: ORDER BY the key metric DESC and LIMIT 20–50.`);
   }
 
+  // First, so that the advice limit never drops it
   if (result.truncated) {
-    advice.push(`The result was cut at ${rows.length} rows: aggregate in SQL (GROUP BY) so the chart shows all the data.`);
+    advice.unshift(`The result was cut at ${rows.length} rows: aggregate in SQL (GROUP BY) so the chart shows all the data.`);
   }
 
   if (widget.format === undefined && widget.kind !== 'table' && yIndices[0] !== undefined) {
@@ -537,7 +538,8 @@ export function reviewWidget(widget: DashboardWidget, result: QueryExecutionResu
   }
   review.advice = advice.slice(0, MAX_ADVICE);
 
-  if (issues.length === 0) review.facts = factsOf(widget, columns, rows, profiles, map);
+  // Totals, shares and leaders of a cut-off result describe only the rows that came back
+  if (issues.length === 0 && !result.truncated) review.facts = factsOf(widget, columns, rows, profiles, map);
   return review;
 }
 

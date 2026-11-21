@@ -336,6 +336,16 @@ describe('LiveClient authentication', () => {
     await flush();
     expect(urls).toEqual([]);
   });
+
+  it('spends no token when closed before it connects', async () => {
+    const getToken = vi.fn(async () => 'auth_tokens/unused');
+    const client = new LiveClient({ getToken, model: 'm' }, {});
+    client.close();
+    client.connect();
+    await flush();
+    expect(getToken).not.toHaveBeenCalled();
+    expect(urls).toEqual([]);
+  });
 });
 
 describe('.env GEMINI_API_KEY default loading', () => {

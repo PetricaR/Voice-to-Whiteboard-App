@@ -5,7 +5,8 @@ export const SELECTED = '@selected';
 
 /** Lowercase letters and digits only, for tolerant comparisons. */
 export function normalize(s: string): string {
-  return s
+  // A reference from a model's arguments may be null or a number
+  return String(s ?? '')
     .normalize('NFD')
     .replace(/[̀-ͯ]/g, '')
     .toLowerCase()
@@ -144,6 +145,8 @@ const KIND_WORDS: Partial<Record<NodeKind, string[]>> = {
 };
 
 export function resolveNode(ref: string, nodes: DNode[]): Resolution<DNode> {
+  // A reference from a model's arguments may be null or a number
+  if (typeof ref !== 'string') ref = String(ref ?? '');
   const direct = resolveRef(ref, nodes, 'node');
   if (direct.item != null || /ambiguous/.test(direct.error ?? '')) {
     return direct;
@@ -164,6 +167,7 @@ export function resolveNode(ref: string, nodes: DNode[]): Resolution<DNode> {
 }
 
 export function resolveGroup(ref: string, groups: DGroup[]): Resolution<DGroup> {
+  if (typeof ref !== 'string') ref = String(ref ?? '');
   const direct = resolveRef(ref, groups, 'group');
   if (direct.item != null || /ambiguous/.test(direct.error ?? '')) {
     return direct;

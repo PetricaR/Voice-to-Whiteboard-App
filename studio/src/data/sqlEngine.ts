@@ -294,6 +294,20 @@ export function sanitizeSqlIdentifier(raw: string, fallback = 'col'): string {
   return /^[0-9]/.test(cleaned) ? `t_${cleaned}` : cleaned;
 }
 
+const SAMPLE_TABLE_NAMES = new Set(SAMPLE_TABLES.map((t) => t.name));
+
+/**
+ * The name of a table the user loads. Loading replaces an earlier upload of the
+ * same name, but never a built-in sample table (the starter dashboard reads them,
+ * and their descriptions would linger next to the new columns): those names get
+ * a `_data` suffix. SQLite reserves every name that starts with `sqlite_`.
+ */
+export function userTableName(raw: string, fallback: string): string {
+  const name = sanitizeSqlIdentifier(raw, fallback);
+  if (name.startsWith('sqlite_')) return `t_${name}`;
+  return SAMPLE_TABLE_NAMES.has(name) ? `${name}_data` : name;
+}
+
 /** RFC-4180 compliant CSV / TSV parser supporting quoted multiline cells and escaped quotes. */
 export function parseDelimitedText(text: string, delimiter = ','): string[][] {
   const rows: string[][] = [];
@@ -372,7 +386,7 @@ export async function importDataFile(rawInput: ImportedFileInput | File): Promis
     : (rawInput as ImportedFileInput);
   const db = await getLocalDatabase();
   const ext = (input.name.split('.').pop() ?? 'csv').toLowerCase();
-  const tableName = sanitizeSqlIdentifier(input.tableName ?? input.name, 'uploaded_data');
+  const tableName = userTableName(input.tableName ?? input.name, 'uploaded_data');
 
   let headers: string[] = [];
   let sourceRows: unknown[][] = [];
@@ -493,7 +507,7 @@ export interface ImportedRowsInput {
  */
 export async function importRowsIntoLocalTable(input: ImportedRowsInput): Promise<DataTableMeta> {
   const db = await getLocalDatabase();
-  const tableName = sanitizeSqlIdentifier(input.tableName, 'bq_table');
+  const tableName = userTableName(input.tableName, 'bq_table');
   if (input.columns.length === 0) {
     throw new Error(`Cannot import "${input.tableName}" because it has 0 columns.`);
   }

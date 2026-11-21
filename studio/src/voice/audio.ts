@@ -78,6 +78,8 @@ export class AudioIO {
           URL.revokeObjectURL(url);
         }
       }
+      // Stopped while the worklet loaded: stop() already ended the stream's tracks
+      if (this.ctx == null || this.stream !== stream) return;
       this.source = this.ctx.createMediaStreamSource(stream);
       this.node = new AudioWorkletNode(this.ctx, 'capture');
       const rate = this.ctx.sampleRate;

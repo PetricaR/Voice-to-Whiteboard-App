@@ -15,8 +15,10 @@ import {
   BQ_COST_PER_TB,
   BqCatalogStore,
   buildGcpAuthHeaders,
+  completeBigQueryJob,
   resolveGoogleCredentials,
 } from '../server/bigqueryCatalog';
+import { executeServerConnectorQuery } from '../server/dataConnectors';
 import { liveTokenMiddleware } from '../server/liveToken';
 
 describe('BigQuery Data Catalog API, Sync, Preview & Local SQLite Import', () => {
@@ -491,5 +493,46 @@ describe('BigQuery Data Catalog API, Sync, Preview & Local SQLite Import', () =>
       headers: { Origin: `http://127.0.0.1:${port}` },
     });
     expect(del.status).toBe(200);
+  });
+});
+
+describe('BigQuery queries that outlive timeoutMs', () => {
+  const env = { BIGQUERY_ACCESS_TOKEN: 'test-token', BIGQUERY_PROJECT_ID: 'p' };
+  const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status });
+
+  it('waits for the job instead of reporting an unfinished query as an empty result', async () => {
+    const calls: string[] = [];
+    const f = vi.fn(async (url: string | URL | Request) => {
+      const u = String(url);
+      calls.push(u);
+      if (u.endsWith('/queries')) {
+        return json({ jobComplete: false, jobReference: { projectId: 'p', jobId: 'job_1', location: 'EU' } });
+      }
+      return json({
+        jobComplete: true,
+        schema: { fields: [{ name: 'region', type: 'STRING' }, { name: 'n', type: 'INT64' }] },
+        rows: [{ f: [{ v: 'EMEA' }, { v: '7' }] }],
+        totalRows: '1',
+      });
+    }) as unknown as typeof fetch;
+    const res = await executeServerConnectorQuery({ source: 'bigquery:p', sql: 'SELECT region, n FROM ds.t' }, { env, fetch: f });
+    expect(res.ok).toBe(true);
+    expect(res.rows).toEqual([['EMEA', 7]]);
+    const poll = new URL(calls[1]);
+    expect(poll.pathname).toBe('/bigquery/v2/projects/p/queries/job_1');
+    expect(poll.searchParams.get('location')).toBe('EU');
+  });
+
+  it('gives up with an error, not an empty chart, when the job never finishes', async () => {
+    let t = 0;
+    const f = vi.fn(async () => {
+      t += 30_000;
+      return json({ jobComplete: false, jobReference: { projectId: 'p', jobId: 'job_2' } });
+    }) as unknown as typeof fetch;
+    await expect(completeBigQueryJob(
+      { jobComplete: false, jobReference: { projectId: 'p', jobId: 'job_2' } },
+      { projectId: 'p', headers: {}, fetch: f, maxResults: 10, deadline: 60_000, now: () => t },
+    )).rejects.toThrow(/did not finish the query in time/);
+    expect((f as unknown as { mock: { calls: unknown[] } }).mock.calls.length).toBeLessThanOrEqual(2);
   });
 });

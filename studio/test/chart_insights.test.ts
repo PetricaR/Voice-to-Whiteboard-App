@@ -39,6 +39,20 @@ describe('Chart review: what the agent learns about a chart it built', () => {
     }
   });
 
+  it('states no totals or shares for a result that was cut off', async () => {
+    const built = buildDashboard({
+      title: 'Test',
+      widgets: [{ title: 'MRR by region', kind: 'bar', sql: 'SELECT region, SUM(mrr_usd) AS mrr_usd FROM monthly_revenue GROUP BY region', x_field: 'region', y_fields: ['mrr_usd'] }],
+    });
+    const widget = built.dashboard.widgets[0];
+    const full = await executeSqlQuery(widget.sql);
+    expect(reviewWidget(widget, full).facts.length).toBeGreaterThan(0);
+    // The same rows, but the engine says more were left out
+    const cut = reviewWidget(widget, { ...full, rows: full.rows.slice(0, 2), rowCount: 2, truncated: true });
+    expect(cut.facts).toEqual([]);
+    expect(cut.advice[0]).toMatch(/cut at 2 rows/);
+  });
+
   it('reports a failing query, an empty result and a wrong field name', async () => {
     const failing = await review({ title: 'Bad', kind: 'bar', sql: 'SELECT nope FROM monthly_revenue' });
     expect(failing.issues[0]).toMatch(/query fails/i);

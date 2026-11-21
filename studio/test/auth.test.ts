@@ -147,6 +147,24 @@ describe('daily allowances', () => {
     store.setPlan('1001', 'pro');
     expect(await usage.account(ada)).toMatchObject({ plan: 'pro', limit: 3 });
   });
+
+  it('does not reset the daily allowance when an account is deleted and signs in again', async () => {
+    const store = new MemoryUsageStore();
+    const usage = new Usage(store, { free: 2, pro: 10, total: 100 }, [], () => NOW);
+    await usage.signIn(ada);
+    expect((await usage.reserve(ada)).ok).toBe(true);
+    expect((await usage.reserve(ada)).ok).toBe(true);
+    expect((await usage.reserve(ada)).ok).toBe(false);
+    store.setPlan('1001', 'pro');
+    await usage.deleteUser(ada.id);
+    // The profile and plan are gone…
+    expect(await store.planOf(ada.id)).toBe('free');
+    await usage.signIn(ada);
+    // …but today's count is not
+    const again = await usage.reserve(ada);
+    expect(again.ok).toBe(false);
+    expect(again.account.used).toBe(2);
+  });
 });
 
 describe('token API with sign-in required', () => {

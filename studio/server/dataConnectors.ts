@@ -7,12 +7,15 @@
  * passes through `validateReadOnlySql` before execution.
  */
 import {
+  BQ_QUERY_DEADLINE_MS,
   buildGcpAuthHeaders,
+  completeBigQueryJob,
   explainBytesBilled,
   maxBytesBilled,
   parseBigQueryRows,
   resolveGoogleCredentials,
   type BqCatalogStore,
+  type BqQueryAnswer,
 } from './bigqueryCatalog.ts';
 import { bindSqlParams, dialectOfSource, validateReadOnlySql, type SqlParamValue } from './sqlGuard.ts';
 
@@ -148,6 +151,7 @@ async function queryBigQuery(
   fetchImpl: typeof fetch,
   authOpts: { secretName?: string | null; userAccessToken?: string | null } = {},
 ): Promise<{ columns: string[]; rows: (string | number | boolean | null)[][]; truncated: boolean }> {
+  const started = Date.now();
   const creds = await resolveGoogleCredentials({
     projectId,
     secretName: authOpts.secretName,
@@ -171,15 +175,18 @@ async function queryBigQuery(
       signal: AbortSignal.timeout(QUERY_TIMEOUT_MS + 2000),
     },
   );
-  const payload = (await res.json()) as {
-    error?: { message?: string };
-    schema?: { fields?: { name: string; type: string }[] };
-    rows?: { f: { v: unknown }[] }[];
-    totalRows?: string;
-  };
+  const first = (await res.json().catch(() => ({}))) as BqQueryAnswer;
   if (!res.ok) {
-    throw new Error(explainBytesBilled(payload?.error?.message ?? `BigQuery returned HTTP ${res.status}.`));
+    throw new Error(explainBytesBilled(first?.error?.message ?? `BigQuery returned HTTP ${res.status}.`));
   }
+  // A query that outlives timeoutMs answers without rows: wait for it rather than report "no data"
+  const payload = await completeBigQueryJob(first, {
+    projectId,
+    headers: buildGcpAuthHeaders(creds),
+    fetch: fetchImpl,
+    maxResults: maxRows,
+    deadline: started + BQ_QUERY_DEADLINE_MS,
+  });
   const fields = payload.schema?.fields ?? [];
   const columns = fields.map((f) => f.name);
   const rows = parseBigQueryRows(fields, payload.rows);
