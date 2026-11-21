@@ -1,13 +1,64 @@
 import { afterEach, describe, expect, it } from 'vitest';
-import { lockedProjects, takeOverProject, tryLockProject, type LostReason, type ProjectLock } from '../src/projects/projectLock';
+import { lockedProjects, takeOverProject, tryLockProject, type LockDeps, type LostReason, type ProjectLock } from '../src/projects/projectLock';
 
-// Node has the Web Locks API and BroadcastChannel, like the browser
+/**
+ * The Web Locks API as the browser has it, for a Node without one (it came in
+ * Node 24): exclusive locks with ifAvailable, steal, an abort signal while
+ * waiting, and query.
+ */
+class FakeLockManager {
+  private held = new Map<string, { abort: (e: unknown) => void }>();
+  private waiting = new Map<string, (() => void)[]>();
+
+  async request(name: string, options: LockOptions, callback: (lock: Lock | null) => unknown): Promise<unknown> {
+    if (this.held.has(name)) {
+      if (options.ifAvailable) return callback(null);
+      if (options.steal) {
+        this.held.get(name)!.abort(new DOMException('The lock was stolen.', 'AbortError'));
+        this.held.delete(name);
+      } else {
+        await new Promise<void>((resolve, reject) => {
+          const queue = this.waiting.get(name) ?? [];
+          queue.push(resolve);
+          this.waiting.set(name, queue);
+          options.signal?.addEventListener('abort', () => {
+            this.waiting.set(name, (this.waiting.get(name) ?? []).filter((w) => w !== resolve));
+            reject(options.signal!.reason);
+          });
+        });
+      }
+    }
+    let abort!: (e: unknown) => void;
+    const stolen = new Promise<never>((_, reject) => {
+      abort = reject;
+    });
+    const mine = { abort };
+    this.held.set(name, mine);
+    try {
+      return await Promise.race([Promise.resolve().then(() => callback({ name, mode: 'exclusive' } as Lock)), stolen]);
+    } finally {
+      if (this.held.get(name) === mine) {
+        this.held.delete(name);
+        this.waiting.get(name)?.shift()?.();
+      }
+    }
+  }
+
+  async query(): Promise<LockManagerSnapshot> {
+    return { held: [...this.held.keys()].map((name) => ({ name, mode: 'exclusive' as const })), pending: [] };
+  }
+}
+
+// The browser's Web Locks when Node has them (24+), the same behaviour otherwise; BroadcastChannel is Node's own
+const locks = (globalThis.navigator?.locks ?? new FakeLockManager()) as unknown as LockManager;
+const withLocks = (deps: LockDeps = {}): LockDeps => ({ locks, ...deps });
+
 const held: ProjectLock[] = [];
 let n = 0;
 /** A fresh project id per test, so tests never share a lock. */
 const newId = () => `ptest${Date.now().toString(36)}${n++}`;
 async function lock(id: string, deps?: Parameters<typeof tryLockProject>[1]) {
-  const l = await tryLockProject(id, deps);
+  const l = await tryLockProject(id, withLocks(deps));
   if (l) held.push(l);
   return l;
 }
@@ -21,12 +72,12 @@ describe('project lock', () => {
     const first = await lock(id);
     expect(first?.held).toBe(true);
     expect(await lock(id)).toBeNull();
-    expect((await lockedProjects()).has(id)).toBe(true);
+    expect((await lockedProjects(withLocks())).has(id)).toBe(true);
 
     first!.release();
     // The browser lets go once the lock callback has settled
     await new Promise((r) => setTimeout(r, 0));
-    expect((await lockedProjects()).has(id)).toBe(false);
+    expect((await lockedProjects(withLocks())).has(id)).toBe(false);
     expect((await lock(id))?.held).toBe(true);
   });
 
@@ -40,7 +91,7 @@ describe('project lock', () => {
     });
     owner.onLost((reason: LostReason) => events.push(`lost:${reason}`));
 
-    const taker = await takeOverProject(id);
+    const taker = await takeOverProject(id, withLocks());
     held.push(taker);
     events.push('taken');
     expect(events).toEqual(['saved', 'lost:handed-off', 'taken']);
@@ -57,7 +108,7 @@ describe('project lock', () => {
     owner.onLost((r) => lost.push(r));
 
     const started = Date.now();
-    const taker = await takeOverProject(id, { handoffTimeoutMs: 100 });
+    const taker = await takeOverProject(id, withLocks({ handoffTimeoutMs: 100 }));
     held.push(taker);
     expect(Date.now() - started).toBeGreaterThanOrEqual(90);
     expect(taker.held).toBe(true);
