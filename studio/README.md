@@ -35,7 +35,9 @@ Application workspace for **Voice Whiteboard Studio**, combining four synchroniz
   - `projectFile.ts`, `workspaceData.ts`: One-file project export/import (tables as base64; a studio pages file also imports) and saved-workspace parsing.
 - `src/deck-export/`
   - `pptx.ts`: Editable PowerPoint (pptxgenjs, loaded on first use): one layout per slide type with a title placeholder and slide number, sections, native charts and tables, speaker notes; the ZIP is rewritten without folder entries so cloud services accept it.
-  - `googleSlides.ts`: "Open in Google Slides": a `drive.file` access token from Google Identity Services (in the tab only, never on the server) and a multipart upload that Drive converts to Google Slides. Needs `GOOGLE_CLIENT_ID` (served to the page by `/api/live/status`) and the Google Drive API enabled for that client's project.
+  - `googleSlides.ts`: "Open in Google Slides": a `drive.file` access token from Google Identity Services (in the tab only, never on the server), then the native build below; when the Slides API is not enabled, a multipart upload of the `.pptx` that Drive converts. Needs `GOOGLE_CLIENT_ID` (served to the page by `/api/live/status`).
+  - `googleSlidesApi.ts`: Native Google Slides through the Slides API: `presentations.create` (which ignores page size: the 13.333" layout is scaled to the 10" page), one `batchUpdate` of `createSlide`/`createShape`/`insertText`/`updateTextStyle`/`updateParagraphStyle`/`createTable`/table styling/`createSheetsChart` (LINKED) requests built purely from `engine/deckLayout.ts`, the chart data in a new spreadsheet (Sheets API `addChart`), and speaker notes in a second batch once `presentations.get` gives their shape ids. Enable the Google Slides API and the Google Sheets API for the OAuth client's project.
+- `src/agent/deckQueries.ts`: The read-only SQL that chart, table and kpis slides carry: checked and run before a deck edit (voice or inspector), again on Sync.
 - `src/agent/`
   - `tools.ts`, `dispatcher.ts`, `prompt.ts`, `session.ts`: `NON_BLOCKING` Gemini Live tool declarations and stateful tool dispatcher returning the live workspace summary on every turn.
 - `src/ui/`

@@ -1,6 +1,9 @@
 /**
- * "Open in Google Slides": the deck's .pptx is uploaded to the user's own
- * Google Drive and converted to a Google Slides presentation by Drive.
+ * "Open in Google Slides": the deck is built as a native Google Slides
+ * presentation with the Slides API (googleSlidesApi.ts: text boxes, shapes,
+ * tables, linked Sheets charts, speaker notes). When the Slides API is not
+ * enabled for the OAuth client, the deck's .pptx is uploaded to the user's
+ * Google Drive and converted by Drive instead.
  *
  * Access is asked with Google Identity Services' token client for the narrow
  * `drive.file` scope (only files this app creates), straight from the
@@ -11,6 +14,7 @@
  */
 import type { DeckSpec } from '../engine/deck';
 import { googleOAuthNow, loadGoogleOAuth, type GsiTokenResponse } from '../ui/googleSignIn';
+import { SlidesApiError, createNativePresentation } from './googleSlidesApi';
 import { PPTX_MIME, deckToPptxBlob } from './pptx';
 
 export const DRIVE_FILE_SCOPE = 'https://www.googleapis.com/auth/drive.file';
@@ -80,6 +84,10 @@ export interface UploadedPresentation {
   id: string;
   name: string;
   webViewLink: string;
+  /** How it was made: native Slides API, or a converted .pptx. */
+  via?: 'slides-api' | 'pptx';
+  /** Something the user should know about the result (e.g. charts as tables). */
+  note?: string;
 }
 
 /** Uploads a .pptx to Drive as a Google Slides presentation. */
@@ -141,11 +149,21 @@ export async function openDeckInGoogleSlides(deck: DeckSpec, clientId: string | 
       'not-configured',
     );
   }
-  // The token is asked first, within the click; the file is built meanwhile
-  const tokenPromise = requestDriveToken(clientId);
-  const [token, pptx] = await Promise.all([tokenPromise, deckToPptxBlob(deck)]);
+  // The token is asked first, within the click
+  const token = await requestDriveToken(clientId);
   try {
-    return await uploadPptxAsSlides(pptx, deck.title || 'Presentation', token);
+    try {
+      const made = await createNativePresentation(deck, token);
+      return { id: made.id, name: made.name, webViewLink: made.webViewLink, via: 'slides-api', ...(made.chartNote ? { note: made.chartNote } : {}) };
+    } catch (e) {
+      if (e instanceof SlidesApiError && e.status === 401) forgetDriveToken();
+      // Without the Slides API, Drive converts the PowerPoint file instead
+      if (!(e instanceof SlidesApiError && e.code === 'api-disabled' && e.api === 'slides')) {
+        throw e instanceof SlidesApiError ? new GoogleSlidesError(e.message, e.code) : e;
+      }
+    }
+    const file = await uploadPptxAsSlides(await deckToPptxBlob(deck), deck.title || 'Presentation', token);
+    return { ...file, via: 'pptx', note: 'Converted from PowerPoint: enable the Google Slides API for native slides and linked charts.' };
   } catch (e) {
     // A revoked or expired token was forgotten: the next click asks Google again
     if (e instanceof GoogleSlidesError && e.code === 'denied' && cached == null) {

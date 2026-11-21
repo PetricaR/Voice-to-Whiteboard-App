@@ -351,6 +351,30 @@ export const SCENARIOS: Scenario[] = [
     ],
   },
   {
+    name: 'Deck: live SQL charts, tables and figures by voice',
+    steps: [
+      {
+        say: 'Make a short deck called Q2 Revenue Review with a title slide and a closing slide.',
+        checks: [hasSlides(2)],
+      },
+      {
+        say: 'Add a chart slide with June 2026 MRR by region from the data.',
+        checks: [{ name: 'a chart slide runs its own SQL by region', test: (s) => (s.deck?.slides ?? []).some((x) => x.layout === 'chart' && x.query != null && /region/i.test(x.query.sql) && (x.chart?.categories.length ?? 0) > 1) }],
+      },
+      {
+        say: 'Make that chart a horizontal bar chart.',
+        checks: [{ name: 'the SQL chart is now bars, data kept', test: (s) => (s.deck?.slides ?? []).some((x) => x.layout === 'chart' && x.query != null && x.chart?.type === 'bar' && (x.chart?.categories.length ?? 0) > 1) }],
+      },
+      {
+        say: 'Add a table slide with the top 5 enterprise accounts by ARR, and a metrics slide with total June MRR.',
+        checks: [
+          { name: 'a table slide from SQL', test: (s) => (s.deck?.slides ?? []).some((x) => x.layout === 'table' && x.query != null && (x.rows?.length ?? 0) >= 3) },
+          { name: 'a figure from SQL', test: (s) => (s.deck?.slides ?? []).some((x) => x.layout === 'kpis' && (x.metrics ?? []).some((m) => m.query != null && /\d/.test(m.value))) },
+        ],
+      },
+    ],
+  },
+  {
     name: 'Board: explore, then pin to the dashboard',
     steps: [
       {

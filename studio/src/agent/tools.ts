@@ -225,7 +225,10 @@ const deckSlideFields = {
     trend: enumOf(['up', 'down', 'flat'], 'Direction of the change.'),
     note: str('Optional short context line.'),
     widget_id: str('Optional KPI widget id of the dashboard the figure comes from (kept fresh by sync).'),
-  }, ['label', 'value']), 'kpis slides: 2–4 figures.'),
+    sql: str('Optional read-only SQL whose first row gives the figure (first numeric column; a second numeric column is the % change). Replaces value; re-run by sync.'),
+    data_source: str('Data source of sql: "local" (default: the page\'s), "bigquery", "clickhouse", "postgres" or "rest:<name>".'),
+    format: enumOf(VALUE_FORMATS, 'How the sql figure is formatted, e.g. currency_usd, percent.'),
+  }, ['label']), 'kpis slides: 2–4 figures.'),
   chart: obj({
     type: enumOf(DECK_CHART_TYPES, 'column (categories), bar (rankings, long labels), stacked_column, line or area (time), donut (shares of a whole, ≤ 6 slices).'),
     categories: arrayOf(str('Category or period label.'), 'X-axis categories (≤ 12; ≤ 24 for line/area).'),
@@ -235,14 +238,17 @@ const deckSlideFields = {
     }, ['name', 'values']), 'Up to 4 series (1 for donut).'),
     format: enumOf(VALUE_FORMATS, 'How values are shown, e.g. currency_usd, percent.'),
     highlight_index: { type: 'INTEGER', description: '0-based category to draw in the accent color (the one the title talks about).' },
-  }, ['categories', 'series'], 'chart slides: the data, unless widget_id names a dashboard widget.'),
+  }, [], 'chart slides: typed data (categories + series), only when no sql or widget_id gives it. On a slide with sql, send chart: { type } (or format, highlight_index) alone.'),
   widget_id: str('chart or table slides: a dashboard widget id; the slide takes that widget\'s live SQL result.'),
+  sql: str('chart or table slides: the slide\'s own read-only SQL; its result fills the chart (label column, then numeric columns; ' +
+    'or label, series, value) or the table (≤ 6 columns, ≤ 8 rows), and sync re-runs it. Use instead of chart data or widget_id. "" removes it.'),
+  data_source: str('Data source of sql: "local" (default: the page\'s), "bigquery", "clickhouse", "postgres" or "rest:<name>".'),
   points: arrayOf(obj({
     title: str('Short heading (2–6 words), or the step name on flow slides.'),
     text: str('One sentence.'),
   }, ['title']), 'points slides: 2–4 cards; flow slides: 2–6 steps in order; closing slides: next steps.'),
-  columns: arrayOf(str('Column header.'), 'table slides: 2–6 headers.'),
-  rows: arrayOf(arrayOf(str('Cell text.'), 'One row.'), 'table slides: up to 8 rows.'),
+  columns: arrayOf(str('Column header.'), 'table slides with typed text (plans, owners, comparisons): 2–6 headers. Data from tables: use sql instead.'),
+  rows: arrayOf(arrayOf(str('Cell text.'), 'One row.'), 'table slides with typed text: up to 8 rows. Never copy rows from query or schema samples: give sql and the table fills from it.'),
   takeaways: arrayOf(str('One short sentence.'), 'chart slides: 1–3 takeaways beside the chart; kpis slides: up to 2; closing: 2–4.'),
 };
 
@@ -393,7 +399,7 @@ export const TOOL_DECLARATIONS = [
   {
     name: 'edit_deck',
     description: 'Edits the deck of the active page: change the words, numbers, layout, chart or notes of named slides, add, remove or reorder slides, ' +
-      'or change the theme or title. Only the fields given change.',
+      'or change the theme or title. Charts, tables and figures can take live data from their own sql (run now, re-run by sync). Only the fields given change.',
     behavior: 'NON_BLOCKING',
     parameters: obj({
       summary: str('Short summary of the change (at most 8 words).'),

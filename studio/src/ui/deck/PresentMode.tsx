@@ -38,7 +38,7 @@ export function PresentMode({
   const { w, h } = useViewport();
   const count = deck.slides.length;
   const i = Math.max(0, Math.min(count - 1, index));
-  const notesH = notes ? Math.min(220, h * 0.28) : 0;
+  const notesH = notes ? Math.min(240, Math.max(150, h * 0.3)) : 0;
   const width = Math.min(w, ((h - notesH) * SLIDE_PX.w) / SLIDE_PX.h);
   const exitRef = useRef(onExit);
   exitRef.current = onExit;
@@ -121,7 +121,19 @@ export function PresentMode({
     };
   }, []);
 
+  // Time since the presentation started, shown with the speaker notes
+  const [started] = useState(() => Date.now());
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!notes) return;
+    const t = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [notes]);
+  const elapsed = Math.max(0, Math.floor((now - started) / 1000));
+  const clock = `${Math.floor(elapsed / 60)}:${String(elapsed % 60).padStart(2, '0')}`;
+
   const slide = deck.slides[i];
+  const nextW = Math.round(Math.min(260, (notesH - 48) * SLIDE_PX.w / SLIDE_PX.h));
   return createPortal(
     <div
       ref={rootRef}
@@ -136,13 +148,25 @@ export function PresentMode({
           <SlideCanvas deck={deck} index={i} width={width} />
         </div>
       </div>
+      <div className="deck-present-progress" aria-hidden="true">
+        <span style={{ width: `${((i + 1) / count) * 100}%` }} />
+      </div>
       {notes && (
-        <div className="deck-present-notes" style={{ height: notesH }} aria-live="polite">
-          <strong>Notes · slide {i + 1}</strong>
-          <p>{slide?.notes ?? 'No speaker notes on this slide.'}</p>
+        <div className="deck-present-notes" style={{ height: notesH }}>
+          <div className="deck-present-notes-text" aria-live="polite">
+            <p className="deck-present-notes-head">
+              <strong>Notes · slide {i + 1}</strong>
+              <span className="deck-present-clock" aria-label={`Elapsed ${clock}`}>{clock}</span>
+            </p>
+            <p>{slide?.notes ?? 'No speaker notes on this slide.'}</p>
+          </div>
+          <div className="deck-present-next">
+            <strong>{i < count - 1 ? 'Next' : 'End of deck'}</strong>
+            {i < count - 1 && nextW > 80 && <SlideCanvas deck={deck} index={i + 1} width={nextW} />}
+          </div>
         </div>
       )}
-      <div className="deck-present-controls" role="toolbar" aria-label="Presentation controls">
+      <div className="deck-present-controls" role="toolbar" aria-label="Presentation controls" style={notes ? { bottom: notesH + 16 } : undefined}>
         <button type="button" aria-label="Previous slide" disabled={i === 0} onClick={() => setIndex(Math.max(0, i - 1))}>
           <Icon name="arrow_back" size={20} />
         </button>

@@ -33,7 +33,8 @@ import {
   type DashboardWidget,
   type EditDashboardRequest,
 } from '../engine/dashboard';
-import type { CreateDeckRequest, EditDeckRequest } from '../engine/deck';
+import { deckQueries, type CreateDeckRequest, type EditDeckRequest } from '../engine/deck';
+import { prepareDeckQueries, rerunDeckQueries, runDeckQueries } from './deckQueries';
 import type { BlockInput, CreateRequest, EditRequest, EditResult } from '../engine/ops';
 import { resolveRef } from '../engine/resolve';
 import { DiagramStore, type ChangeSource, type DashboardSurface } from '../engine/store';
@@ -386,6 +387,12 @@ async function resultsFor(ctx: ToolContext, store: DiagramStore, fresh = false):
   const shown = fresh ? undefined : ctx.studio?.getDashboardResults?.();
   if (shown && dashboard.widgets.every((w) => shown[w.id] != null)) return shown;
   return computeDashboardResults(dashboard);
+}
+
+/** Runs the SQL that slides of a deck request carry (their data source defaults to the page's). */
+function deckQueryResults(req: CreateDeckRequest | EditDeckRequest, store: DiagramStore) {
+  const queries = prepareDeckQueries(req, store.scene.dashboard?.defaultSource ?? 'local');
+  return queries.length === 0 ? Promise.resolve({ results: new Map(), errors: [] as string[] }) : runDeckQueries(queries, store.scene.dashboard);
 }
 
 /** A warehouse query that takes longer than this is reviewed by the user's eyes, not by the model. */
@@ -782,9 +789,14 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const store = storeOf(ctx);
       const req = a as unknown as CreateDeckRequest;
       const dashResults = await resultsFor(ctx, store);
+      const run = await deckQueryResults(req, store);
+      if (run.errors.length > 0) {
+        return { ok: false, errors: run.errors, result: 'Nothing was changed: fix the SQL of these slides (inspect_schema shows the columns).', diagram: stateOf(ctx) };
+      }
+      const queryResults = run.results;
       if (req.new_page === true && ws != null) {
         const draft = new DiagramStore(store.scene);
-        const res = draft.createDeck({ ...req, replace: true }, meta, dashResults);
+        const res = draft.createDeck({ ...req, replace: true }, meta, dashResults, { queryResults });
         if (res.ok) {
           ws.addPage({
             scene: { ...draft.scene, title: draft.scene.deck?.title ?? draft.scene.title, nodes: [], edges: [], groups: [], blocks: [], dashboard: undefined, board: undefined },
@@ -806,7 +818,7 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
           diagram: stateOf(ctx),
         };
       }
-      const res = store.createDeck(req, meta, dashResults);
+      const res = store.createDeck(req, meta, dashResults, { queryResults });
       if (res.ok) {
         ws?.showView('deck');
         ctx.studio?.controlDeck?.('go_to', 0);
@@ -818,7 +830,11 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       const store = storeOf(ctx);
       const req = a as unknown as EditDeckRequest;
       const bindsWidget = [...(req.add_slides ?? []), ...(req.update_slides ?? [])].some((x) => x != null && (x.widget_id != null || x.widgetId != null));
-      const res = store.editDeck(req, { ...meta, label: str(req.summary) }, bindsWidget ? await resultsFor(ctx, store) : undefined);
+      const run = await deckQueryResults(req, store);
+      if (run.errors.length > 0) {
+        return { ok: false, errors: run.errors, result: 'Nothing was changed: fix the SQL of these slides (inspect_schema shows the columns).', diagram: stateOf(ctx) };
+      }
+      const res = store.editDeck(req, { ...meta, label: str(req.summary) }, bindsWidget ? await resultsFor(ctx, store) : undefined, run.results);
       if (res.ok) {
         ws?.showView('deck');
         const first = res.changes.addedSlides[0] ?? res.changes.updatedSlides[0];
@@ -836,12 +852,16 @@ export async function handleToolCall(name: string, args: Record<string, unknown>
       }
       const action = str(a.action) ?? 'present';
       if (action === 'sync_data') {
-        if (store.scene.dashboard == null) {
-          return { ok: false, errors: ['This page has no dashboard to take numbers from.'], diagram: stateOf(ctx) };
+        const queries = deckQueries(deck);
+        if (store.scene.dashboard == null && queries.length === 0) {
+          return { ok: false, errors: ['This deck has no live data: no dashboard on the page and no slide with its own SQL.'], diagram: stateOf(ctx) };
         }
-        const res = store.syncDeck((await resultsFor(ctx, store, true)) ?? {}, meta);
+        const [dash, run] = await Promise.all([resultsFor(ctx, store, true), rerunDeckQueries(deck, store.scene.dashboard)]);
+        const res = store.syncDeck(dash ?? {}, meta, run.results);
         ws?.showView('deck');
-        return editResponse(ctx, res);
+        const response = editResponse(ctx, res);
+        if (run.errors.length > 0) response.warnings = [...(response.warnings as string[] | undefined ?? []), ...run.errors];
+        return response;
       }
       if (!(DECK_ACTIONS as readonly string[]).includes(action)) {
         return { ok: false, errors: [`Unknown action "${action}"; use ${['sync_data', ...DECK_ACTIONS].join(', ')}.`], diagram: stateOf(ctx) };

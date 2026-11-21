@@ -17,6 +17,7 @@ import {
   type CreateDeckRequest,
   type DeckOpResult,
   type EditDeckRequest,
+  type QueryResults,
 } from './deck';
 import { applyEdit, buildScene, type CreateRequest, type EditRequest, type EditResult } from './ops';
 import { reflowBlocks } from './blocks';
@@ -382,10 +383,10 @@ export class DiagramStore {
     req: CreateDeckRequest,
     meta: ChangeMeta,
     dashboardResults?: Record<string, QueryExecutionResult | undefined>,
-    opts: { date?: string } = {},
+    opts: { date?: string; queryResults?: QueryResults } = {},
   ): EditResult {
     const prev = this.scene;
-    const res = buildDeck(req, { pageScene: prev, dashboardResults, date: opts.date });
+    const res = buildDeck(req, { pageScene: prev, dashboardResults, queryResults: opts.queryResults, date: opts.date });
     if (!res.ok) return this.rejectDeck(res);
     const next = cloneScene(prev);
     next.deck = res.deck;
@@ -404,12 +405,13 @@ export class DiagramStore {
     req: EditDeckRequest,
     meta: ChangeMeta,
     dashboardResults?: Record<string, QueryExecutionResult | undefined>,
+    queryResults?: QueryResults,
   ): EditResult {
     const prev = this.scene;
     if (!prev.deck) {
       return this.rejectDeck({ errors: ['This page has no deck yet. Call create_deck first.'], warnings: [], notes: [] });
     }
-    const res = applyDeckEdit(prev.deck, req, { pageScene: prev, dashboardResults });
+    const res = applyDeckEdit(prev.deck, req, { pageScene: prev, dashboardResults, queryResults });
     if (!res.ok) return this.rejectDeck(res);
     const next = cloneScene(prev);
     next.deck = res.deck;
@@ -431,10 +433,10 @@ export class DiagramStore {
   }
 
   /** Refreshes the numbers of slides bound to dashboard widgets; words stay as written. */
-  syncDeck(dashboardResults: Record<string, QueryExecutionResult | undefined>, meta: ChangeMeta): EditResult {
+  syncDeck(dashboardResults: Record<string, QueryExecutionResult | undefined>, meta: ChangeMeta, queryResults?: QueryResults): EditResult {
     const prev = this.scene;
     if (!prev.deck) return this.rejectDeck({ errors: ['This page has no deck yet.'], warnings: [], notes: [] });
-    const { deck, updated } = syncDeckData(prev.deck, prev, dashboardResults);
+    const { deck, updated } = syncDeckData(prev.deck, prev, dashboardResults, queryResults);
     const changes = emptyChanges();
     if (updated.length === 0 || JSON.stringify(deck) === JSON.stringify(prev.deck)) {
       return { ok: true, scene: prev, changes, errors: [], warnings: [], notes: ['The deck already shows the latest numbers.'] };

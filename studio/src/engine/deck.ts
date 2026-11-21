@@ -12,9 +12,15 @@
  * Chart slides can be bound to a dashboard widget (`widgetId`): building from
  * the page fills them from that widget's SQL result, and "Sync data" refreshes
  * the numbers without touching the words the user wrote.
+ *
+ * Chart, table and kpis slides can also carry their own read-only SQL query
+ * (`query`, and `query` on a metric): the caller runs it (agent/deckQueries.ts)
+ * and passes the results in; the slide is filled from them and "Sync data"
+ * runs it again. This is how a voice request puts live data straight on a slide
+ * without a dashboard widget.
  */
 import type { QueryExecutionResult } from '../data/sqlEngine';
-import { VALUE_FORMATS, formatMetricValue, type DashboardWidget, type ValueFormat } from './dashboard';
+import { VALUE_FORMATS, formatMetricValue, type DashboardWidget, type ValueFormat, type WidgetKind } from './dashboard';
 import { resolveRef } from './resolve';
 import type { Scene } from './types';
 
@@ -29,6 +35,21 @@ export type DeckChartType = (typeof DECK_CHART_TYPES)[number];
 
 export type Trend = 'up' | 'down' | 'flat';
 
+/** A read-only SQL query whose result fills a slide (chart, table) or a metric. */
+export interface SlideQuery {
+  sql: string;
+  /** Data source id: "local", "bigquery", "clickhouse", "postgres", "rest:<name>". */
+  source: string;
+  /** How the values are shown, e.g. currency_usd, percent. */
+  format?: ValueFormat;
+  unit?: string;
+}
+
+/** Results of slide queries, by queryKey(). */
+export type QueryResults = Map<string, QueryExecutionResult>;
+
+export const queryKey = (q: Pick<SlideQuery, 'sql' | 'source'>): string => `${q.source.trim()}\0${q.sql.trim()}`;
+
 export interface DeckMetric {
   label: string;
   /** The figure as shown, already formatted ("$266.5K", "116.7%"). */
@@ -39,6 +60,8 @@ export interface DeckMetric {
   note?: string;
   /** Dashboard KPI widget the figure comes from (refreshed by "Sync data"). */
   widgetId?: string;
+  /** The figure's own SQL query (first row), refreshed by "Sync data". */
+  query?: SlideQuery;
 }
 
 /** A card of a points slide, a step of a flow, or a next step of the closing slide. */
@@ -78,6 +101,8 @@ export interface Slide {
   chart?: DeckChart;
   /** Dashboard widget whose live result fills `chart`. */
   widgetId?: string;
+  /** The slide's own SQL query that fills `chart` (chart slides) or `columns`/`rows` (table slides). */
+  query?: SlideQuery;
   points?: DeckPoint[];
   columns?: string[];
   rows?: string[][];
@@ -127,7 +152,19 @@ export interface DeckChartInput {
   highlight?: number;
 }
 
-export interface SlideInput {
+/** A query given with a slide or metric: `sql` + `data_source` (tool arguments) or a stored `query`. */
+export interface QueryInput {
+  /** Read-only SQL; "" or null removes the query (the data stays as it is). */
+  sql?: string | null;
+  data_source?: string;
+  dataSource?: string;
+  /** Value format of a metric's figure. */
+  format?: ValueFormat;
+  unit?: string;
+  query?: SlideQuery | null;
+}
+
+export interface SlideInput extends QueryInput {
   id?: string;
   layout?: SlideLayout;
   title?: string;
@@ -135,7 +172,7 @@ export interface SlideInput {
   kicker?: string;
   notes?: string;
   source?: string;
-  metrics?: { label?: string; value?: unknown; delta?: string; trend?: Trend; note?: string; widget_id?: string; widgetId?: string }[];
+  metrics?: (QueryInput & { label?: string; value?: unknown; delta?: string; trend?: Trend; note?: string; widget_id?: string; widgetId?: string })[];
   /** null removes the chart's own data (e.g. when a widget gives it). */
   chart?: DeckChartInput | null;
   widget_id?: string;
@@ -268,8 +305,103 @@ function normalizePoints(raw: unknown, max: number): DeckPoint[] | undefined {
   return points;
 }
 
+/**
+ * The query given with a slide or metric: a SlideQuery, null to remove it, or
+ * undefined when none is given. A query without a data source uses "local";
+ * callers fill `data_source` with the page's default first (deckQueries.ts).
+ */
+export function queryOfInput(input: QueryInput): SlideQuery | null | undefined {
+  const stored = input.query;
+  if (stored === null) return null;
+  const raw = input.sql !== undefined ? input.sql : stored?.sql;
+  if (raw === undefined) return undefined;
+  if (raw === null || String(raw).trim() === '') return null;
+  const src = String(input.data_source ?? input.dataSource ?? stored?.source ?? 'local').trim() || 'local';
+  const format = VALUE_FORMATS.includes(input.format as ValueFormat) ? input.format : VALUE_FORMATS.includes(stored?.format as ValueFormat) ? stored?.format : undefined;
+  const unit = opt(input.unit ?? stored?.unit, 16);
+  return { sql: String(raw).trim().slice(0, 8000), source: src.slice(0, 80), ...(format ? { format } : {}), ...(unit ? { unit } : {}) };
+}
+
+const CHART_KIND: Record<DeckChartType, WidgetKind> = {
+  column: 'column', bar: 'horizontal_bar', stacked_column: 'stacked_bar', line: 'line', area: 'area', donut: 'donut',
+};
+
+/** A slide query seen as a dashboard widget, so the dashboard's result readers apply. */
+function queryWidget(id: string, title: string, q: SlideQuery, kind: WidgetKind): DashboardWidget {
+  return { id, title, kind, source: q.source, sql: q.sql, colSpan: 6, ...(q.format ? { format: q.format } : {}), ...(q.unit ? { unit: q.unit } : {}) };
+}
+
+/** Short preview of what a query gave, told to the agent so it can write the title. */
+function chartPreview(c: DeckChart): string {
+  const s = c.series[0];
+  const pairs = c.categories.slice(0, 6).map((cat, i) => `${cat} ${formatMetricValue(s.values[i] ?? 0, c.format ?? 'number', c.unit)}`);
+  return `${c.type}, ${c.categories.length} categories × ${c.series.length} series (${c.series.map((x) => x.name).join(', ')}): ${pairs.join('; ')}${c.categories.length > 6 ? '; …' : ''}`;
+}
+
+/**
+ * Fills a slide (and its metrics) from the results of its queries. `chartType`
+ * is the type asked for now; otherwise a chart keeps the type it had.
+ * Returns what it filled, for the agent.
+ */
+function fillFromQueries(slide: Slide, results: QueryResults, warnings: string[], chartType?: DeckChartType): string[] {
+  const filled: string[] = [];
+  const q = slide.query;
+  if (q) {
+    const res = results.get(queryKey(q));
+    if (res && slide.layout === 'chart') {
+      const type = chartType ?? slide.chart?.type;
+      const chart = chartFromWidget(queryWidget(slide.id, slide.title, q, type ? CHART_KIND[type] : 'column'), res);
+      if (chart) {
+        const fixed = type && !(type === 'donut' && (chart.series.length > 1 || chart.categories.length > LIMITS.donutCategories)) ? type : chart.type;
+        slide.chart = { ...chart, type: fixed, ...(fixed !== 'bar' && fixed !== 'column' ? { highlight: undefined } : {}) };
+        if (slide.chart.highlight === undefined) delete slide.chart.highlight;
+        delete slide.widgetId;
+        filled.push(`slide ${slide.id}: ${chartPreview(slide.chart)}`);
+      } else {
+        warnings.push(`Slide ${slide.id}: the query returned nothing that can be charted (it needs a label column and a numeric column).`);
+      }
+    } else if (res && slide.layout === 'table') {
+      const t = tableFromWidget(queryWidget(slide.id, slide.title, q, 'table'), res);
+      if (t) {
+        slide.columns = t.columns;
+        slide.rows = t.rows;
+        delete slide.widgetId;
+        filled.push(`slide ${slide.id}: table ${t.columns.join(' | ')} (${t.rows.length} rows${res.rows.length > t.rows.length ? ` of ${res.rows.length}` : ''})`);
+      } else {
+        warnings.push(`Slide ${slide.id}: the query returned no rows.`);
+      }
+    }
+  }
+  slide.metrics?.forEach((m, i) => {
+    if (!m.query) return;
+    const res = results.get(queryKey(m.query));
+    if (!res) return;
+    const fresh = metricFromWidget(queryWidget(`${slide.id}_m${i + 1}`, m.label, m.query, 'kpi'), res);
+    if (!fresh) {
+      warnings.push(`Slide ${slide.id}: the query of "${m.label}" returned no rows.`);
+      return;
+    }
+    m.value = fresh.value;
+    if (fresh.delta) m.delta = fresh.delta;
+    if (fresh.trend) m.trend = fresh.trend;
+    delete m.widgetId;
+    filled.push(`slide ${slide.id}: ${m.label} = ${m.value}${m.delta ? ` (${m.delta})` : ''}`);
+  });
+  return filled;
+}
+
+/** Every query of a deck (slides and metrics), once each. */
+export function deckQueries(deck: DeckSpec): SlideQuery[] {
+  const out = new Map<string, SlideQuery>();
+  for (const s of deck.slides) {
+    if (s.query) out.set(queryKey(s.query), s.query);
+    for (const m of s.metrics ?? []) if (m.query) out.set(queryKey(m.query), m.query);
+  }
+  return [...out.values()];
+}
+
 /** Applies the fields given in `input` onto `slide` (missing fields stay). */
-function applySlideFields(slide: Slide, input: SlideInput, warnings: string[]) {
+function applySlideFields(slide: Slide, input: SlideInput, warnings: string[], results?: QueryResults, filled?: string[]) {
   if (input.layout !== undefined && SLIDE_LAYOUTS.includes(input.layout)) slide.layout = input.layout;
   if (input.title !== undefined && clip(input.title, TEXT.title) !== '') slide.title = clip(input.title, TEXT.title);
   const strField = (key: 'subtitle' | 'kicker' | 'notes' | 'source', max: number) => {
@@ -295,25 +427,52 @@ function applySlideFields(slide: Slide, input: SlideInput, warnings: string[]) {
           : typeof m.delta === 'string' && /^\s*[+▲↑]/.test(m.delta) ? 'up'
             : typeof m.delta === 'string' && /^\s*[-−▼↓]/.test(m.delta) ? 'down' : undefined;
         const widgetId = m.widgetId ?? m.widget_id;
+        const query = queryOfInput(m);
         return {
           label: clip(m.label ?? 'Metric', TEXT.label),
           value: clip(m.value ?? '—', TEXT.value),
           ...(opt(m.delta, TEXT.delta) ? { delta: opt(m.delta, TEXT.delta) } : {}),
           ...(trend ? { trend } : {}),
           ...(opt(m.note, TEXT.note) ? { note: opt(m.note, TEXT.note) } : {}),
-          ...(widgetId ? { widgetId: String(widgetId) } : {}),
+          ...(widgetId && !query ? { widgetId: String(widgetId) } : {}),
+          ...(query ? { query } : {}),
         };
       });
   }
-  if (input.chart !== undefined) {
-    const chart = normalizeChart(input.chart, warnings);
-    if (chart) slide.chart = chart;
-    else if (input.chart === null) delete slide.chart;
+  const query = queryOfInput(input);
+  const chartIn = input.chart;
+  const hasData = chartIn != null && typeof chartIn === 'object' && Array.isArray(chartIn.categories) && chartIn.categories.length > 0;
+  // A live slide keeps its query's numbers: chart data typed alongside (often copied back by the agent) only gives the look
+  const keepsLive = hasData && slide.query != null && slide.chart != null && input.sql === undefined && input.query === undefined;
+  if (keepsLive) warnings.push(`Slide ${slide.id}: the chart data comes from its SQL; kept the live data and applied only the type, format and highlight. Pass sql: "" to type the data yourself.`);
+  const typeOnly = chartIn != null && typeof chartIn === 'object' && (!hasData || keepsLive);
+  const askedType = chartIn != null && DECK_CHART_TYPES.includes(chartIn.type as DeckChartType) ? (chartIn.type as DeckChartType) : undefined;
+  if (chartIn !== undefined) {
+    if (typeOnly && slide.chart) {
+      // A new type, format or highlight for the data the chart already has
+      const format = VALUE_FORMATS.includes(chartIn.format as ValueFormat) ? chartIn.format : slide.chart.format;
+      slide.chart = { ...slide.chart, ...(askedType ? { type: askedType } : {}), ...(format ? { format } : {}) };
+      const hi = chartIn.highlight_index ?? chartIn.highlight;
+      if (typeof hi === 'number' && hi >= 0 && hi < slide.chart.categories.length) slide.chart.highlight = Math.round(hi);
+    } else if (!(typeOnly && (query || slide.query))) {
+      const chart = normalizeChart(chartIn, warnings);
+      if (chart) slide.chart = chart;
+      else if (chartIn === null) delete slide.chart;
+    }
   }
   const widgetId = input.widgetId ?? input.widget_id;
   if (widgetId !== undefined) {
     if (widgetId === '' || widgetId === null) delete slide.widgetId;
-    else slide.widgetId = String(widgetId);
+    else {
+      slide.widgetId = String(widgetId);
+      delete slide.query;
+    }
+  }
+  if (query === null) delete slide.query;
+  else if (query) {
+    slide.query = query;
+    if (!query.format && chartIn && VALUE_FORMATS.includes(chartIn.format as ValueFormat)) slide.query.format = chartIn.format;
+    delete slide.widgetId;
   }
   const pointsRaw = input.points ?? input.steps ?? input.next_steps;
   if (pointsRaw !== undefined) {
@@ -347,6 +506,10 @@ function applySlideFields(slide: Slide, input: SlideInput, warnings: string[]) {
     if (list.length > 0) slide.takeaways = list.slice(0, max);
     else delete slide.takeaways;
   }
+  if (results && results.size > 0) {
+    const out = fillFromQueries(slide, results, warnings, askedType);
+    filled?.push(...out);
+  }
 }
 
 /** Says what a slide is missing for its layout (shown to the agent as a warning). */
@@ -355,7 +518,7 @@ function layoutGaps(s: Slide): string | null {
     case 'kpis':
       return (s.metrics?.length ?? 0) === 0 ? `Slide ${s.id} (kpis) has no metrics yet.` : null;
     case 'chart':
-      return s.chart == null && s.widgetId == null ? `Slide ${s.id} (chart) has no chart data and no widget_id.` : null;
+      return s.chart == null && s.widgetId == null ? `Slide ${s.id} (chart) has no chart data${s.query ? ' (its query gave none)' : ' and no widget_id or sql'}.` : null;
     case 'points':
       return (s.points?.length ?? 0) === 0 ? `Slide ${s.id} (points) has no points yet.` : null;
     case 'flow':
@@ -367,12 +530,12 @@ function layoutGaps(s: Slide): string | null {
   }
 }
 
-function newSlide(input: SlideInput, used: Set<string>, index: number, warnings: string[]): Slide {
+function newSlide(input: SlideInput, used: Set<string>, index: number, warnings: string[], results?: QueryResults, filled?: string[]): Slide {
   const layout: SlideLayout = SLIDE_LAYOUTS.includes(input.layout as SlideLayout) ? (input.layout as SlideLayout) : 'points';
   const title = clip(input.title ?? '', TEXT.title) || (layout === 'title' ? 'Untitled presentation' : `Slide ${index + 1}`);
   const id = uniqueSlideId(slideSlug(input.id ?? title, `slide_${index + 1}`), used);
   const slide: Slide = { id, layout, title };
-  applySlideFields(slide, { ...input, layout, title }, warnings);
+  applySlideFields(slide, { ...input, layout, title }, warnings, results, filled);
   return slide;
 }
 
@@ -381,7 +544,8 @@ export function cloneDeck(d: DeckSpec): DeckSpec {
     ...d,
     slides: d.slides.map((s) => ({
       ...s,
-      ...(s.metrics ? { metrics: s.metrics.map((m) => ({ ...m })) } : {}),
+      ...(s.metrics ? { metrics: s.metrics.map((m) => ({ ...m, ...(m.query ? { query: { ...m.query } } : {}) })) } : {}),
+      ...(s.query ? { query: { ...s.query } } : {}),
       ...(s.chart ? { chart: { ...s.chart, categories: [...s.chart.categories], series: s.chart.series.map((x) => ({ ...x, values: [...x.values] })) } } : {}),
       ...(s.points ? { points: s.points.map((p) => ({ ...p })) } : {}),
       ...(s.columns ? { columns: [...s.columns] } : {}),
@@ -888,12 +1052,17 @@ export function generateDeckFromPage(scene: Scene, results: Results = {}, o: Fro
  * Refreshes the numbers of slides bound to dashboard widgets (charts, KPI
  * figures, tables) from the latest results; titles and notes stay as written.
  */
-export function syncDeckData(deck: DeckSpec, scene: Scene, results: Results): { deck: DeckSpec; updated: string[] } {
+export function syncDeckData(deck: DeckSpec, scene: Scene, results: Results, queryResults?: QueryResults): { deck: DeckSpec; updated: string[] } {
   const next = cloneDeck(deck);
   const updated: string[] = [];
   const widgets = new Map((scene.dashboard?.widgets ?? []).map((w) => [w.id, w]));
   for (const s of next.slides) {
     let changed = false;
+    if (queryResults && queryResults.size > 0 && (s.query || s.metrics?.some((m) => m.query))) {
+      const before = JSON.stringify(s);
+      fillFromQueries(s, queryResults, []);
+      if (JSON.stringify(s) !== before) changed = true;
+    }
     const w = s.widgetId ? widgets.get(s.widgetId) : undefined;
     if (w && s.layout === 'chart') {
       const chart = chartFromWidget(w, results[w.id]);
@@ -958,7 +1127,7 @@ function fail(errors: string[], deck: DeckSpec = EMPTY, warnings: string[] = [])
 
 export function buildDeck(
   req: CreateDeckRequest,
-  context: { pageScene?: Scene; dashboardResults?: Results; date?: string } = {},
+  context: { pageScene?: Scene; dashboardResults?: Results; queryResults?: QueryResults; date?: string } = {},
 ): DeckOpResult {
   const theme = DECK_THEMES.includes(req.theme as DeckThemeName) ? req.theme : undefined;
   if ((!Array.isArray(req.slides) || req.slides.length === 0) && context.pageScene) {
@@ -985,7 +1154,8 @@ export function buildDeck(
   const warnings: string[] = [];
   if (req.slides.length > LIMITS.slides) warnings.push(`A deck holds at most ${LIMITS.slides} slides; kept the first ${LIMITS.slides}.`);
   const used = new Set<string>();
-  const slides = req.slides.slice(0, LIMITS.slides).map((s, i) => newSlide(s ?? {}, used, i, warnings));
+  const filled: string[] = [];
+  const slides = req.slides.slice(0, LIMITS.slides).map((s, i) => newSlide(s ?? {}, used, i, warnings, context.queryResults, filled));
   const deck: DeckSpec = {
     title: clip(req.title ?? '', TEXT.title) || slides.find((s) => s.layout === 'title')?.title || slides[0].title,
     ...(opt(req.subtitle, TEXT.subtitle) ? { subtitle: opt(req.subtitle, TEXT.subtitle) } : {}),
@@ -999,7 +1169,7 @@ export function buildDeck(
     const gap = layoutGaps(s);
     if (gap) warnings.push(gap);
   }
-  return { ok: true, deck, addedSlides: slides.map((s) => s.id), updatedSlides: [], removedSlides: [], errors: [], warnings, notes: [] };
+  return { ok: true, deck, addedSlides: slides.map((s) => s.id), updatedSlides: [], removedSlides: [], errors: [], warnings, notes: filled.map((f) => `From SQL: ${f}`) };
 }
 
 function resolveSlide(ref: unknown, slides: Slide[]): { item?: Slide; note?: string; error?: string } {
@@ -1018,9 +1188,10 @@ function resolveSlide(ref: unknown, slides: Slide[]): { item?: Slide; note?: str
 export function applyDeckEdit(
   prev: DeckSpec,
   req: EditDeckRequest,
-  context: { pageScene?: Scene; dashboardResults?: Results } = {},
+  context: { pageScene?: Scene; dashboardResults?: Results; queryResults?: QueryResults } = {},
 ): DeckOpResult {
   const next = cloneDeck(prev);
+  const filled: string[] = [];
   const errors: string[] = [];
   const warnings: string[] = [];
   const notes: string[] = [];
@@ -1067,7 +1238,7 @@ export function applyDeckEdit(
     }
     if (r.note) notes.push(r.note);
     const { id: _id, ...fields } = patch;
-    applySlideFields(r.item, fields, warnings);
+    applySlideFields(r.item, fields, warnings, context.queryResults, filled);
     touch(r.item.id);
   }
 
@@ -1078,7 +1249,7 @@ export function applyDeckEdit(
       warnings.push(`A deck holds at most ${LIMITS.slides} slides.`);
       break;
     }
-    const created = newSlide(add, used, next.slides.length, warnings);
+    const created = newSlide(add, used, next.slides.length, warnings, context.queryResults, filled);
     if (add.after === 'start') next.slides.unshift(created);
     else if (add.after) {
       const r = resolveSlide(add.after, next.slides);
@@ -1116,6 +1287,7 @@ export function applyDeckEdit(
     const gap = s ? layoutGaps(s) : null;
     if (gap) warnings.push(gap);
   }
+  for (const f of filled) notes.push(`From SQL: ${f}`);
   return { ok: true, deck: next, addedSlides: added, updatedSlides: updated, removedSlides: removed, errors: [], warnings, notes };
 }
 
@@ -1214,9 +1386,9 @@ export function describeDeck(d: DeckSpec): string {
     const detail = s.layout === 'kpis'
       ? ` metrics: ${(s.metrics ?? []).map((m) => `${m.label} ${m.value}`).join('; ')}`
       : s.layout === 'chart'
-        ? ` ${s.chart ? `${s.chart.type}, ${s.chart.categories.length} categories × ${s.chart.series.length} series` : 'no data'}${s.widgetId ? `, widget ${s.widgetId}` : ''}`
+        ? ` ${s.chart ? `${s.chart.type}, ${s.chart.categories.length} categories × ${s.chart.series.length} series` : 'no data'}${s.widgetId ? `, widget ${s.widgetId}` : ''}${s.query ? `, live SQL on ${s.query.source}` : ''}`
         : s.layout === 'table'
-          ? ` ${s.columns?.length ?? 0} columns × ${s.rows?.length ?? 0} rows`
+          ? ` ${s.columns?.length ?? 0} columns × ${s.rows?.length ?? 0} rows${s.query ? `, live SQL on ${s.query.source}` : ''}`
           : s.points
             ? ` ${s.points.length} ${s.layout === 'flow' ? 'steps' : 'points'}: ${s.points.map((p) => p.title).join(' | ')}`
             : '';

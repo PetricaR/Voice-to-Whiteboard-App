@@ -38,7 +38,7 @@ export async function openDeckInGoogleSlides(deck: DeckSpec, clientId: string | 
     const m = await import('../../deck-export/googleSlides');
     notify('Saving the deck to your Google Drive…');
     const file = await m.openDeckInGoogleSlides(deck, clientId);
-    notify(`“${file.name}” is in your Google Drive as Google Slides.`, {
+    notify(`“${file.name}” is in your Google Drive as Google Slides${file.via === 'slides-api' ? ' (native slides, speaker notes)' : ''}.${file.note ? ` ${file.note}` : ''}`, {
       label: 'Open',
       run: () => window.open(file.webViewLink, '_blank', 'noopener'),
     });
