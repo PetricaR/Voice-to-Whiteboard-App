@@ -25,6 +25,10 @@ Application workspace for **Voice Whiteboard Studio**, combining four synchroniz
   - `chartInsights.ts`: The chart review the voice agent gets back from `create_dashboard`, `edit_dashboard` and `refresh_dashboard`: every widget query is run and checked against its chart kind (`issues` to fix, `advice` with the exact patch, `facts` for the spoken insight), plus 12-column layout notes.
   - `motion.ts` & `timeline.ts`: Deterministic `MotionSpec` model, cross-surface `generateMotionFromPage` storyboard synthesizer, spring/smooth/snappy/linear timeline evaluator (`evaluateMotionAt`), and 60fps Canvas2D renderer (`renderMotionFrame`).
   - `ops.ts`, `placement.ts`, `layout.ts`, `book.ts`, `store.ts`, `workspace.ts`: Atomic Undo/Redo store and multi-page, multi-surface workspace (`'dashboard' | 'motion' | 'diagram' | 'doc'`).
+- `src/projects/`
+  - `projectStore.ts`: Projects saved in this browser (IndexedDB database `studio`): each project's metadata, workspace (pages + diagram history) and data tables, behind a `ProjectStore` interface so another backend can be added later.
+  - `boot.ts`: Which project a tab opens (`?project=<id>`; without it the project list), and the first start that turns an earlier version's localStorage workspace into "My first project".
+  - `projectFile.ts`, `workspaceData.ts`: One-file project export/import (tables as base64; a studio pages file also imports) and saved-workspace parsing.
 - `src/motion-export/mp4Exporter.ts`: Deterministic offline frame-by-frame WebCodecs `VideoEncoder` + `mp4-muxer` `.mp4` encoder with `MediaRecorder` `.webm` fallback.
 - `src/agent/`
   - `tools.ts`, `dispatcher.ts`, `prompt.ts`, `session.ts`: `NON_BLOCKING` Gemini Live tool declarations and stateful tool dispatcher returning the live workspace summary on every turn.

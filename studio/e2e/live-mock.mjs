@@ -206,6 +206,8 @@ await page.route('**/api/live/token', (route) => {
   return route.fulfill({ json: { token, expireTime: new Date(Date.now() + 30 * 60_000).toISOString() } });
 });
 await page.goto(url);
+// A first start opens a project and puts it in the address; storage is cleared after that
+await page.waitForSelector('.voice-dock');
 await page.evaluate((port) => {
   localStorage.clear();
   // A key saved by an earlier version must be removed from the browser

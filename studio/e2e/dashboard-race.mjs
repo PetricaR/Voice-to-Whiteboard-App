@@ -37,6 +37,8 @@ await page.route('**/api/data/query', async (route) => {
 });
 
 await page.goto(url);
+// A first start opens a project and puts it in the address; storage is cleared after that
+await page.waitForSelector('.voice-dock');
 await page.evaluate(() => localStorage.clear());
 await page.reload();
 await page.waitForSelector('.voice-dock');

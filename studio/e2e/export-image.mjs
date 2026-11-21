@@ -26,6 +26,8 @@ page.on('pageerror', (e) => errors.push(e.message));
 await page.route('**/api/live/status', (route) => route.fulfill({ json: { configured: false, auth: { required: false } } }));
 
 await page.goto(url);
+// A first start opens a project and puts it in the address; storage is cleared after that
+await page.waitForSelector('.voice-dock');
 await page.evaluate(() => localStorage.clear());
 await page.reload();
 // The first chips start dashboards; the export is about a diagram
@@ -38,7 +40,7 @@ await page.click('.react-flow__node-shape >> nth=1');
 check(await page.locator('.react-flow__node-shape.selected').count() === 1, 'a node is selected on the canvas');
 
 async function exportAs(label) {
-  await page.click('button:has-text("Export")');
+  await page.click('.export-trigger-btn');
   const [download] = await Promise.all([page.waitForEvent('download'), page.click(`.menu button:has-text("${label}")`)]);
   const path = `${out}/${download.suggestedFilename()}`;
   await download.saveAs(path);
@@ -61,7 +63,7 @@ check(svg.bytes.length < 600_000, `the SVG embeds only the fonts it needs (${Mat
 check(!/react-flow__handle/.test(text), 'no connection handles in the SVG');
 check(!/react-flow__background/.test(text), 'no dot grid in the SVG');
 
-await page.click('button:has-text("Export")');
+await page.click('.export-trigger-btn');
 await page.click('.menu button:has-text("Copy as image")');
 await page.waitForSelector('.snackbar:has-text("Copied")', { timeout: 10_000 }).catch(() => undefined);
 const types = await page.evaluate(async () => (await navigator.clipboard.read()).flatMap((i) => i.types));

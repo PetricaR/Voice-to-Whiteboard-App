@@ -15,6 +15,7 @@ import { Icon, IconButton, useStoreRevision, useStudio, useWorkspaceRevision } f
 import { usePopoverMenu } from './domTransitions';
 import { dataUrlToBlob, exportDiagramImage, type ImageFormat } from './canvas/imageExport';
 import { download, downloadDataUrl, fileName, pagesFromJson, pagesToJson, toDrawio } from './export';
+import { ProjectSwitcher } from './projects/ProjectSwitcher';
 
 const TYPE_LABEL: Record<string, string> = {
   architecture: 'Architecture', flowchart: 'Flowchart', c4: 'C4', network: 'Network', generic: 'Diagram',
@@ -98,6 +99,8 @@ export function TopBar({
   return (
     <header className="top-bar">
       <div className="brand" aria-hidden="true"><Icon name="graphic_eq" size={22} /></div>
+      <ProjectSwitcher />
+      <span className="crumb-sep" aria-hidden="true">/</span>
       <input
         className="title-input"
         value={title}

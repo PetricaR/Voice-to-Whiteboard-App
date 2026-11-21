@@ -61,6 +61,8 @@ await page.route('https://accounts.google.com/gsi/client', (route) => route.fulf
 }));
 
 await page.goto(url);
+// A first start opens a project and puts it in the address; storage is cleared after that
+await page.waitForSelector('.voice-dock');
 await page.evaluate(() => localStorage.clear());
 await page.reload();
 await page.waitForSelector('.voice-dock');

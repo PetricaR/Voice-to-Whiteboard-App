@@ -2,11 +2,20 @@ import { createContext, useContext, useSyncExternalStore } from 'react';
 import type { VoiceAgent, VoiceSnapshot } from '../agent/session';
 import type { DiagramStore } from '../engine/store';
 import type { Workspace } from '../engine/workspace';
+import type { ProjectMeta, ProjectPatch, ProjectStore } from '../projects/projectStore';
 import type { AuthStatus, KeyStatus } from '../voice/liveToken';
 import { ICONS, type IconName } from './icons';
 import type { Settings } from './settings';
 
 export interface Studio {
+  /** The project this tab works on. */
+  project: ProjectMeta;
+  /** Where projects are saved; undefined when the browser blocks storage (nothing is saved then). */
+  projects?: ProjectStore;
+  /** Renames the project or changes its brief or sources. */
+  updateProject: (patch: ProjectPatch) => Promise<void>;
+  /** Saves now, then opens another project (or the project list, for null) in this tab. */
+  goToProject: (id: string | null) => void;
   workspace: Workspace;
   /** The diagram of the active page. */
   store: DiagramStore;

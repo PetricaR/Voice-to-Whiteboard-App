@@ -16,6 +16,8 @@ async function run(colorScheme) {
   page.on('console', (m) => { if (m.type() === 'error') errors.push(`[${colorScheme}] ${m.text()}`); });
   page.on('pageerror', (e) => errors.push(`[${colorScheme}] ${e.message}`));
   await page.goto(url);
+  // A first start opens a project and puts it in the address; storage is cleared after that
+  await page.waitForSelector('.voice-dock');
   await page.evaluate(() => localStorage.clear());
   await page.reload();
   await page.waitForSelector('.voice-dock');

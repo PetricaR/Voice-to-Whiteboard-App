@@ -2,7 +2,9 @@ import { ReactFlowProvider } from '@xyflow/react';
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react';
 import { VoiceAgent } from '../agent/session';
 import type { QueryExecutionResult } from '../data/sqlEngine';
-import { Workspace, type LibraryEntry, type SavedWorkspace } from '../engine/workspace';
+import { Workspace, type SavedWorkspace } from '../engine/workspace';
+import { projectUrl } from '../projects/boot';
+import { ProjectGoneError, type ProjectMeta, type ProjectPatch, type ProjectStore } from '../projects/projectStore';
 import { fetchServerStatus, onAccountChange, signOut as serverSignOut, type ServerStatus } from '../voice/liveToken';
 import { DiagramCanvas } from './canvas/DiagramCanvas';
 import { StudioContext, useStudio, type Studio } from './context';
@@ -10,7 +12,7 @@ import type { DataModalTab } from './dashboard/DataSourceModal';
 import { DocView } from './DocView';
 import { prefersReducedMotion } from './domTransitions';
 import { EmptyState } from './EmptyState';
-import { download, fileName, fromJson, normalizeScene, pagesToJson } from './export';
+import { download, fileName, pagesToJson } from './export';
 import type { MotionCommand } from './motion/MotionView';
 import { PageTabs } from './PageTabs';
 import { loadSettings, saveSettings, type Settings } from './settings';
@@ -18,6 +20,7 @@ import { SettingsDialog } from './SettingsDialog';
 import { SignInDialog } from './SignInDialog';
 import { forgetGoogleAccount } from './googleSignIn';
 import { SidePanel, type PanelTab } from './SidePanel';
+import { Snackbar, type Toast } from './Snackbar';
 import { applyTheme } from './theme';
 import { TopBar } from './TopBar';
 import { VoiceDock } from './VoiceDock';
@@ -37,37 +40,7 @@ function useOnceTrue(value: boolean): boolean {
 
 const ExportMp4Dialog = lazy(() => import('./motion/ExportMp4Dialog').then((m) => ({ default: m.ExportMp4Dialog })));
 
-const WORKSPACE_KEY = 'studio.workspace';
-const LIBRARY_KEY = 'studio.library';
-/** Single diagram saved by earlier versions. */
-const LEGACY_KEY = 'studio.scene';
 const UI_KEY = 'studio.ui';
-
-/** The pages and the diagram history saved by the last session, if any. */
-function savedWorkspace(): SavedWorkspace | null {
-  try {
-    const lib = JSON.parse(localStorage.getItem(LIBRARY_KEY) ?? '[]');
-    const library: LibraryEntry[] = (Array.isArray(lib) ? lib : []).flatMap((e: any) => {
-      const scene = normalizeScene(e?.scene);
-      return scene != null && typeof e.id === 'string' ? [{ ...e, scene } as LibraryEntry] : [];
-    });
-    const text = localStorage.getItem(WORKSPACE_KEY);
-    if (text) {
-      const data = JSON.parse(text);
-      const pages = (Array.isArray(data?.pages) ? data.pages : []).flatMap((p: any) => {
-        const scene = normalizeScene(p?.scene);
-        return scene != null && typeof p.id === 'string' ? [{ id: p.id, scene, diagram: p.diagram, view: p.view, chapter: p.chapter }] : [];
-      });
-      if (pages.length > 0) return { version: 2, active: data.active, pages, library };
-    }
-    const legacy = localStorage.getItem(LEGACY_KEY);
-    const scene = legacy ? fromJson(legacy) : null;
-    if (scene != null) return { version: 2, active: 'page_1', pages: [{ id: 'page_1', scene }], library };
-    return library.length > 0 ? { version: 2, active: '', pages: [], library } : null;
-  } catch {
-    return null;
-  }
-}
 
 interface UiPrefs {
   panelOpen: boolean;
@@ -82,31 +55,6 @@ function loadPrefs(): UiPrefs {
   } catch {
     return defaults;
   }
-}
-
-interface Toast {
-  id: number;
-  message: string;
-  action?: { label: string; run: () => void };
-}
-
-function Snackbar({ toast, onDone }: { toast: Toast | null; onDone: () => void }) {
-  useEffect(() => {
-    if (toast == null) return;
-    const t = setTimeout(onDone, toast.action ? 6000 : 4000);
-    return () => clearTimeout(t);
-  }, [toast, onDone]);
-  if (toast == null) return null;
-  return (
-    <div className="snackbar" role="status" key={toast.id}>
-      <span>{toast.message}</span>
-      {toast.action && (
-        <button type="button" className="text-btn inverse" onClick={() => { toast.action!.run(); onDone(); }}>
-          {toast.action.label}
-        </button>
-      )}
-    </div>
-  );
 }
 
 /** Global shortcuts: undo/redo, Space to talk, / to type (zoom shortcuts are in ZoomControls). */
@@ -141,8 +89,21 @@ function Shortcuts({ focusComposer }: { focusComposer: () => void }) {
   return null;
 }
 
-export function App() {
-  const workspace = useMemo(() => new Workspace(savedWorkspace()), []);
+export function App({
+  project: openedProject,
+  projects,
+  saved,
+}: {
+  /** The project of this tab. */
+  project: ProjectMeta;
+  /** Where it is saved; undefined when the browser blocks storage. */
+  projects?: ProjectStore;
+  /** Its pages and diagram history as last saved. */
+  saved: SavedWorkspace | null;
+}) {
+  const workspace = useMemo(() => new Workspace(saved), []);
+  const [project, setProject] = useState(openedProject);
+  const projectId = openedProject.id;
   // Re-render when another page is shown (each page has its own canvas state)
   const activeId = useSyncExternalStore((l) => workspace.subscribe(l), () => workspace.activeId);
   // Active surface of the page ('diagram' | 'dashboard' | 'motion' | 'doc')
@@ -232,26 +193,40 @@ export function App() {
     });
   }, []);
 
-  // Every change is saved in this browser: the pages, and the diagram history
+  // Every change of the project is saved in this browser: its pages and diagram history
+  const saveNow = useRef<() => Promise<void>>(async () => undefined);
   useEffect(() => {
+    if (projects == null) return;
     let timer = 0;
+    let pending = false;
     // Said once until a save succeeds again, not after every change
     let warned = false;
-    const save = () => {
+    let gone = false;
+    const exportPages = () => {
+      const pages = workspace.pages.map((p) => p.store.scene);
+      download(fileName(pages[0], 'json'), pagesToJson(pages), 'application/json');
+    };
+    const save = async () => {
+      window.clearTimeout(timer);
+      if (!pending || gone) return;
+      pending = false;
       try {
-        const data = workspace.serialize();
-        localStorage.setItem(WORKSPACE_KEY, JSON.stringify({ version: 2, active: data.active, pages: data.pages }));
-        localStorage.setItem(LIBRARY_KEY, JSON.stringify(data.library));
-        localStorage.removeItem(LEGACY_KEY);
+        await projects.saveWorkspace(projectId, workspace.serialize());
         warned = false;
-      } catch {
-        // Storage full or unavailable (private window): the work would be lost on reload
+      } catch (e) {
+        if (e instanceof ProjectGoneError) {
+          gone = true;
+          setToast({
+            id: ++toastId.current,
+            message: 'This project was deleted in another tab, so changes are no longer saved. Export the pages to keep them.',
+            action: { label: 'Export', run: exportPages },
+          });
+          return;
+        }
+        // Storage full or unavailable: the work would be lost on reload
+        pending = true;
         if (warned) return;
         warned = true;
-        const exportPages = () => {
-          const pages = workspace.pages.map((p) => p.store.scene);
-          download(fileName(pages[0], 'json'), pagesToJson(pages), 'application/json');
-        };
         setToast({
           id: ++toastId.current,
           message: 'Changes can no longer be saved in this browser (storage is full). Export the pages to keep them.',
@@ -259,15 +234,45 @@ export function App() {
         });
       }
     };
+    saveNow.current = save;
     const unsubscribe = workspace.subscribe(() => {
-      clearTimeout(timer);
-      timer = window.setTimeout(save, 400);
+      pending = true;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => void save(), 400);
     });
+    // Leaving the tab (switching, closing, reloading) saves at once
+    const onHidden = () => {
+      if (document.visibilityState === 'hidden') void save();
+    };
+    const onPageHide = () => void save();
+    document.addEventListener('visibilitychange', onHidden);
+    window.addEventListener('pagehide', onPageHide);
     return () => {
       unsubscribe();
-      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onHidden);
+      window.removeEventListener('pagehide', onPageHide);
+      void save();
     };
-  }, [workspace]);
+  }, [workspace, projects, projectId]);
+
+  useEffect(() => {
+    document.title = `${project.name} — Voice Whiteboard Studio`;
+  }, [project.name]);
+
+  const updateProject = useCallback(async (patch: ProjectPatch) => {
+    if (projects == null) {
+      setProject((p) => ({ ...p, ...patch }));
+      return;
+    }
+    const next = await projects.updateProject(projectId, patch);
+    if (next == null) throw new Error('This project no longer exists (it was deleted in another tab).');
+    setProject(next);
+  }, [projects, projectId]);
+
+  const goToProject = useCallback((id: string | null) => {
+    agent.stop();
+    void saveNow.current().finally(() => window.location.assign(projectUrl(id)));
+  }, [agent]);
 
   useEffect(() => () => agent.stop(), [agent]);
 
@@ -380,11 +385,12 @@ export function App() {
   }, [agent, refreshLiveKey]);
 
   const studio: Studio = useMemo(() => ({
+    project, projects, updateProject, goToProject,
     workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice,
     openSettings: () => setSettingsOpen(true),
     openDataSources,
     auth, requestSignIn, signOut, ensureCanTalk,
-  }), [workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice, openDataSources, auth, requestSignIn, signOut, ensureCanTalk]);
+  }), [project, projects, updateProject, goToProject, workspace, store, agent, settings, setSettings, liveKey, refreshLiveKey, notify, toggleVoice, openDataSources, auth, requestSignIn, signOut, ensureCanTalk]);
 
   const togglePanel = useCallback(() => updatePrefs({ panelOpen: !prefs.panelOpen }), [prefs.panelOpen, updatePrefs]);
   const appRef = useRef<HTMLDivElement>(null);
