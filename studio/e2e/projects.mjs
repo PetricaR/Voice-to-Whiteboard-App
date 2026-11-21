@@ -100,6 +100,15 @@ async function setTitle(page, title) {
   check((await tab1.locator('.project-card', { hasText: 'Churn deep dive' }).textContent()).includes('Why retail customers leave'), 'a card shows the brief');
   await tab1.screenshot({ path: `${out}/projects-3-home.png` });
 
+  // Tab 2 has the first project open: the list says so, and it cannot be deleted from here
+  const firstCard = tab1.locator('.project-card', { hasText: 'My first project' });
+  check(await firstCard.locator('.project-card-badge').isVisible(), 'a project open in another tab is marked on the list');
+  check(!(await tab1.locator('.project-card', { hasText: 'Churn deep dive' }).locator('.project-card-badge').count()), 'a project open nowhere is not marked');
+  await firstCard.getByRole('button', { name: /More actions/ }).click();
+  check(await tab1.getByRole('menu', { name: 'My first project actions' }).getByRole('menuitem', { name: /Delete/ }).isDisabled(), 'a project open in another tab cannot be deleted');
+  await tab1.keyboard.press('Escape');
+  await tab1.waitForTimeout(300);
+
   // Duplicate, then delete the copy
   await tab1.locator('.project-card', { hasText: 'My first project' }).getByRole('button', { name: /More actions/ }).click();
   await tab1.getByRole('menuitem', { name: 'Duplicate' }).click();
@@ -113,10 +122,38 @@ async function setTitle(page, title) {
   await tab1.waitForFunction(() => document.querySelectorAll('.project-card').length === 2);
   check(true, 'delete removes the project after confirming');
 
-  // Opening a card opens the project
+  // ---------- One tab per project ----------
+  // An edit in tab 2 that is not saved yet (saving waits 400 ms) must survive the handoff
+  await tab2.evaluate(() => window.__studio.store.edit({ title: 'Revenue review v3' }, { source: 'manual', label: 'Renamed' }));
   await Promise.all([tab1.waitForURL((u) => new URL(u).searchParams.get('project') === first), tab1.locator('.project-card-link', { hasText: 'My first project' }).click()]);
+  await tab1.waitForSelector('.project-busy');
+  check(await tab1.locator('.voice-dock').count() === 0, 'a project open in another tab does not open a second time');
+  await tab1.screenshot({ path: `${out}/projects-4-busy.png` });
+  await tab1.getByRole('button', { name: 'Use it here' }).click();
   await tab1.waitForSelector('.voice-dock');
-  check((await pageTitles(tab1))[0] === 'Revenue review v2', 'a card opens its project');
+  check((await pageTitles(tab1))[0] === 'Revenue review v3', '"Use it here" opens the project with the other tab’s last, unsaved edit');
+  await tab2.waitForSelector('.moved-dialog[open]');
+  check(true, 'the other tab says the project moved');
+  await tab2.screenshot({ path: `${out}/projects-5-moved.png` });
+
+  // The tab that handed over no longer saves
+  await tab2.evaluate(() => window.__studio.store.edit({ title: 'Stale edit' }, { source: 'manual', label: 'Renamed' }));
+  await tab2.waitForTimeout(900);
+  await tab1.reload();
+  await tab1.waitForSelector('.voice-dock');
+  check((await pageTitles(tab1))[0] === 'Revenue review v3', 'edits in the tab that handed over are not saved');
+
+  // And can take it back
+  await Promise.all([
+    tab2.waitForEvent('load'),
+    tab2.locator('.moved-dialog').getByRole('button', { name: 'Use it here' }).click(),
+  ]);
+  await tab2.waitForSelector('.voice-dock');
+  check(await tab2.locator('.moved-dialog[open]').count() === 0, 'taking it back opens the project again');
+  check((await pageTitles(tab2))[0] === 'Revenue review v3', 'from the latest save');
+  await tab1.waitForSelector('.moved-dialog[open]');
+  check(true, 'and the first tab now says the project moved');
+  await tab2.close();
 
   // An unknown project goes to the list with a note
   await tab1.goto(new URL('/?project=pdoesnotexist', url).href);

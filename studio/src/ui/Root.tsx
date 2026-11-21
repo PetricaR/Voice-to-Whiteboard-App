@@ -9,8 +9,10 @@
 import { lazy, Suspense, useEffect, useState } from 'react';
 import type { SavedWorkspace } from '../engine/workspace';
 import { ensureFirstProject, projectIdFromUrl, projectUrl } from '../projects/boot';
+import { takeOverProject, tryLockProject, type ProjectLock } from '../projects/projectLock';
 import { defaultSources, openProjectStore, type ProjectMeta, type ProjectStore } from '../projects/projectStore';
 import { HomeView, ProjectLoading, StorageBlocked } from './projects/HomeView';
+import { ProjectBusy } from './projects/ProjectBusy';
 import { requestPersistentStorage } from './projects/projectActions';
 import { loadSettings } from './settings';
 import { applyTheme } from './theme';
@@ -20,7 +22,9 @@ const App = lazy(() => import('./App').then((m) => ({ default: m.App })));
 type Boot =
   | { kind: 'loading' }
   | { kind: 'home'; store: ProjectStore; notice?: string }
-  | { kind: 'project'; store?: ProjectStore; project: ProjectMeta; saved: SavedWorkspace | null }
+  | { kind: 'project'; store?: ProjectStore; project: ProjectMeta; saved: SavedWorkspace | null; lock?: ProjectLock }
+  /** The project is open in another tab. */
+  | { kind: 'busy'; store: ProjectStore; project: ProjectMeta }
   | { kind: 'blocked'; message: string };
 
 function localStorageOrNull(): Storage | null {
@@ -31,15 +35,22 @@ function localStorageOrNull(): Storage | null {
   }
 }
 
+/** Reads the project once this tab owns it, so it starts from the last save of any tab. */
+async function loadOwned(store: ProjectStore, project: ProjectMeta, lock: ProjectLock): Promise<Boot> {
+  const saved = await store.loadWorkspace(project.id);
+  const opened = (await store.updateProject(project.id, { lastOpenedAt: Date.now() })) ?? project;
+  return { kind: 'project', store, project: opened, saved, lock };
+}
+
 async function openProject(store: ProjectStore, id: string): Promise<Boot> {
   const project = await store.getProject(id);
   if (project == null) {
     window.history.replaceState(null, '', projectUrl(null));
     return { kind: 'home', store, notice: 'That project is not in this browser (it may have been deleted).' };
   }
-  const saved = await store.loadWorkspace(id);
-  const opened = (await store.updateProject(id, { lastOpenedAt: Date.now() })) ?? project;
-  return { kind: 'project', store, project: opened, saved };
+  const lock = await tryLockProject(id);
+  if (lock == null) return { kind: 'busy', store, project };
+  return loadOwned(store, project, lock);
 }
 
 async function boot(): Promise<Boot> {
@@ -110,10 +121,20 @@ export function Root() {
           onContinue={() => setState({ kind: 'project', project: unsavedProject(), saved: null })}
         />
       );
+    case 'busy':
+      return (
+        <ProjectBusy
+          name={state.project.name}
+          onUseHere={async () => {
+            const lock = await takeOverProject(state.project.id);
+            setState(await loadOwned(state.store, state.project, lock));
+          }}
+        />
+      );
     case 'project':
       return (
         <Suspense fallback={<ProjectLoading />}>
-          <App key={state.project.id} project={state.project} projects={state.store} saved={state.saved} />
+          <App key={state.project.id} project={state.project} projects={state.store} saved={state.saved} lock={state.lock} />
         </Suspense>
       );
   }

@@ -5,6 +5,7 @@
  */
 import { useEffect, useRef, useState } from 'react';
 import { projectUrl } from '../../projects/boot';
+import { lockedProjects } from '../../projects/projectLock';
 import type { ProjectMeta } from '../../projects/projectStore';
 import { Icon, useStudio } from '../context';
 import { usePopoverMenu } from '../domTransitions';
@@ -17,6 +18,7 @@ export function ProjectSwitcher() {
   const { project, projects, updateProject, goToProject, notify } = useStudio();
   const [menu, setMenu] = useState(false);
   const [recent, setRecent] = useState<ProjectMeta[]>([]);
+  const [openElsewhere, setOpenElsewhere] = useState<Set<string>>(new Set());
   const [dialog, setDialog] = useState<'new' | 'rename' | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
   const menuRef = useRef<HTMLDivElement>(null);
@@ -28,6 +30,11 @@ export function ProjectSwitcher() {
     projects.listProjects()
       .then((all) => {
         if (!cancelled) setRecent(all.filter((p) => p.id !== project.id).slice(0, RECENT));
+      })
+      .catch(() => undefined);
+    lockedProjects()
+      .then((ids) => {
+        if (!cancelled) setOpenElsewhere(ids);
       })
       .catch(() => undefined);
     return () => {
@@ -67,7 +74,7 @@ export function ProjectSwitcher() {
               <div className="project-menu-row" key={p.id}>
                 <button type="button" role="menuitem" onClick={() => { setMenu(false); goToProject(p.id); }}>
                   <Icon name="folder_open" size={20} />
-                  <span><b>{p.name}</b><small>{projectSummary(p)}</small></span>
+                  <span><b>{p.name}</b><small>{openElsewhere.has(p.id) ? 'Open in another tab' : projectSummary(p)}</small></span>
                 </button>
                 <a
                   className="icon-btn standard"

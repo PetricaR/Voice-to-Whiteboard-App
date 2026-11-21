@@ -8104,3 +8104,53 @@ textarea.ctrl-input {
     display: none;
   }
 }
+
+/* ---------- Projects: one tab per project ---------- */
+
+.project-card-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  margin-right: 8px;
+  padding: 0 8px;
+  border-radius: 10px;
+  background: var(--md-secondary-container);
+  color: var(--md-on-secondary-container);
+  font-weight: 500;
+}
+
+.project-busy {
+  max-width: 560px;
+  margin: 14dvh auto 0;
+  padding: 0 24px;
+  color: var(--md-on-surface);
+}
+
+.project-busy-icon {
+  display: grid;
+  place-items: center;
+  width: 56px;
+  height: 56px;
+  margin-bottom: 16px;
+  border-radius: var(--radius-l);
+  background: var(--md-primary-container);
+  color: var(--md-on-primary-container);
+}
+
+.project-busy h1 {
+  margin: 0 0 8px;
+  font-size: 24px;
+  line-height: 32px;
+  font-weight: 400;
+  text-wrap: balance;
+}
+
+.project-busy p {
+  margin: 0 0 20px;
+  color: var(--md-on-surface-variant);
+  text-wrap: pretty;
+}
+
+.menu button:disabled {
+  opacity: 0.5;
+}

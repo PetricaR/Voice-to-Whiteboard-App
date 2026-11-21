@@ -1,6 +1,6 @@
 # Plan: Projects and Board
 
-Status: Phase 1 done · 2026-11-21
+Status: Phases 1–2 done · 2026-11-21
 
 ## Goal
 

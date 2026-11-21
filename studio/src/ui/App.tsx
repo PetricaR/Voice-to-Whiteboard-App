@@ -4,6 +4,7 @@ import { VoiceAgent } from '../agent/session';
 import type { QueryExecutionResult } from '../data/sqlEngine';
 import { Workspace, type SavedWorkspace } from '../engine/workspace';
 import { projectUrl } from '../projects/boot';
+import type { ProjectLock } from '../projects/projectLock';
 import { ProjectGoneError, type ProjectMeta, type ProjectPatch, type ProjectStore } from '../projects/projectStore';
 import { fetchServerStatus, onAccountChange, signOut as serverSignOut, type ServerStatus } from '../voice/liveToken';
 import { DiagramCanvas } from './canvas/DiagramCanvas';
@@ -19,6 +20,7 @@ import { loadSettings, saveSettings, type Settings } from './settings';
 import { SettingsDialog } from './SettingsDialog';
 import { SignInDialog } from './SignInDialog';
 import { forgetGoogleAccount } from './googleSignIn';
+import { MovedAwayDialog } from './projects/ProjectBusy';
 import { SidePanel, type PanelTab } from './SidePanel';
 import { Snackbar, type Toast } from './Snackbar';
 import { applyTheme } from './theme';
@@ -93,6 +95,7 @@ export function App({
   project: openedProject,
   projects,
   saved,
+  lock,
 }: {
   /** The project of this tab. */
   project: ProjectMeta;
@@ -100,6 +103,8 @@ export function App({
   projects?: ProjectStore;
   /** Its pages and diagram history as last saved. */
   saved: SavedWorkspace | null;
+  /** This tab's ownership of the project (none when the browser blocks storage). */
+  lock?: ProjectLock;
 }) {
   const workspace = useMemo(() => new Workspace(saved), []);
   const [project, setProject] = useState(openedProject);
@@ -195,6 +200,9 @@ export function App({
 
   // Every change of the project is saved in this browser: its pages and diagram history
   const saveNow = useRef<() => Promise<void>>(async () => undefined);
+  // Once the project went to another tab, nothing here is saved any more
+  const savingOff = useRef(false);
+  const [movedAway, setMovedAway] = useState(false);
   useEffect(() => {
     if (projects == null) return;
     let timer = 0;
@@ -208,7 +216,7 @@ export function App({
     };
     const save = async () => {
       window.clearTimeout(timer);
-      if (!pending || gone) return;
+      if (!pending || gone || savingOff.current) return;
       pending = false;
       try {
         await projects.saveWorkspace(projectId, workspace.serialize());
@@ -258,6 +266,25 @@ export function App({
   useEffect(() => {
     document.title = `${project.name} — Voice Whiteboard Studio`;
   }, [project.name]);
+
+  // Another tab asks for the project: save, stop talking, then let it go
+  useEffect(() => {
+    if (lock == null) return;
+    const offHandoff = lock.onHandoffRequest(async () => {
+      agent.stop();
+      await saveNow.current();
+      savingOff.current = true;
+    });
+    const offLost = lock.onLost(() => {
+      savingOff.current = true;
+      agent.stop();
+      setMovedAway(true);
+    });
+    return () => {
+      offHandoff();
+      offLost();
+    };
+  }, [lock, agent]);
 
   const updateProject = useCallback(async (patch: ProjectPatch) => {
     if (projects == null) {
@@ -478,6 +505,7 @@ export function App({
             )}
           </Suspense>
           <SignInDialog open={signInOpen} onClose={closeSignIn} />
+          <MovedAwayDialog open={movedAway} projectId={projectId} name={project.name} />
         </div>
       </ReactFlowProvider>
     </StudioContext.Provider>

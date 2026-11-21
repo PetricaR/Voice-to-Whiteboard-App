@@ -6,6 +6,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { projectUrl } from '../../projects/boot';
 import { projectFromFile } from '../../projects/projectFile';
+import { lockedProjects } from '../../projects/projectLock';
 import type { ProjectMeta, ProjectStore } from '../../projects/projectStore';
 import { Icon } from '../context';
 import { usePopoverMenu } from '../domTransitions';
@@ -19,12 +20,15 @@ function formatMb(bytes: number): string {
 
 function ProjectCard({
   project,
+  openElsewhere,
   onRename,
   onDuplicate,
   onExport,
   onDelete,
 }: {
   project: ProjectMeta;
+  /** Another tab has the project open. */
+  openElsewhere: boolean;
   onRename: () => void;
   onDuplicate: () => void;
   onExport: () => void;
@@ -46,7 +50,10 @@ function ProjectCard({
         <span className="project-card-icon" aria-hidden="true"><Icon name="folder_open" size={22} /></span>
         <h3>{project.name}</h3>
         {project.brief && <p>{project.brief}</p>}
-        <span className="project-card-meta">{projectSummary(project)}</span>
+        <span className="project-card-meta">
+          {openElsewhere && <span className="project-card-badge">Open in a tab</span>}
+          {projectSummary(project)}
+        </span>
       </a>
       <div className="menu-anchor project-card-menu">
         <button
@@ -75,8 +82,9 @@ function ProjectCard({
             <Icon name="download" size={20} /><span>Export<small>One file with pages and data, to back up or move</small></span>
           </button>
           <hr className="menu-divider" />
-          <button type="button" role="menuitem" onClick={act(onDelete)}>
-            <Icon name="delete" size={20} /><span>Delete</span>
+          <button type="button" role="menuitem" disabled={openElsewhere} onClick={act(onDelete)}>
+            <Icon name="delete" size={20} />
+            <span>Delete{openElsewhere && <small>Close the tab that has it open first</small>}</span>
           </button>
         </div>
       </div>
@@ -86,6 +94,7 @@ function ProjectCard({
 
 export function HomeView({ store, notice }: { store: ProjectStore; notice?: string }) {
   const [projects, setProjects] = useState<ProjectMeta[] | null>(null);
+  const [openElsewhere, setOpenElsewhere] = useState<Set<string>>(new Set());
   const [usage, setUsage] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [renaming, setRenaming] = useState<ProjectMeta | null>(null);
@@ -101,6 +110,7 @@ export function HomeView({ store, notice }: { store: ProjectStore; notice?: stri
 
   const reload = useCallback(() => {
     store.listProjects().then(setProjects).catch(fail);
+    lockedProjects().then(setOpenElsewhere).catch(() => undefined);
     navigator.storage?.estimate?.().then((e) => setUsage(e.usage ?? null)).catch(() => undefined);
   }, [store, fail]);
 
@@ -190,6 +200,7 @@ export function HomeView({ store, notice }: { store: ProjectStore; notice?: stri
                 <ProjectCard
                   key={p.id}
                   project={p}
+                  openElsewhere={openElsewhere.has(p.id)}
                   onRename={() => setRenaming(p)}
                   onDuplicate={() => {
                     store.duplicateProject(p.id)
@@ -239,6 +250,12 @@ export function HomeView({ store, notice }: { store: ProjectStore; notice?: stri
         projectName={deleting?.name ?? null}
         onConfirm={async () => {
           if (deleting == null) return;
+          if ((await lockedProjects()).has(deleting.id)) {
+            notify(`“${deleting.name}” is open in another tab. Close it there first.`);
+            setDeleting(null);
+            reload();
+            return;
+          }
           try {
             await store.deleteProject(deleting.id);
             notify(`Deleted “${deleting.name}”`);
