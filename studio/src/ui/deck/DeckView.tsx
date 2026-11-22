@@ -472,7 +472,7 @@ function ThemePicker({ theme, onPick }: { theme: DeckThemeName; onPick: (t: Deck
     <div className="menu-anchor">
       <button ref={trigger} type="button" className="deck-theme-btn" aria-haspopup="menu" aria-expanded={open} aria-label={`Theme: ${THEMES[theme].label}`} onClick={() => setOpen((v) => !v)}>
         {swatch(theme)}
-        <span>{THEMES[theme].label}</span>
+        <span className="deck-theme-label">{THEMES[theme].label}</span>
         <Icon name="keyboard_arrow_down" size={18} />
       </button>
       <div ref={menu} popover="auto" className="menu menu-popover deck-theme-menu" role="menu" aria-label="Deck theme">

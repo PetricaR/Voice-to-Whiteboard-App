@@ -129,6 +129,14 @@ button:disabled {
   background: var(--md-surface);
 }
 
+/* Holds the diagram (made inert while another view covers it). React Flow fills
+   its parent, so this must fill the canvas: left at its natural height of 0, the
+   flow had no pane to pan, zoom or deselect on, and fitView measured nothing. */
+.canvas-layer {
+  position: absolute;
+  inset: 0;
+}
+
 /* ---------- Top app bar ---------- */
 
 .top-bar {
@@ -207,6 +215,13 @@ button:disabled {
   gap: 2px;
   flex: 0 1 auto;
   min-width: 0;
+}
+
+/* The top bar's tools keep their size, so the page title and project name
+   shorten instead; below 860px the tools scroll. When they could shrink, every
+   width from 721px to about 950px pushed History and Settings off screen. */
+.top-bar .toolbar-group {
+  flex-shrink: 0;
 }
 
 @media (max-width: 1080px) {
@@ -1175,6 +1190,12 @@ button:disabled {
   background: var(--md-surface-container-high);
   box-shadow: var(--elev-1);
   z-index: 10;
+}
+
+/* `display: flex` above outranks the browser's [hidden] rule: without this the
+   diagram's zoom controls stayed on top of the Dashboard, Board and Deck */
+.zoom-controls[hidden] {
+  display: none;
 }
 
 /* ---------- Voice dock (ultra-minimalist assistant bar & corner pill) ---------- */
@@ -3112,6 +3133,32 @@ button:disabled {
 /* ---------- Responsive breakpoints ---------- */
 
 @media (max-width: 860px) {
+  /* Every tool stays reachable: the group scrolls sideways */
+  .top-bar .toolbar-group {
+    flex-shrink: 1;
+    min-width: 0;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  @supports not (scrollbar-width: none) {
+    .top-bar .toolbar-group::-webkit-scrollbar {
+      display: none;
+    }
+  }
+
+  .top-bar .toolbar-group .icon-btn {
+    width: 36px;
+    height: 36px;
+    flex-shrink: 0;
+  }
+
+  .top-bar .export-trigger-btn {
+    height: 36px;
+    padding: 0 10px;
+    flex-shrink: 0;
+  }
+
   .page-tabs {
     flex-wrap: wrap;
     row-gap: 0;
@@ -3187,28 +3234,6 @@ button:disabled {
     font-size: 15px;
   }
 
-  .top-bar .toolbar-group {
-    overflow-x: auto;
-    scrollbar-width: none;
-  }
-
-  @supports not (scrollbar-width: none) {
-    .top-bar .toolbar-group::-webkit-scrollbar {
-      display: none;
-    }
-  }
-
-  .top-bar .toolbar-group .icon-btn {
-    width: 36px;
-    height: 36px;
-    flex-shrink: 0;
-  }
-
-  .top-bar .export-trigger-btn {
-    height: 36px;
-    padding: 0 10px;
-    flex-shrink: 0;
-  }
 
   .tonal-btn {
     padding: 0 12px;
@@ -3330,6 +3355,13 @@ button:disabled {
   font-size: 10.5px;
   line-height: 16px;
   font-variant-numeric: tabular-nums;
+}
+
+/* On the selected pill's secondary container the primary text fell to 4:1;
+   the container's own text color keeps the count readable (WCAG AA) */
+.surface-pill.active .surface-badge {
+  background: color-mix(in srgb, var(--md-on-secondary-container) 12%, transparent);
+  color: var(--md-on-secondary-container);
 }
 
 .empty-hero-actions {
@@ -7019,6 +7051,17 @@ button:disabled {
     min-width: 36px;
     padding: 0 8px;
   }
+}
+
+/* The narrowest phones: the theme shows as its swatch (its name stays in the
+   button's label), so Present keeps its word and stays on screen */
+@media (max-width: 440px) {
+  .deck-theme-label {
+    display: none;
+  }
+}
+
+@media (max-width: 720px) {
 
   .deck-main {
     flex-direction: column;
@@ -8659,10 +8702,20 @@ textarea.ctrl-input {
 
 /* ---------- Projects: switcher in the top bar ---------- */
 
+/* A flex container so the button shrinks with it and the name ellipsizes, down
+   to the folder icon and chevron (padding 16 + icons 36 + gaps 12). As a block
+   with min-width: 0 it shrank under the button, which then painted over the
+   page title; with an automatic minimum the full name never gave way, and the
+   tools ran off a narrow window. */
 .project-switcher-anchor {
+  display: flex;
   flex: 0 1 auto;
-  min-width: 0;
+  min-width: 64px;
   margin-right: 0;
+}
+
+.project-switcher-anchor > .project-switcher {
+  min-width: 0;
 }
 
 .project-switcher {
@@ -8707,6 +8760,11 @@ textarea.ctrl-input {
   .project-switcher-name,
   .crumb-sep {
     display: none;
+  }
+
+  /* Icons only: one gap fewer */
+  .project-switcher-anchor {
+    min-width: 58px;
   }
 }
 
