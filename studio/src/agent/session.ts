@@ -13,22 +13,11 @@ import { fetchLiveToken } from '../voice/liveToken';
 import { handleToolCall, type StudioController, type ViewController } from './dispatcher';
 import { SYSTEM_INSTRUCTION } from './prompt';
 import { TOOL_DECLARATIONS } from './tools';
+import type { VoiceSettings } from '../voice/liveSetup';
 
-export interface VoiceSettings {
-  model: string;
-  voice: string;
-  thinkingLevel: string;
-  silenceDurationMs: number;
-  /** Live API WebSocket endpoint; only changed for tests or a proxy. */
-  endpoint?: string;
-}
+// The settings live with the model list so the project list loads without the agent
+export { DEFAULT_SETTINGS, type VoiceSettings } from '../voice/liveSetup';
 
-export const DEFAULT_SETTINGS: VoiceSettings = {
-  model: 'gemini-3.8-live',
-  voice: 'Zephyr',
-  thinkingLevel: 'LOW',
-  silenceDurationMs: 600,
-};
 
 export type VoiceStatus = 'idle' | 'connecting' | 'listening' | 'working' | 'speaking' | 'error';
 

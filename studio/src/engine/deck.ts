@@ -27,6 +27,16 @@ import type { Scene } from './types';
 export const DECK_THEMES = ['midnight', 'graphite', 'forest', 'ocean', 'terracotta', 'berry'] as const;
 export type DeckThemeName = (typeof DECK_THEMES)[number];
 
+/** Theme names as people read them; here rather than with the colors so the studio's header can show one without the slide layout code. */
+export const DECK_THEME_LABELS: Record<DeckThemeName, string> = {
+  midnight: 'Midnight',
+  graphite: 'Graphite',
+  forest: 'Forest',
+  ocean: 'Ocean',
+  terracotta: 'Terracotta',
+  berry: 'Berry',
+};
+
 export const SLIDE_LAYOUTS = ['title', 'section', 'kpis', 'chart', 'points', 'flow', 'table', 'statement', 'closing'] as const;
 export type SlideLayout = (typeof SLIDE_LAYOUTS)[number];
 

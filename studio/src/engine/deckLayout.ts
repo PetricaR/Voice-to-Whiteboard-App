@@ -11,7 +11,7 @@
  * the single visual motif; left-aligned body text; 0.6" margins; no text
  * smaller than 11pt except footers.
  */
-import type { DeckChart, DeckSpec, DeckThemeName, Slide, Trend } from './deck';
+import { DECK_THEME_LABELS, type DeckChart, type DeckSpec, type DeckThemeName, type Slide, type Trend } from './deck';
 
 export const SLIDE_W = 13.333;
 export const SLIDE_H = 7.5;
@@ -56,32 +56,32 @@ const T = (t: Omit<DeckTheme, 'onDark' | 'ink' | 'muted' | 'rule' | 'positive' |
 
 export const THEMES: Record<DeckThemeName, DeckTheme> = {
   midnight: T({
-    name: 'midnight', label: 'Midnight', dark: '1E2761', onDarkMuted: 'C9D3F2',
+    name: 'midnight', label: DECK_THEME_LABELS.midnight, dark: '1E2761', onDarkMuted: 'C9D3F2',
     primary: '1E2761', secondary: '9FB3EC', pop: 'F2A541', soft: 'EEF2FC',
     palette: ['1E2761', 'F2A541', '5B7BD5', '9FB3EC', '2F8F83', 'B5577E'], headFont: 'Georgia',
   }),
   graphite: T({
-    name: 'graphite', label: 'Graphite', dark: '262B31', onDarkMuted: 'C5CCD3',
+    name: 'graphite', label: DECK_THEME_LABELS.graphite, dark: '262B31', onDarkMuted: 'C5CCD3',
     primary: '36454F', secondary: 'AEB8C0', pop: '14B8A6', soft: 'F1F3F5',
     palette: ['36454F', '14B8A6', '7C8B96', 'C2CBD2', 'D98E32', '5E7CE2'], headFont: 'Arial',
   }),
   forest: T({
-    name: 'forest', label: 'Forest', dark: '1F3D20', onDarkMuted: 'CFE0C3',
+    name: 'forest', label: DECK_THEME_LABELS.forest, dark: '1F3D20', onDarkMuted: 'CFE0C3',
     primary: '2C5F2D', secondary: '9DC06B', pop: 'E3B23C', soft: 'EEF5E7',
     palette: ['2C5F2D', 'E3B23C', '6E9F45', '9DC06B', '3B7EA1', 'B0683F'], headFont: 'Georgia',
   }),
   ocean: T({
-    name: 'ocean', label: 'Ocean', dark: '0B2E4A', onDarkMuted: 'BFD9EA',
+    name: 'ocean', label: DECK_THEME_LABELS.ocean, dark: '0B2E4A', onDarkMuted: 'BFD9EA',
     primary: '065A82', secondary: '86BEDB', pop: '02C39A', soft: 'E8F3F9',
     palette: ['065A82', '02C39A', '1C7293', '86BEDB', 'F29E4C', '8E6CC9'], headFont: 'Arial',
   }),
   terracotta: T({
-    name: 'terracotta', label: 'Terracotta', dark: '3B2924', onDarkMuted: 'E5D3CC',
+    name: 'terracotta', label: DECK_THEME_LABELS.terracotta, dark: '3B2924', onDarkMuted: 'E5D3CC',
     primary: 'B85042', secondary: 'DDB0A6', pop: 'A7C4B0', soft: 'F7EFEC',
     palette: ['B85042', '5F8A6E', 'DDB0A6', '3B2924', 'D9A441', '5B7BD5'], headFont: 'Georgia',
   }),
   berry: T({
-    name: 'berry', label: 'Berry', dark: '3A1A27', onDarkMuted: 'E8CDD6',
+    name: 'berry', label: DECK_THEME_LABELS.berry, dark: '3A1A27', onDarkMuted: 'E8CDD6',
     primary: '6D2E46', secondary: 'CFA3B0', pop: 'E9B872', soft: 'F7EEF1',
     palette: ['6D2E46', 'E9B872', 'A26769', '4A6FA5', '7D9D74', 'CFA3B0'], headFont: 'Georgia',
   }),

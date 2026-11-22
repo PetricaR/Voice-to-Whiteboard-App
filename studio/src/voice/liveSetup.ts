@@ -15,6 +15,22 @@ export const VOICES = ['Zephyr', 'Puck', 'Charon', 'Kore', 'Fenrir', 'Aoede', 'L
 
 export const THINKING_LEVELS = ['MINIMAL', 'LOW', 'MEDIUM', 'HIGH'];
 
+export interface VoiceSettings {
+  model: string;
+  voice: string;
+  thinkingLevel: string;
+  silenceDurationMs: number;
+  /** Live API WebSocket endpoint; only changed for tests or a proxy. */
+  endpoint?: string;
+}
+
+export const DEFAULT_SETTINGS: VoiceSettings = {
+  model: 'gemini-3.8-live',
+  voice: 'Zephyr',
+  thinkingLevel: 'LOW',
+  silenceDurationMs: 600,
+};
+
 export interface LiveSessionOptions {
   model: string;
   voice?: string;

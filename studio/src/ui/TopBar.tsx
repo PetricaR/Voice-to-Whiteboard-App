@@ -8,7 +8,7 @@ import {
   dashboardToVegaLiteHandoff,
 } from '../engine/dashboard';
 import { hasDashboard, hasDeck, hasDiagram, isBlankScene } from '../engine/types';
-import { THEMES } from '../engine/deckLayout';
+import { DECK_THEME_LABELS } from '../engine/deck';
 import { downloadDeckPptx, openDeckInGoogleSlides } from './deck/deckActions';
 import { bookToMarkdown, bookToStandaloneHtml } from '../engine/book';
 import { addChapter } from './chapters';
@@ -92,7 +92,7 @@ export function TopBar({
     const pinned = scene.board.widgets.filter((w) => w.promotedAs != null).length;
     chipLabel = `Board · ${scene.board.widgets.length} ${scene.board.widgets.length === 1 ? 'chart' : 'charts'}${pinned > 0 ? ` · ${pinned} on dashboard` : ''}`;
   } else if (view === 'deck' && scene.deck) {
-    chipLabel = `Deck · ${scene.deck.slides.length} ${scene.deck.slides.length === 1 ? 'slide' : 'slides'} · ${THEMES[scene.deck.theme].label}`;
+    chipLabel = `Deck · ${scene.deck.slides.length} ${scene.deck.slides.length === 1 ? 'slide' : 'slides'} · ${DECK_THEME_LABELS[scene.deck.theme] ?? DECK_THEME_LABELS.midnight}`;
   } else if (!empty && diagramOpen) {
     chipLabel = `${TYPE_LABEL[scene.type]} · ${scene.direction === 'LR' ? 'left to right' : 'top to bottom'}`;
   }

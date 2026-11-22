@@ -9,9 +9,13 @@ import { createRoot } from 'react-dom/client';
 import { setElkFactory } from './engine/layout';
 import { Root } from './ui/Root';
 import { AppCrashScreen, ErrorBoundary } from './ui/ErrorBoundary';
+import { installStaleBuildReload } from './ui/staleBuild';
 
 // ELK runs in a web worker so layouts never block the UI
 setElkFactory(async () => new ELK({ workerFactory: () => new Worker(elkWorkerUrl) }));
+
+// A view that cannot be downloaded (e.g. after a new release) reloads the page
+installStaleBuildReload();
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>

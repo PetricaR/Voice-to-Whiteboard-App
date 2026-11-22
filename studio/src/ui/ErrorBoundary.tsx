@@ -4,6 +4,7 @@
  * work is still in this browser, instead of a blank screen.
  */
 import { Component, type ErrorInfo, type ReactNode } from 'react';
+import { isChunkLoadError } from './staleBuild';
 
 interface Props {
   /** What to show instead; `retry` renders the children again. */
@@ -43,6 +44,19 @@ export class ErrorBoundary extends Component<Props, State> {
 
 /** The page-level fallback: the work is saved after every change, so a reload is safe. */
 export function AppCrashScreen({ error, retry }: { error: Error; retry: () => void }) {
+  // Trying again cannot help when part of the studio failed to download: only a reload fetches it again
+  if (isChunkLoadError(error)) {
+    return (
+      <div className="crash-screen" role="alert">
+        <h1>Part of the studio could not be loaded</h1>
+        <p>The studio may have been updated, or the connection dropped. Your pages are saved in this browser after every change, so nothing is lost. Reload to continue.</p>
+        <pre>{error.message}</pre>
+        <div className="crash-actions">
+          <button type="button" className="filled-btn" onClick={() => window.location.reload()}>Reload</button>
+        </div>
+      </div>
+    );
+  }
   return (
     <div className="crash-screen" role="alert">
       <h1>The studio hit an error</h1>

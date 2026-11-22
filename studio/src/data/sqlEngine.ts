@@ -8,7 +8,6 @@
  *     `clickhouse`, `postgres`, `rest:*`) to `/api/data/query` on the studio server.
  */
 import initSqlJs, { type Database, type SqlJsStatic } from 'sql.js';
-import { parquetReadObjects } from 'hyparquet';
 import { buildTableProfile, type ProfileCell, type ProfileInput, type TableProfile } from './dataProfile';
 import { getProjectScope, getScopeHooks, isSourceAttached, notAttachedMessage, samplesIncluded, type PersistedTable } from './projectScope';
 import { SAMPLE_TABLES, type SampleColumnSpec } from './sampleDatasets';
@@ -438,6 +437,8 @@ export async function importDataFile(rawInput: ImportedFileInput | File, options
   if (ext === 'parquet') {
     if (!input.bytes) throw new Error('Parquet import requires binary bytes.');
     const ab = input.bytes.buffer.slice(input.bytes.byteOffset, input.bytes.byteOffset + input.bytes.byteLength) as ArrayBuffer;
+    // The Parquet reader loads with the first Parquet file, not with every project
+    const { parquetReadObjects } = await import('hyparquet');
     const objects = await parquetReadObjects({ file: ab });
     if (objects.length === 0) throw new Error(`Parquet file "${input.name}" contains 0 rows.`);
     const keys = Object.keys(objects[0]);

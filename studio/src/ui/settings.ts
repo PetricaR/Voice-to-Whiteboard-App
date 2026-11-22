@@ -1,4 +1,4 @@
-import { DEFAULT_SETTINGS, type VoiceSettings } from '../agent/session';
+import { DEFAULT_SETTINGS, type VoiceSettings } from '../voice/liveSetup';
 import type { ThemeMode } from './theme';
 
 export { LIVE_MODELS, VOICES } from '../voice/liveSetup';

@@ -11,7 +11,6 @@ import { fetchServerStatus, onAccountChange, signOut as serverSignOut, type Serv
 import { DiagramCanvas } from './canvas/DiagramCanvas';
 import { StudioContext, useStudio, type Studio } from './context';
 import type { DataModalTab } from './dashboard/DataSourceModal';
-import { DocView } from './DocView';
 import { prefersReducedMotion } from './domTransitions';
 import { EmptyState } from './EmptyState';
 import { download, fileName, pagesToJson } from './export';
@@ -25,6 +24,7 @@ import { MovedAwayDialog } from './projects/ProjectBusy';
 import { SampleDataDialog } from './projects/SampleDataDialog';
 import { SidePanel, type PanelTab } from './SidePanel';
 import { Snackbar, type Toast } from './Snackbar';
+import { setBeforeStaleReload } from './staleBuild';
 import { applyTheme } from './theme';
 import { TopBar } from './TopBar';
 import { VoiceDock } from './VoiceDock';
@@ -34,6 +34,7 @@ import { ZoomControls } from './ZoomControls';
 // the page starts with the canvas and the voice dock only
 const DashboardView = lazy(() => import('./dashboard/DashboardView').then((m) => ({ default: m.DashboardView })));
 const DeckView = lazy(() => import('./deck/DeckView').then((m) => ({ default: m.DeckView })));
+const DocView = lazy(() => import('./DocView').then((m) => ({ default: m.DocView })));
 const DataSourceModal = lazy(() => import('./dashboard/DataSourceModal').then((m) => ({ default: m.DataSourceModal })));
 /** True from the first time `value` is: a dialog is loaded when first opened and then stays mounted to animate out. */
 function useOnceTrue(value: boolean): boolean {
@@ -203,6 +204,8 @@ export function App({
 
   // Every change of the project is saved in this browser: its pages and diagram history
   const saveNow = useRef<() => Promise<void>>(async () => undefined);
+  // A reload to recover from a failed download of a view saves the project first
+  useEffect(() => setBeforeStaleReload(() => saveNow.current()), []);
   // Once the project went to another tab, nothing here is saved any more
   const savingOff = useRef(false);
   const [movedAway, setMovedAway] = useState(false);
@@ -526,8 +529,8 @@ export function App({
                     command={deckCommand}
                   />
                 )}
+                {activeView === 'doc' && <DocView key={activeId} />}
               </Suspense>
-              {activeView === 'doc' && <DocView key={activeId} />}
               <VoiceDock focusRequest={focusRequest} />
               <Snackbar toast={toast} onDone={() => setToast(null)} />
             </div>

@@ -4,7 +4,6 @@
  * dot grid, the selection, handles or change highlights. The canvas that is on
  * screen registers itself as the exporter.
  */
-import { toPng, toSvg } from 'html-to-image';
 import type { Rect } from '../../engine/types';
 
 export type ImageFormat = 'png' | 'svg';
@@ -151,13 +150,17 @@ export async function captureViewport(viewport: HTMLElement, bounds: Rect, forma
   const width = Math.ceil(bounds.w + MARGIN * 2);
   const height = Math.ceil(bounds.h + MARGIN * 2);
   const background = getComputedStyle(document.documentElement).getPropertyValue('--md-surface').trim() || '#ffffff';
+  // Fonts and the capture library load before the canvas is touched, so a slow
+  // first export never leaves the copied markers or inlined styles on screen.
+  // The library loads on the first export: most sessions never take a picture.
+  const [fontEmbedCSS, { toPng, toSvg }] = await Promise.all([pictureFontCss(), import('html-to-image')]);
   // The arrowheads are defined once outside the canvas; the picture needs its own copy
   const markers = document.querySelector('svg.edge-markers')?.cloneNode(true) as SVGSVGElement | undefined;
   if (markers) viewport.append(markers);
   const restoreSvg = inlineSvgStyles(viewport);
   try {
     const options = {
-      fontEmbedCSS: await pictureFontCss(),
+      fontEmbedCSS,
       includeStyleProperties: STYLE_PROPERTIES,
       backgroundColor: background,
       width,
