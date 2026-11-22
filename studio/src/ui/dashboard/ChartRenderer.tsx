@@ -6,6 +6,7 @@ import {
   type DashboardWidget,
 } from '../../engine/dashboard';
 import type { ColorName } from '../../engine/types';
+import { layoutXTicks, measureAxisTick, type XTickLayout } from './xTicks';
 import {
   buildCurvePath,
   computeHistogramBins,
@@ -2112,8 +2113,6 @@ export function ChartRenderer({
 
   const showDirectLabels = !hasY2 && lineAreaSeriesList.length > 0 && Boolean(cfg?.directLineLabels);
   const directLabelsRightPad = showDirectLabels ? 98 : 0;
-  const rotDeg = cfg?.xTickRotation ?? 0;
-  const extraRotPad = rotDeg !== 0 ? 18 : 0;
 
   const hasTopAxisHeaders = Boolean(cfg?.yAxisTitle || (hasY2 && cfg?.y2AxisTitle));
   const leftAxisOnRight = !hasY2 && cfg?.yAxisPosition === 'right';
@@ -2122,15 +2121,7 @@ export function ChartRenderer({
     cfg?.plotPaddingRight ??
     (leftAxisOnRight ? autoLeftPad : autoRightPad) + directLabelsRightPad;
   const padT = cfg?.plotPaddingTop ?? (hasTopAxisHeaders ? 28 : 16);
-  const padB = cfg?.plotPaddingBottom ?? 32 + extraRotPad + (cfg?.xAxisTitle ? 16 : 0);
   const plotW = Math.max(100, W - padL - padR);
-  const plotH = Math.max(80, H - padT - padB);
-
-  const yOfVal = (v: number) => padT + (1 - valScale.norm(v)) * plotH;
-  const y2OfVal = (v: number) => (y2Scale ? padT + (1 - y2Scale.norm(v)) * plotH : yOfVal(v));
-  const zeroY = yOfVal(Math.max(valScale.min, Math.min(valScale.max, 0)));
-  const zeroY2 = y2Scale ? y2OfVal(Math.max(y2Scale.min, Math.min(y2Scale.max, 0))) : zeroY;
-
   const slotW = plotW / Math.max(1, categories.length);
   const autoMaxXTicks =
     hasBarGeometry && categories.length <= 6 && slotW >= 36
@@ -2138,9 +2129,29 @@ export function ChartRenderer({
       : Math.max(3, Math.floor(plotW / (hasBarGeometry ? 54 : 68)));
   const maxXTicks = cfg?.xTickMaxCount ?? autoMaxXTicks;
   const xTickStep = categories.length <= maxXTicks ? 1 : Math.ceil(categories.length / maxXTicks);
-  const autoXTrunc = hasBarGeometry
-    ? Math.max(6, Math.min(14, Math.floor((slotW * xTickStep - 6) / 6.3)))
-    : 11;
+  // Bar labels are fitted to their slot by drawn width, and tilted when cutting
+  // them would leave them unreadable; the bottom padding follows the tilt
+  const xTicks: XTickLayout = hasBarGeometry
+    ? layoutXTicks(
+        categories.filter((_, ci) => ci % xTickStep === 0 || ci === categories.length - 1),
+        slotW * xTickStep - 6,
+        measureAxisTick,
+        { rotation: cfg?.xTickRotation, truncateChars: cfg?.xTickTruncate },
+      )
+    : {
+        rotation: cfg?.xTickRotation ?? 0,
+        extraBottomPad: (cfg?.xTickRotation ?? 0) !== 0 ? 18 : 0,
+        label: (c: string) => truncateText(c, cfg?.xTickTruncate ?? 11),
+      };
+  const rotDeg = xTicks.rotation;
+  const padB = cfg?.plotPaddingBottom ?? 32 + xTicks.extraBottomPad + (cfg?.xAxisTitle ? 16 : 0);
+  const plotH = Math.max(80, H - padT - padB);
+
+  const yOfVal = (v: number) => padT + (1 - valScale.norm(v)) * plotH;
+  const y2OfVal = (v: number) => (y2Scale ? padT + (1 - y2Scale.norm(v)) * plotH : yOfVal(v));
+  const zeroY = yOfVal(Math.max(valScale.min, Math.min(valScale.max, 0)));
+  const zeroY2 = y2Scale ? y2OfVal(Math.max(y2Scale.min, Math.min(y2Scale.max, 0))) : zeroY;
+
   const xCenterOf = (ci: number) =>
     !hasBarGeometry
       ? padL + (categories.length <= 1 ? plotW / 2 : (ci / (categories.length - 1)) * plotW)
@@ -2790,7 +2801,7 @@ export function ChartRenderer({
             if (ci % xTickStep !== 0 && ci !== categories.length - 1) return null;
             const lx = xCenterOf(ci);
             const ly = padT + plotH + 19;
-            const textStr = truncateText(cat, cfg?.xTickTruncate ?? autoXTrunc);
+            const textStr = xTicks.label(cat);
             const isHoveredTick = hoveredCatIdx === ci;
             const anchor =
               rotDeg < 0
